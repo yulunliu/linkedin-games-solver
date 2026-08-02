@@ -1,0 +1,307 @@
+"""
+Mouse / keyboard driver, with safety rails.
+滑鼠鍵盤驅動，含安全機制。
+
+Automation moves the user's real mouse, so the default is DRY RUN: actions are
+logged but nothing is clicked. Callers must explicitly set dry_run=False.
+自動化會實際移動使用者的滑鼠，所以預設是「預演」：只記錄動作、不真的點擊。
+呼叫端必須明確設定 dry_run=False 才會執行。
+
+Safety 安全機制:
+  - pyautogui FAILSAFE: slamming the mouse into the top-left corner aborts
+  - stop() can be called from the UI at any time
+  - every delay scales with `slowdown`, so a page that cannot keep up can be
+    accommodated without touching the code
+  - pyautogui 的 FAILSAFE：把滑鼠甩到左上角即中止
+  - 介面可隨時呼叫 stop()
+  - 所有延遲都會乘上 `slowdown`，網頁跟不上時不必改程式就能放慢
+"""
+
+import math
+import time
+from dataclasses import dataclass, field
+
+
+def _gui():
+    """Load pyautogui on first real use, not at import time.
+    第一次真的要用時才載入 pyautogui，而不是在 import 時。
+
+    WHY lazy 為什麼要延後載入:
+      importing pyautogui needs a display - on Linux it raises outright without
+      X11. Image mode never moves the mouse, and dry runs never move the mouse,
+      so neither should be blocked from even starting by a package they will
+      never call. Only the code path that actually drives the mouse requires it.
+      import pyautogui 需要顯示裝置 —— 在 Linux 上沒有 X11 會直接拋錯。
+      圖片模式不會動滑鼠，預演也不會動滑鼠，
+      兩者都不該因為一個永遠不會被呼叫的套件而連啟動都不行。
+      只有真正要操作滑鼠的那條路徑才需要它。
+    """
+    global _pyautogui
+    if _pyautogui is None:
+        import pyautogui
+
+        pyautogui.FAILSAFE = True  # abort by slamming the mouse into a corner 甩到角落即中止
+        pyautogui.PAUSE = 0.0      # we time our own gaps 間隔自行控制
+        _pyautogui = pyautogui
+    return _pyautogui
+
+
+_pyautogui = None
+
+
+class Aborted(RuntimeError):
+    pass
+
+
+def wait_for_mouse_release(timeout: float = 2.0) -> float:
+    """
+    Wait for the user's physical left button to come up. Returns seconds waited.
+    等使用者把實體滑鼠左鍵放開，回傳實際等了幾秒。
+
+    WHY 為什麼需要:
+      Right after pressing "Solve & Fill" the user's finger is still on the
+      button. Moving the cursor then makes the program and the physical mouse
+      fight over control and the clicks land in the wrong places. Polling the
+      key state rather than waiting a fixed time means someone who lets go
+      quickly is not made to wait - which matters, because the whole point is
+      to save seconds.
+      使用者剛按完「開始自動解答」時手還按著滑鼠。這時候程式去移動游標，
+      會跟實體滑鼠互相搶控制權，點擊就會跑掉。直接輪詢按鍵狀態而不是固定等待，
+      放開得快的人就不必白等 —— 這很重要，因為這整件事的目的就是省秒數。
+
+    Windows only; elsewhere it falls back to a short fixed wait.
+    僅限 Windows；其他平台退回一段固定的短等待。
+    """
+    started = time.perf_counter()
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        VK_LBUTTON = 0x01
+        while time.perf_counter() - started < timeout:
+            # Top bit set means the key is currently held down.
+            # 最高位為 1 代表該鍵目前是被按住的。
+            if not (user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000):
+                break
+            time.sleep(0.02)
+    except Exception:
+        time.sleep(0.3)
+    # Give the OS a moment to finish dispatching that click.
+    # 放開後給作業系統一點時間把那次點擊事件處理完。
+    time.sleep(0.12)
+    return time.perf_counter() - started
+
+
+def focus_window_at(x: int, y: int) -> str | None:
+    """
+    Bring the window under this screen point to the front. Returns its title.
+    把「螢幕上這個座標所屬的視窗」切到最前面，回傳視窗標題。
+
+    WHY 為什麼需要:
+      If Chrome is not already frontmost, the OS consumes the first click as
+      "activate this window" and the page never sees it - so the first cell
+      silently goes unfilled. Activating the target window up front means no
+      click is wasted.
+      如果 Chrome 不在最前面，作業系統會把第一次點擊當成「啟用視窗」吃掉，
+      網頁根本收不到 —— 結果就是第一格沒被填。事先啟用目標視窗就不會浪費那一下。
+
+    Windows only; returns None elsewhere or on any failure.
+    僅限 Windows；其他平台或任何失敗都回傳 None。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        point = wintypes.POINT(int(x), int(y))
+        hwnd = user32.WindowFromPoint(point)
+        if not hwnd:
+            return None
+        root = user32.GetAncestor(hwnd, 2) or hwnd  # GA_ROOT = 2
+        user32.SetForegroundWindow(root)
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(root, buf, 256)
+        time.sleep(0.25)
+        return buf.value or None
+    except Exception:
+        return None
+
+
+#: Minimum gap (seconds) between two clicks on the SAME spot.
+#: 同一個位置連點時，兩次點擊之間至少要隔這麼久（秒）。
+#:
+#: Measured behaviour: clicking one spot rapidly makes the OS classify the
+#: clicks as a double/triple-click gesture (the page receives one gesture, not
+#: two separate clicks). A game that cycles state per click - Tango's
+#: empty -> sun -> moon - then advances only one step instead of two.
+#: Windows' default double-click window is 500ms, so this sits just above it.
+#: 實測行為：在同一點快速連點，作業系統會把它們歸類成「雙擊/三擊」手勢
+#: （網頁收到的是一個手勢，不是兩次獨立點擊）。遊戲若是每點一下就循環一次狀態 ——
+#: 例如 Tango 的 空白 -> 太陽 -> 月亮 —— 就只會前進一步而不是兩步。
+#: Windows 預設的雙擊判定時間是 500ms，所以這裡取略高於它的值。
+SAME_SPOT_CLICK_GAP = 0.55
+
+
+#: Maximum pixels the pointer may jump in one step while dragging.
+#: 拖曳時每一步最多移動幾像素。
+#:
+#: This is what makes Zip work. The page derives the path from which cells the
+#: pointer crossed, so teleporting from one cell centre to the next means the
+#: cells in between are never registered - the path skips cells and the game
+#: replies "you must follow the number order". Chopping each leg into many
+#: small steps lets the page keep up.
+#: 這是 Zip 能成功的關鍵。網頁是靠指標經過哪些格子來決定路徑的，
+#: 所以從這一格中心「瞬移」到下一格中心，中間經過的格子完全不會被記錄 ——
+#: 路徑就會跳格，遊戲會回「您必須按照數字的順序」。
+#: 把每一段切成很多小步，網頁才追得上。
+DRAG_MAX_STEP_PX = 12
+
+
+@dataclass
+class InputDriver:
+    #: Default is a dry run: actions are logged, nothing is clicked.
+    #: 預設是預演：只記錄動作、不真的點擊。
+    dry_run: bool = True
+    #: Global speed multiplier - higher is slower. Raise it when the page
+    #: cannot keep up.
+    #: 整體速度倍率：數字越大越慢。網頁跟不上時把這個調大。
+    slowdown: float = 2.0
+    #: Gap between clicks on DIFFERENT cells (seconds).
+    #: 不同格子之間的間隔（秒）。
+    click_interval: float = 0.06
+    #: Gap between clicks on the SAME cell (seconds). See SAME_SPOT_CLICK_GAP.
+    #: 同一格連點之間的間隔（秒）。見 SAME_SPOT_CLICK_GAP。
+    same_spot_gap: float = SAME_SPOT_CLICK_GAP
+    #: Cursor travel time. 0 would teleport, which the page cannot follow.
+    #: 滑鼠移動時間。設 0 會變成瞬移，網頁追不上。
+    move_duration: float = 0.04
+    #: Settling time after arriving and before pressing. Some pages only treat
+    #: a cell as active once they have seen a mousemove/hover over it, so a
+    #: click issued the instant the cursor lands can be ignored.
+    #: 移動到目標後、按下之前的緩衝時間。有些網頁要先收到 mousemove/hover
+    #: 才會把該格視為作用中；移動完立刻點擊有機會被忽略。
+    settle_after_move: float = 0.12
+    #: Delay between the interpolated steps of a drag.
+    #: 拖曳過程中每個插值小步之間的延遲。
+    drag_step_delay: float = 0.008
+    #: Every action taken, in order. This is what dry run produces and what the
+    #: tests assert against.
+    #: 依序記錄每個動作。預演模式產出的就是這個，測試也是用它來驗證。
+    log: list[str] = field(default_factory=list)
+    _stop_requested: bool = False
+
+    def _pause(self, seconds: float):
+        if seconds > 0:
+            time.sleep(seconds * self.slowdown)
+
+    def stop(self):
+        self._stop_requested = True
+
+    def reset(self):
+        self._stop_requested = False
+        self.log.clear()
+
+    def _check_abort(self):
+        """Checked before every action, so Stop takes effect within one click.
+        每個動作前都會檢查，所以按下停止後最多再過一個點擊就會生效。"""
+        if self._stop_requested:
+            raise Aborted("aborted / 已中止")
+
+    def _record(self, message: str):
+        self.log.append(message)
+
+    def countdown(self, seconds: int, on_tick=None):
+        for remaining in range(seconds, 0, -1):
+            self._check_abort()
+            if on_tick:
+                on_tick(remaining)
+            time.sleep(1)
+
+    def click(self, x: int, y: int, clicks: int = 1, label: str = ""):
+        self._check_abort()
+        suffix = f"  ({label})" if label else ""
+        self._record(f"click ({x},{y}) x{clicks}{suffix}")
+        if self.dry_run:
+            return
+        _gui().moveTo(x, y, duration=self.move_duration * self.slowdown)
+        self._pause(self.settle_after_move)
+        for i in range(clicks):
+            self._check_abort()
+            _gui().click()
+            # Repeat clicks on one cell must be spaced beyond the OS
+            # double-click window, or they register as one gesture instead of
+            # two separate clicks. This gap is an OS threshold, so unlike every
+            # other delay here it deliberately does NOT scale with `slowdown`.
+            # 同一格要連點時，間隔必須拉長到超過作業系統的雙擊判定時間，
+            # 否則會被當成一個手勢而不是兩次獨立點擊。
+            # 這個間隔是作業系統的門檻，所以跟這裡其他延遲不同，
+            # 它刻意不隨 `slowdown` 縮放。
+            if i < clicks - 1:
+                time.sleep(self.same_spot_gap)
+            else:
+                self._pause(self.click_interval)
+
+    def press_key(self, key: str, label: str = ""):
+        self._check_abort()
+        suffix = f"  ({label})" if label else ""
+        self._record(f"key '{key}'{suffix}")
+        if self.dry_run:
+            return
+        _gui().press(key)
+        time.sleep(self.click_interval)
+
+    @staticmethod
+    def _interpolate(points: list[tuple[int, int]], max_step: int) -> list[tuple[int, int]]:
+        """Chop each leg into steps of at most max_step pixels, so the path is
+        continuous rather than a series of jumps.
+        把相鄰兩點之間切成不超過 max_step 像素的小步，讓軌跡連續而不是一連串跳躍。"""
+        dense: list[tuple[int, int]] = [points[0]]
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            distance = max(abs(x1 - x0), abs(y1 - y0))
+            steps = max(1, math.ceil(distance / max_step))
+            for i in range(1, steps + 1):
+                dense.append((round(x0 + (x1 - x0) * i / steps), round(y0 + (y1 - y0) * i / steps)))
+        return dense
+
+    def drag_path(self, points: list[tuple[int, int]], label: str = ""):
+        """
+        Drag with the left button held along a sequence of points.
+        Used by Zip (the path) and Patches (each rectangle).
+        按住左鍵沿著一連串座標拖曳。Zip 的路徑與 Patches 的每個矩形都會用到。
+
+        The path is interpolated first. Without that the page only receives the
+        start and the end, the cells in between are never registered, and Zip
+        rejects the result as out of order.
+        路徑會先做插值。少了這一步，網頁只會收到起點與終點，
+        中間經過的格子完全不會被記錄，Zip 就會判定順序錯誤。
+        """
+        self._check_abort()
+        if len(points) < 2:
+            return
+        suffix = f"  ({label})" if label else ""
+        self._record(f"drag {len(points)} pts / 點: {points[0]} -> {points[-1]}{suffix}")
+        if self.dry_run:
+            return
+
+        dense = self._interpolate(points, DRAG_MAX_STEP_PX)
+        _gui().moveTo(dense[0][0], dense[0][1], duration=self.move_duration * self.slowdown)
+        self._pause(self.settle_after_move)
+        _gui().mouseDown()
+        try:
+            for x, y in dense[1:]:
+                self._check_abort()
+                _gui().moveTo(x, y)
+                self._pause(self.drag_step_delay)
+        finally:
+            # mouseUp in `finally`: an abort mid-drag must never leave the
+            # button held down, or the user's mouse is stuck selecting things.
+            # mouseUp 放在 finally：拖曳中途中止時絕對不能讓按鍵維持按下，
+            # 否則使用者的滑鼠會卡在一直選取東西的狀態。
+            self._pause(self.settle_after_move)
+            _gui().mouseUp()
+        self._pause(self.click_interval)
+
+    def summary(self) -> str:
+        mode = "preview, nothing clicked / 預演，不會真的點擊" if self.dry_run \
+            else "live / 實際執行"
+        return f"[{mode}] {len(self.log)} actions / 個動作"

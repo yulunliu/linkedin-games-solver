@@ -1,0 +1,50 @@
+# Run the test suite on every push and pull request.
+# 每次 push 與 pull request 都跑測試。
+#
+# The suites are offline and never move the mouse, so they run unchanged in CI.
+# Screen mode (mss / pyautogui) is deliberately NOT installed here: nothing the
+# tests touch needs it, and requiring it would make CI depend on a display.
+# 這些測試全部離線、也不會動滑鼠，所以在 CI 裡可以原封不動地跑。
+# 這裡刻意不安裝螢幕模式的相依（mss / pyautogui）：測試碰到的東西都不需要它，
+# 硬要裝反而會讓 CI 依賴一個顯示裝置。
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the supported platform; Ubuntu proves the recognition and
+        # solving layers carry no hidden Windows dependency - in particular that
+        # digit templates work with no C:/Windows/Fonts present.
+        # Windows 是正式支援的平台；跑 Ubuntu 是為了證明辨識與求解層沒有藏著
+        # Windows 相依 —— 特別是「沒有 C:/Windows/Fonts 時數字範本仍然可用」。
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.9", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install opencv-python-headless numpy ortools pillow pyflakes
+
+      - name: Lint
+        run: python -m pyflakes linkedin_games_solver tools tests run.py run_cli.py
+
+      - name: Tests
+        run: python tests/run_all.py

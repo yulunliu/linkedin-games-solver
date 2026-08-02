@@ -1,0 +1,27 @@
+# Normalise line endings so a contributor on Linux or macOS does not produce a
+# diff where every line of a file appears changed.
+# 統一換行符號，避免 Linux 或 macOS 的貢獻者送出「整個檔案每一行都改了」的假 diff。
+#
+# Text files are stored as LF in the repository and checked out with whatever
+# the platform prefers. Binary files are never touched.
+# 文字檔在 repo 裡一律存成 LF，簽出時依平台慣例轉換。二進位檔完全不動。
+
+* text=auto
+
+# Explicit, so these never get guessed wrong.
+# 明確指定，避免被猜錯。
+*.py    text diff=python
+*.md    text
+*.txt   text
+*.toml  text
+*.yml   text
+*.cfg   text
+LICENSE text
+
+# Test fixtures are screenshots - binary, must never be line-ending converted.
+# 測試素材是截圖 —— 二進位，絕對不能做換行轉換。
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.exe   binary

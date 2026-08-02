@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+build/
+*.spec
+
+# Built executable is published via Releases, not committed.
+# 執行檔透過 Releases 發布，不進版控。
+dist/
+
+# Local settings and scratch output
+# 本機設定與暫存輸出
+.linkedin_games_solver.json
+*.tmp
+
+# ---------------------------------------------------------------------------
+# Private development record - NOT published.
+# 私人開發紀錄 —— 不公開。
+#
+# CLAUDE.md points at ../ClaudeCode對談紀錄_linkedin-games-solver/, which sits
+# OUTSIDE this repository and holds the full working context: decisions,
+# measurements, dead ends, and the archived history of the two predecessor
+# projects. Useful to whoever continues the work; not something the public repo
+# needs.
+# CLAUDE.md 指向 ../ClaudeCode對談紀錄_linkedin-games-solver/，
+# 那個資料夾在這個 repo 之外，裝的是完整工作脈絡：決策、量測數據、走過的死路、
+# 以及兩個前身專案的封存紀錄。對接手的人有用，但公開的 repo 不需要。
+#
+# WARNING: gitignored means NOT BACKED UP BY GIT. Back it up yourself.
+# 注意：被 gitignore 代表「git 不會備份它」。請自己另外備份。
+# ---------------------------------------------------------------------------
+CLAUDE.md
+CLAUDE.local.md
+.dev/
+.claude/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

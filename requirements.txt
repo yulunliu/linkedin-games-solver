@@ -1,0 +1,25 @@
+# LinkedIn Games Solver dependencies / 相依套件
+#
+# Install with / 安裝方式:
+#     pip install -r requirements.txt
+#
+# Tkinter is not listed because it ships with Python.
+# Tkinter 沒有列在這裡，因為它是 Python 內建的。
+
+# Image processing - board detection, cell reading, digit templates.
+# 影像處理 —— 棋盤偵測、格子辨識、數字樣板。
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# CP-SAT constraint solver - every puzzle is modelled and solved with this.
+# CP-SAT 限制式求解器 —— 五款謎題都是用它建模求解的。
+ortools>=9.7.0
+
+# Screen mode only. Image mode works without these.
+# 只有螢幕模式需要。圖片模式沒有這些也能用。
+mss>=9.0.0
+pyautogui>=0.9.54
+
+# Displaying images inside the Tkinter window.
+# 在 Tkinter 視窗裡顯示圖片。
+pillow>=10.0.0
