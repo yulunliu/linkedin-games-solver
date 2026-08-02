@@ -8,7 +8,8 @@ import runpy
 import sys
 from pathlib import Path
 
-SUITES = ["test_solvers.py", "test_digits.py", "test_recognition.py", "test_automation.py"]
+SUITES = ["test_compat.py", "test_solvers.py", "test_digits.py",
+          "test_recognition.py", "test_automation.py"]
 
 
 def main():

@@ -17,6 +17,14 @@ Safety 安全機制:
   - 所有延遲都會乘上 `slowdown`，網頁跟不上時不必改程式就能放慢
 """
 
+# Required for `str | None` style annotations to work on Python 3.9, which this
+# project supports. Without it the union is evaluated at def time and raises
+# TypeError on import - every other module in the package already has it.
+# 這行是為了讓 `str | None` 這種型別註記能在 Python 3.9 上運作（本專案支援 3.9）。
+# 少了它，聯集會在 def 當下就被求值，import 時直接丟 TypeError ——
+# 套件裡其他每個模組本來都有這一行。
+from __future__ import annotations
+
 import math
 import time
 from dataclasses import dataclass, field
