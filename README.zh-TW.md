@@ -1,5 +1,9 @@
 # LinkedIn Games Solver（LinkedIn 每日謎題自動求解）
 
+[![tests](https://github.com/yulunliu/linkedin-games-solver/actions/workflows/tests.yml/badge.svg)](https://github.com/yulunliu/linkedin-games-solver/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+
 **只要一張截圖，就能解開 LinkedIn 的五款每日謎題 —— Tango、Queens、Mini Sudoku、Zip、Patches；或是讓它直接在瀏覽器上幫你填完。**
 
 *[English version / 英文說明](README.md)*

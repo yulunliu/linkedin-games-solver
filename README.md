@@ -1,5 +1,9 @@
 # LinkedIn Games Solver
 
+[![tests](https://github.com/yulunliu/linkedin-games-solver/actions/workflows/tests.yml/badge.svg)](https://github.com/yulunliu/linkedin-games-solver/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+
 **Solve all five LinkedIn daily puzzles — Tango, Queens, Mini Sudoku, Zip and Patches — from a screenshot, or let it play them for you in the browser.**
 
 *[中文說明 / Chinese version](README.zh-TW.md)*
