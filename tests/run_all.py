@@ -10,7 +10,7 @@ from pathlib import Path
 
 SUITES = ["test_compat.py", "test_solvers.py", "test_digits.py",
           "test_recognition.py", "test_automation.py",
-          "test_board_guard.py"]
+          "test_board_guard.py", "test_zip_dots.py"]
 
 
 def main():

@@ -92,11 +92,13 @@ def find_dots(image: np.ndarray, grid: BoardGrid):
     """Locate the numbered dots and read their numbers.
     找出編號圓點並讀出號碼。
 
-    Returns (dots, disc_count). `disc_count` is how many discs were FOUND, which
-    can exceed len(dots) when a number could not be read. The caller must
-    compare the two - see solve().
-    回傳 (dots, disc_count)。`disc_count` 是「找到幾個圓盤」，
-    當某個號碼讀不出來時它會大於 len(dots)。呼叫端必須比對這兩個數字，見 solve()。
+    Returns (dots, unread) where `unread` maps the position of every disc whose
+    number could not be read to HOW MANY digit glyphs it showed. That digit
+    count is what lets solve() reason about which number it must be - see
+    _resolve_unread().
+    回傳 (dots, unread)。`unread` 把「號碼讀不出來的圓盤」的位置，
+    對應到它顯示了幾個數字字形。那個位數是 solve() 用來推論「它一定是哪個號碼」
+    的依據，見 _resolve_unread()。
     """
     x0, y0, w0, h0 = grid.board_bbox
     cell = (w0 / grid.n + h0 / grid.n) / 2
@@ -105,7 +107,7 @@ def find_dots(image: np.ndarray, grid: BoardGrid):
 
     num, labels_img, stats, centroids = cv2.connectedComponentsWithStats(dark, connectivity=8)
     dots: dict[tuple[int, int], int] = {}
-    disc_count = 0
+    unread: dict[tuple[int, int], int] = {}
     for i in range(1, num):
         x, y, w, h, area = stats[i]
         window = labels_img[y : y + h, x : x + w]
@@ -116,7 +118,6 @@ def find_dots(image: np.ndarray, grid: BoardGrid):
         row, col = int((cy - y0) / cell), int((cx - x0) / cell)
         if not (0 <= row < grid.n and 0 <= col < grid.n):
             continue
-        disc_count += 1
 
         # A digit with an enclosed counter (0 4 6 8 9) leaves that counter as a
         # SEPARATE dark component, so it is not part of `component`, the flood
@@ -136,10 +137,144 @@ def find_dots(image: np.ndarray, grid: BoardGrid):
         #                修正後 0@0.9816 差距 0.0517
         # 修正後 12 個圓盤的第一名數字全部正確。
         holes = _enclosed_holes(component) & (window == 0)
-        value = digit_ocr.read_number(holes.astype(np.uint8))
+        mask = holes.astype(np.uint8)
+        value = digit_ocr.read_number(mask)
         if value is not None:
             dots[(row, col)] = value
-    return dots, disc_count
+        else:
+            # Remember how many digit glyphs this disc showed. A disc with one
+            # glyph is a single-digit number, one with two is a two-digit
+            # number - which is often enough to pin it down. See
+            # _resolve_unread().
+            # 記住這個圓盤顯示了幾個數字字形。一個字形代表個位數、兩個代表兩位數，
+            # 這通常就足以把它釘死。見 _resolve_unread()。
+            unread[(row, col)] = len(digit_ocr.split_digit_glyphs(mask))
+    return dots, unread
+
+
+def _digits_in(value: int) -> int:
+    return len(str(value))
+
+
+#: How many candidate assignments to enumerate before giving up. Small on
+#: purpose: past a handful of unreadable dots the board is too degraded to
+#: trust at all, and a big search would only be dressing up a guess.
+#: 列舉幾種候選指派之後就放棄。刻意設小：讀不出來的圓點一多，
+#: 這個盤面就根本不值得信任，搜尋再大也只是把猜測包裝得比較漂亮。
+_MAX_ASSIGNMENTS = 24
+
+
+def _consistent_assignments(dots: dict, unread: dict):
+    """Every numbering consistent with "1..k with no gaps" and the digit counts.
+    所有符合「1..k 連續無缺口」與各圓盤位數的編號方式。
+
+    Returns (list_of_assignments, why_none) - the list is capped at
+    _MAX_ASSIGNMENTS + 1 so the caller can tell "too many" from "exactly one".
+    回傳 (指派清單, 沒有的原因)。清單最多到 _MAX_ASSIGNMENTS + 1，
+    讓呼叫端能分辨「太多種」與「恰好一種」。
+    """
+    total = len(dots) + len(unread)
+    missing = sorted(set(range(1, total + 1)) - set(dots.values()))
+    if len(missing) != len(unread):
+        return [], (f"read numbers {sorted(dots.values())} do not leave exactly "
+                    f"{len(unread)} gap(s) / 已讀出的號碼沒有剛好留下 {len(unread)} 個空缺")
+
+    positions = sorted(unread)
+    candidates = []
+    for pos in positions:
+        want = unread[pos]
+        # A glyph count of 0 means we could not even split the mask, so it tells
+        # us nothing - allow any missing number for that disc.
+        # 字形數 0 代表連遮罩都切不開，那就什麼資訊都沒有 —— 該圓盤允許任何缺號。
+        fits = [v for v in missing if want == 0 or _digits_in(v) == want]
+        if not fits:
+            return [], (f"disc at ({pos[0] + 1},{pos[1] + 1}) shows {want} digit(s) but no "
+                        f"missing number has that many / ({pos[0] + 1},{pos[1] + 1}) 的圓盤"
+                        f"有 {want} 位數，但沒有任何缺號是那個位數")
+        candidates.append(fits)
+
+    out = []
+
+    def assign(i, used, acc):
+        if len(out) > _MAX_ASSIGNMENTS:
+            return
+        if i == len(positions):
+            out.append(dict(acc))
+            return
+        for v in candidates[i]:
+            if v in used:
+                continue
+            acc[positions[i]] = v
+            assign(i + 1, used | {v}, acc)
+            del acc[positions[i]]
+
+    assign(0, frozenset(), {})
+    return out, ""
+
+
+def _resolve_unread(dots, unread, n, h_walls, v_walls):
+    """Fill in numbers the reader could not, using the puzzle's own rules.
+    Returns (resolved_dots, note) or (None, why_not).
+    用謎題自己的規則補上讀不出來的號碼。回傳 (補完的 dots, 說明) 或 (None, 原因)。
+
+    TWO filters, both of them deductions rather than guesses:
+    兩道篩選，兩道都是推論而不是猜測：
+
+      1. Zip's dots are numbered 1..k with no gaps, so once we know how many
+         discs there are we know exactly which numbers exist. A disc showing one
+         glyph must be a single-digit number, two glyphs a two-digit one.
+         Zip 的圓點編號是 1..k 連續無缺口，所以知道有幾個圓盤就知道有哪些號碼。
+         顯示一個字形的圓盤必定是個位數、兩個字形必定是兩位數。
+
+      2. If more than one numbering survives (1), solve each and keep only those
+         that yield a valid path. A numbering that cannot be walked is not the
+         puzzle. This is the same move Patches already makes with unreadable
+         labels: prove the answer does not depend on what we could not read.
+         如果通過 (1) 的編號不只一種，就各解一次，只留下能走出合法路徑的。
+         走不出來的編號就不是這道題。這跟 Patches 對讀不出來的標籤所做的一樣：
+         證明答案不取決於我們讀不出來的那部分。
+
+    Accepted ONLY when exactly one distinct path survives. Two is a guess, and a
+    guess is the one thing this project refuses to make - a wrong route would be
+    dragged with the user's real mouse while reporting success.
+    只有在「恰好剩下一條相異路徑」時才採用。剩兩條就是猜測，
+    而猜測正是這個專案唯一拒絕做的事 —— 錯誤的路線會被真實滑鼠拖出去、
+    而且回報成功。
+    """
+    if not unread:
+        return dict(dots), ""
+
+    options, why = _consistent_assignments(dots, unread)
+    if not options:
+        return None, why
+    if len(options) > _MAX_ASSIGNMENTS:
+        return None, (f"{len(unread)} unreadable dot(s), too many possible numberings "
+                      f"to check / {len(unread)} 個圓點讀不出來，可能的編號方式太多")
+
+    survivors = []
+    for choice in options:
+        merged = dict(dots)
+        merged.update(choice)
+        path = solve_path(n, merged, h_walls, v_walls)
+        if path is not None:
+            survivors.append((choice, tuple(path)))
+        if len({p for _, p in survivors}) > 1:
+            break
+
+    distinct = {p for _, p in survivors}
+    if len(distinct) != 1:
+        return None, (f"{len(unread)} unreadable dot(s); {len(options)} numbering(s) fit the "
+                      f"digit counts and {len(distinct)} give a valid path - refusing to guess "
+                      f"/ {len(unread)} 個圓點讀不出來；{len(options)} 種編號符合位數，"
+                      f"其中 {len(distinct)} 種走得出路徑，不做猜測")
+
+    choice = survivors[0][0]
+    resolved = dict(dots)
+    resolved.update(choice)
+    where = ", ".join(f"({p[0] + 1},{p[1] + 1})={v}" for p, v in sorted(choice.items()))
+    extra = "" if len(options) == 1 else f" (of {len(options)} that fit the digit counts)"
+    return resolved, (f"deduced {where}{extra} - only numbering with a valid path "
+                      f"/ 推出 {where}，是唯一走得出路徑的編號")
 
 
 def find_walls(image: np.ndarray, grid: BoardGrid) -> tuple[set, set]:
@@ -280,12 +415,34 @@ def solve(image: np.ndarray, n_hint: int | None = None) -> SolveResult:
     except ValueError as exc:
         return failure(KEY, str(exc))
 
-    dots, disc_count = find_dots(image, grid)
+    dots, unread = find_dots(image, grid)
     h_walls, v_walls = find_walls(image, grid)
-    info = [f"{grid.n}x{grid.n}", f"dots / 圓點 {len(dots)}", f"walls / 牆 {len(h_walls)}+{len(v_walls)}"]
+    disc_count = len(dots) + len(unread)
+    info = [f"{grid.n}x{grid.n}", f"dots / 圓點 {disc_count}",
+            f"walls / 牆 {len(h_walls)}+{len(v_walls)}"]
 
-    if len(dots) < 2:
+    if disc_count < 2:
         return failure(KEY, "fewer than 2 dots found / 編號圓點少於 2 個", grid=grid, info=info)
+
+    # Some numbers may be genuinely ambiguous at small board sizes - an "8" and
+    # a "6" can be a coin flip once the board is under ~500px. But Zip's dots are
+    # numbered 1..k with no gaps, so the puzzle's own rules often force the
+    # answer. Take it ONLY when exactly one assignment is consistent.
+    # 在小棋盤上，有些號碼是真的難分 —— 棋盤低於約 500px 時，「8」和「6」可能
+    # 五五波。但 Zip 的圓點編號是 1..k 連續無缺口，所以謎題自己的規則往往就能
+    # 逼出答案。只有在「恰好一種指派成立」時才採用。
+    if unread:
+        resolved, note = _resolve_unread(dots, unread, grid.n, h_walls, v_walls)
+        if resolved is None:
+            where = ", ".join(f"({r + 1},{c + 1})" for r, c in sorted(unread))
+            return failure(
+                KEY,
+                f"{len(unread)} of {disc_count} dot number(s) unreadable at {where}; "
+                f"{note} / {disc_count} 個圓點中有 {len(unread)} 個號碼讀不出來（{where}）；{note}",
+                grid=grid, info=info,
+            )
+        dots = resolved
+        info.append(note)
 
     # A disc we found but could not read is NOT the same as a disc that is not
     # there, and the consecutive test below cannot tell the difference: it
@@ -301,22 +458,14 @@ def solve(image: np.ndarray, n_hint: int | None = None) -> SolveResult:
     # 一條錯誤路線，用真實滑鼠拖出去，而且回報成功。
     # 實測：img/capture.png 在 0.70x 會回傳 ok=True 且 11、12 順序顛倒，3/3 次重現。
     #
-    # LIMIT: both numbers come from the same shape gate, so this detects exactly
-    # one mode - "disc found, number unreadable". It does NOT catch a disc that
-    # was never detected, nor twelve discs with twelve numbers one of which is
-    # wrong. Those rely on the consecutive test and on solve_path failing.
-    # 限制：這兩個數字來自同一個形狀判斷，所以它只抓得到一種情況 ——
-    # 「圓盤找到了、號碼讀不出來」。它抓不到「圓盤根本沒被偵測到」，
-    # 也抓不到「12 個圓盤 12 個號碼但其中一個讀錯」。
-    # 那兩種要靠連續性檢查與 solve_path 失敗來擋。
-    if len(dots) != disc_count:
-        return failure(
-            KEY,
-            f"{disc_count - len(dots)} of {disc_count} dot number(s) unreadable "
-            f"/ {disc_count} 個圓點中有 {disc_count - len(dots)} 個號碼讀不出來",
-            grid=grid, info=info,
-        )
-
+    # LIMIT: this catches exactly one mode - "disc found, number unreadable".
+    # It does NOT catch a disc that was never detected as a disc, nor k discs
+    # with k numbers one of which is simply wrong. Those rely on the consecutive
+    # test below and on solve_path failing to find a route.
+    # 限制：這只抓得到一種情況 ——「圓盤找到了、號碼讀不出來」。
+    # 它抓不到「圓盤根本沒被當成圓盤偵測到」，也抓不到
+    # 「k 個圓盤 k 個號碼但其中一個就是錯的」。
+    # 那兩種要靠下面的連續性檢查、以及 solve_path 找不到路徑來擋。
     values = sorted(dots.values())
     if values != list(range(1, len(values) + 1)):
         return failure(KEY, f"dot numbers not consecutive / 圓點編號不連續 {values}", grid=grid, info=info)
