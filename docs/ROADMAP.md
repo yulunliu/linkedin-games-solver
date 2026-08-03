@@ -19,6 +19,111 @@ that nobody — including future me — has to rediscover them.
 | [3](#3-verify-and-retry-does-not-cover-zip-or-patches) | No verification for Zip and Patches | A drag the page missed is not detected or retried | medium |
 | [4](#4-error-messages-ignore-the-language-setting) | Errors are not translated | English users see Chinese in error text | low, but touches many files |
 | [5](#5-the-0-and-7-templates-have-never-seen-a-real-board) | 0 and 7 templates are font-derived | Untested; would fail rather than misread | needs a screenshot |
+| [6](#6-defects-found-by-the-extreme-and-abnormal-audit) | 17 defects from the extreme/abnormal audit | Several put the mouse or the saved answer in the wrong place | see the section |
+
+---
+
+## 6. Defects found by the extreme-and-abnormal audit
+
+A systematic audit of six attack surfaces — malformed image input, abnormal GUI
+operation, the automation path, solver edge cases, hostile environments, and
+threading — produced 21 defects that survived independent re-verification. Four
+were fixed in 1.1.0. **These seventeen are open.** They are listed here in full
+so that nobody has to rediscover them, ranked by what would stop someone playing
+five puzzles in one sitting with automatic mouse control.
+
+對六個攻擊面做的系統性稽核 —— 畸形影像輸入、異常介面操作、自動化路徑、
+求解器邊界、惡劣環境、並行狀況 —— 產出 21 個經獨立複驗仍成立的缺陷。
+1.1.0 修了四個，**這十七個還開著**，完整列出讓人不必重新發現一次。
+
+### Silent wrong answers 安靜的錯誤答案
+
+**S1. `self.result` is not cleared when the image behind it is replaced.**
+`_on_pick_image` and `_on_test_region` both replace `self.shot` without clearing
+`self.result`, and `_on_save` only checks that a result exists. Pick puzzle A,
+solve, pick puzzle B, press Save: the file is A's answer drawn on B's
+screenshot, offered under B's filename, with the dialog saying "Saved". In
+screen mode both captures come through the same region, so the stale symbols sit
+dead-centre in the new cells and look plausible. This matters more than it
+sounds: the saved image is the project's documented bug-report channel.
+*Fix:* clear `result`/`mapper`/`plan` at the top of `_run()` and at the end of
+both handlers; stamp the result with the identity of the image it came from and
+have Save refuse when they disagree.
+
+### Wrong mouse actions 錯誤的滑鼠動作
+
+**W1. A board that MOVES passes both the guard and `verify()`.**
+`still_there()` asks whether *a* board is present, never whether it is where we
+left it, and the verifiers compare cells by grid *index*, which is
+translation-invariant. Measured on a 9x9 with 89px cells shifted down 80px:
+guard says present, `verify` says `board_changed=False`, and the retry plan then
+clicks a pixel that now belongs to a different cell. Swept -120 to +300px and
+`verify` never noticed at any offset. Reachable by page scroll, window move or
+resize, or LinkedIn's card growing — during a 9-21s fill.
+*Fix:* the crop is grabbed at the *expected* rectangle, so the located board
+must sit at ~(0,0) with the expected size; reject beyond ~0.3 cell. Compare the
+fresh `board_bbox` against `result.grid.board_bbox` in each verifier.
+
+**W2. `ui/cli.py --go` has no board guard at all.**
+The entire `board_watch` protection exists only in the GUI. Measured against a
+scripted screen where the board is replaced after 3 actions: the GUI path
+stopped after 3 of 28, the CLI path ran all 28, 25 of them onto the replaced
+board. `--go` is the closest thing the project has to "five puzzles fully
+automatically", and it is the one path that runs blind.
+*Fix:* move the wiring into a shared `board_watch.attach(driver, mapper, result,
+image)` so a third caller cannot forget it.
+
+**W3. Closing the window mid-fill kills the worker before `mouseUp`.**
+The worker is a daemon thread and `WM_DELETE_WINDOW` neither stops nor joins it,
+so `drag_path`'s `finally: mouseUp()` does not run. Traced with a fake
+pyautogui: MOUSE_DOWN 1, MOUSE_UP 0, and the trace still shows no MOUSE_UP after
+the process exits. Pressing Stop instead gives a clean down/up pair, so this is
+specific to the close path. The physical stuck-button outcome was reasoned, not
+observed — but the mechanism is sound.
+*Fix:* on close, `driver.stop()`, join with a timeout, then destroy. Wrap
+`_ui()` against `RuntimeError`/`TclError` — the worker's own error handler
+currently raises the same error again after the window is gone.
+
+### Crashes 當掉
+
+**C1. The GUI cannot start without `mss`, even in image mode.**
+`_apply_settings` calls `default_region()` on every first run because
+`DEFAULTS["region"]` is None, and that reaches `import mss`. README and
+`pyproject` both state image mode needs neither `mss` nor `pyautogui`, and a
+test claims to enforce it — but that test only *imports* the module, and
+importing is fine; constructing the app is what breaks. **The test is a false
+safety signal.**
+*Fix:* wrap `primary_monitor()` in `default_region()` and fall back to a fixed
+rectangle; extend the test to actually construct `SolverApp`.
+
+**C2. A wrong-typed `region` in the settings file stops the GUI starting.**
+`settings.load()` filters keys but never validates types, and `_apply_settings`
+then does `str(int(v))` over whatever came back. Eight different shapes were
+tried and each raises. In the shipped windowed .exe this is "double-click, and
+nothing happens". Reachable because `fullscreen` has no UI at all, so
+hand-editing the settings file is the only way to use a documented feature.
+*Fix:* coerce `region` to exactly four ints or drop it, inside the existing
+`try` in `load()`.
+
+### Slow or confusing 慢或困惑
+
+**T1. No wall-clock budget, and Stop cannot interrupt a solve.**
+`solve_image` has no time limit and no cancellation. A 4K screen grab takes
+29-49s; 8000x8000 takes 238-312s. Stop pressed during a solve leaves the status
+reading "Stopping..." for 19-22s. Nothing hangs indefinitely and every case
+returned an accurate `ok=False`, so this is slow rather than broken — but on a
+timed game, silence is indistinguishable from a hang.
+*Fix:* downscale once up front rather than on every rung, give `solve_image` a
+`should_continue` callback, and report which rung is running.
+
+### The remaining ten
+
+Lower severity and each documented in the audit: an unclamped erase rectangle in
+`find_walls`, `write_image` raising on an unwritable path, the region entry
+fields accepting values that silently do nothing, Zip's speculative
+`solve_path` calls carrying a 60s cap each, stale `self.busy` interactions with
+the Test/Pick buttons, and several confusing-message cases. None of them can
+produce a wrong answer or a wrong click.
 
 ---
 

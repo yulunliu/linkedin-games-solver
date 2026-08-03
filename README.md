@@ -177,7 +177,8 @@ linkedin-games-solver/
 │   │   ├── mapper.py              board cell -> screen pixel
 │   │   ├── input_driver.py        the only file that moves the mouse
 │   │   ├── players.py             turn an answer into a click plan
-│   │   └── verify.py              re-read the screen, decide whether to stop
+│   │   ├── verify.py              re-read the screen, decide whether to stop
+│   │   └── board_watch.py         is our board still there? asked mid-plan
 │   └── ui/
 │       ├── app.py                 Tkinter window
 │       ├── cli.py                 command line
@@ -205,21 +206,28 @@ paragraph, with the tricky lines called out individually.
 python tests/run_all.py
 ```
 
-Four suites, all offline, no mouse movement:
+Seven suites, all offline, no mouse movement:
 
-- **`test_solvers.py`** — solver logic on hand-built puzzles. Each test
-  re-checks the rules independently of the solver, so a solver that is wrong in
-  the same way as its own validation cannot pass.
+- **`test_compat.py`** — that the declared Python 3.9 support is real. Checks
+  every file parses at the minimum version and that no PEP 604 union is
+  evaluated at runtime. Added after 1.0.0 shipped with one that crashed on 3.9.
+- **`test_solvers.py`** — solver logic on hand-built puzzles, plus the
+  uniqueness guards. Each test re-checks the rules independently of the solver,
+  so a solver that is wrong in the same way as its own validation cannot pass.
 - **`test_digits.py`** — that a digit is either read correctly or reported as
   unreadable, never silently read as a different digit. Checked across ten fonts
   and with no system font at all.
-- **`test_recognition.py`** — real screenshots. Every fixture here is a bug that
-  actually happened: the pastel Queens board that was misfiled as Patches, the
-  Tango grid that landed one column off, the dashed Patches labels whose white
-  gaps were read as digit strokes.
-- **`test_automation.py`** — click plans in dry run. Resuming a half-finished
-  board, clearing misplaced crowns, drag interpolation, and that image mode
-  runs without the screen-mode packages installed.
+- **`test_recognition.py`** — real screenshots. Every fixture is a bug that
+  actually happened: the pastel Queens board misfiled as Patches, the Tango grid
+  one column off, the dashed Patches labels whose white gaps read as digits.
+- **`test_zip_dots.py`** — dot detection, hole extraction, and the refusal to
+  guess a number it could not read. Ground truth was read off the image by eye.
+- **`test_board_guard.py`** — that the mid-plan guard never fires on a real
+  board in any state, does stop when the board is replaced, and never interrupts
+  a drag in flight.
+- **`test_automation.py`** — click plans in dry run: resuming a half-finished
+  board, clearing misplaced crowns, drag interpolation, and that image mode runs
+  without the screen-mode packages installed.
 
 ---
 
@@ -269,18 +277,22 @@ Stated up front rather than discovered later. Full detail in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
 - **Verify-and-retry covers Tango, Queens and Sudoku only.** Zip and Patches are
-  filled by dragging and their result is not read back, so a drag the page did
-  not follow is neither detected nor retried.
+  filled by dragging and their result is not read back.
+- **A board that MOVES while filling is not detected.** Do not scroll the page or
+  move the window during a run - every remaining click would land one cell off.
+- **The command line `--go` has no board guard.** The GUI stops when the board is
+  replaced; the CLI does not.
+- **Closing the window mid-fill can leave the mouse button held down.** Press
+  Stop first.
+- **The GUI needs `mss` installed even for image mode**, and a corrupt settings
+  file stops it starting at all.
 - **Screen mode is Windows-only and assumes the board is on the primary
-  monitor.** Multi-monitor and DPI-scaling support are next.
-- **Image mode thresholds are calibrated on iPhone 13 Pro screenshots.** Other
-  devices need the thresholds derived from the image rather than hard-coded.
+  monitor.**
+- **Image mode thresholds are calibrated on iPhone 13 Pro screenshots.**
 - **No test fixture contains a 0 or a 7.** Those two digit templates are
   font-derived and have never been checked against a real board.
-- **Recognition and solver error messages are fixed bilingual strings**, not
-  routed through `i18n.py`, so they ignore the language setting.
-
----
+- **Recognition and solver error messages are fixed bilingual strings**, so they
+  ignore the language setting.
 
 ## Getting help / reporting a bug
 
