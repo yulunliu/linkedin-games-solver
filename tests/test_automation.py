@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from linkedin_games_solver.automation import BoardMapper, InputDriver, build_plan  # noqa: E402
 from linkedin_games_solver.automation.capture import ScreenShot  # noqa: E402
+from linkedin_games_solver.automation import input_driver as input_driver_module  # noqa: E402
 from linkedin_games_solver.automation.input_driver import DRAG_MAX_STEP_PX  # noqa: E402
 from linkedin_games_solver.puzzles import queens, tango  # noqa: E402
 
@@ -159,6 +160,90 @@ def test_stop_aborts():
     print("  stop aborts OK")
 
 
+def test_dry_run_checks_abort_as_often_as_a_live_run():
+    """
+    Bug this guards: dry run returned before the per-click loop and before the
+    drag interpolation loop, so it reached _check_abort far less often than a
+    live run. Measured before the fix: a 2-click cell checked once in dry run
+    and three times live; a 500px drag checked once versus 43 times.
+    這個測試守住的問題：預演在「逐次點擊」與「拖曳插值」兩個迴圈之前就 return，
+    所以它碰到 _check_abort 的次數遠少於實際執行。修正前實測：
+    兩下的格子預演 1 次、實際 3 次；500px 的拖曳預演 1 次、實際 43 次。
+
+    Why it matters: any test asserting WHERE a plan stopped would be measuring
+    a code path the user never runs. A guard that aborts mid-plan cannot be
+    honestly tested until the two agree.
+    為什麼重要：任何「計畫停在哪裡」的測試，量到的都會是使用者不會走的路徑。
+    在兩者一致之前，中途中止的保護根本無法被誠實驗證。
+    """
+    class _StubGui:
+        """Stands in for pyautogui so a 'live' run touches no real mouse.
+        代替 pyautogui，讓「實際執行」也不會碰到真的滑鼠。"""
+
+        def moveTo(self, *a, **k): pass
+        def click(self, *a, **k): pass
+        def mouseDown(self, *a, **k): pass
+        def mouseUp(self, *a, **k): pass
+        def press(self, *a, **k): pass
+
+    def count_checks(dry: bool, action):
+        driver = InputDriver(dry_run=dry)
+        # No sleeping in the "live" run - we are counting checks, not timing.
+        # 「實際執行」不要真的睡 —— 這裡數的是檢查次數，不是時間。
+        driver.click_interval = driver.settle_after_move = 0.0
+        driver.move_duration = driver.drag_step_delay = driver.same_spot_gap = 0.0
+        calls = []
+        original = driver._check_abort
+        driver._check_abort = lambda: (calls.append(1), original())[1]
+        saved = input_driver_module._pyautogui
+        input_driver_module._pyautogui = _StubGui()
+        try:
+            action(driver)
+        finally:
+            input_driver_module._pyautogui = saved
+        return len(calls), list(driver.log)
+
+    cases = [
+        ("2-click cell / 兩下的格子", lambda d: d.click(100, 100, clicks=2)),
+        ("500px drag / 500px 拖曳", lambda d: d.drag_path([(100, 100), (600, 100)])),
+        ("key press / 按鍵", lambda d: d.press_key("3")),
+    ]
+    for name, action in cases:
+        dry_checks, dry_log = count_checks(True, action)
+        live_checks, live_log = count_checks(False, action)
+        assert dry_checks == live_checks, (
+            f"{name}: dry run checked {dry_checks} times, live checked {live_checks} "
+            f"/ 預演檢查 {dry_checks} 次、實際執行 {live_checks} 次"
+        )
+        assert dry_log == live_log, f"{name}: log differs / 紀錄不同"
+    print("  dry run checks abort as often as live OK")
+
+
+def test_dry_run_touches_no_mouse_module():
+    """Dry run must never resolve pyautogui at all - not even to no-op on it.
+    預演絕不能去解析 pyautogui —— 連拿到它再不做事都不行。"""
+    saved = input_driver_module._pyautogui
+    input_driver_module._pyautogui = None
+
+    def explode():
+        raise AssertionError("dry run resolved the mouse module / 預演去載入了滑鼠模組")
+
+    saved_gui = input_driver_module._gui
+    input_driver_module._gui = explode
+    try:
+        driver = InputDriver(dry_run=True)
+        driver.click(10, 20, clicks=3, label="x")
+        driver.press_key("5")
+        # (0,0) is pyautogui's FAILSAFE corner - a live run here would raise.
+        # (0,0) 是 pyautogui 的 FAILSAFE 角落 —— 實際執行到這裡會拋錯。
+        driver.drag_path([(0, 0), (400, 400)])
+        assert len(driver.log) == 3
+    finally:
+        input_driver_module._gui = saved_gui
+        input_driver_module._pyautogui = saved
+    print("  dry run touches no mouse module OK")
+
+
 def test_image_mode_needs_no_screen_packages():
     """
     Bug this guards: `mss` and `pyautogui` were imported at module level, so
@@ -215,5 +300,7 @@ if __name__ == "__main__":
     test_drag_is_interpolated()
     test_dry_run_does_not_act()
     test_stop_aborts()
+    test_dry_run_checks_abort_as_often_as_a_live_run()
+    test_dry_run_touches_no_mouse_module()
     test_image_mode_needs_no_screen_packages()
     print("\nAll passed / 全部通過")

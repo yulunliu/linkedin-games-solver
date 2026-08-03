@@ -42,6 +42,7 @@ from ..automation import (
     verify,
     wait_for_mouse_release,
 )
+from ..automation.board_watch import BoardWatch
 from ..core import read_image, write_image
 from ..i18n import LANGUAGES, translator
 from ..puzzles import (
@@ -347,8 +348,13 @@ class SolverApp:
                 image = overlay
                 stem = self.image_path.stem if self.image_path else "board"
                 default_name = f"{stem}_solved.png"
+        # Always pass a starting folder. Without initialdir, Windows reuses
+        # whatever folder a file dialog last opened - which could be anything.
+        # 一定要指定起始資料夾。少了 initialdir，Windows 會沿用「上次檔案對話框
+        # 開過的資料夾」，那可能是任何地方。
         path = filedialog.asksaveasfilename(
             title=translator("dlg_save_title"), defaultextension=".png",
+            initialdir=str(settings_store.captures_dir()),
             initialfile=default_name, filetypes=[("PNG", "*.png")],
         )
         if not path:
@@ -462,7 +468,30 @@ class SolverApp:
                 return
 
             driver = self.driver
+            self.watch = None
             if not driver.dry_run:
+                # Attach the mid-plan board guard. Only for a real run: a dry run
+                # clicks nothing, so watching the screen would just cost captures.
+                # 掛上填答進行中的盤面保護。只在真的執行時掛：預演不會點任何東西，
+                # 監看螢幕只會白白花擷取的成本。
+                #
+                # arm() proves the locator can find the board in the plan's OWN
+                # frame. If it cannot, that is a configuration fault rather than
+                # "board gone", so we log it and leave the guard off - filling
+                # still works and the post-plan verify() still runs. Letting an
+                # unproven locator judge would abort before the first click.
+                # arm() 會證明定位器能在「計畫自己的那一幀」找到棋盤。找不到的話
+                # 那是設定問題而不是「棋盤不見了」，所以只記錄、不掛保護 ——
+                # 填答照常運作，事後的 verify() 也照常。讓一個沒被驗證過的定位器
+                # 去下判斷，會在第一次點擊之前就中止。
+                bx, by, bw, bh = result.grid.board_bbox
+                watch = BoardWatch(mapper=self.mapper, n=result.grid.n)
+                if watch.arm(shot.image[by : by + bh, bx : bx + bw]):
+                    driver.guard = watch.still_there
+                    self.watch = watch
+                else:
+                    self._ui(self._log, f"  {watch.reason}")
+
                 t0 = time.perf_counter()
                 # Bring the browser to the front first, otherwise the OS eats the
                 # first click just to activate the window.
@@ -502,6 +531,13 @@ class SolverApp:
                      else translator("status_done"))
 
         except Aborted:
+            # Say WHY. "Stopped" alone leaves the user guessing whether they hit
+            # Stop, whether it failed, or whether it protected them.
+            # 說明原因。只寫「已中止」會讓使用者搞不清楚是自己按了停止、
+            # 是失敗了、還是它保護了自己。
+            if getattr(self.driver, "stopped_by_guard", False):
+                reason = getattr(self.watch, "reason", "") or translator("log_board_changed")
+                self._ui(self._log, f"  {reason}")
             self._ui(self._finish, translator("status_stopped"))
         except Exception:
             self._ui(self._log, traceback.format_exc())

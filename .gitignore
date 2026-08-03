@@ -44,3 +44,12 @@ CLAUDE.local.md
 .idea/
 Thumbs.db
 desktop.ini
+
+# Saved screen captures. These are the user's own screen - keep them local.
+# A capture that exposes a recognition bug should be copied into
+# tests/fixtures/ deliberately, with a test that explains what it guards.
+# 存下來的擷取畫面。那是使用者自己的螢幕，留在本機就好。
+# 如果某張截圖暴露了辨識問題，要「刻意」複製到 tests/fixtures/，
+# 並附上說明它守住什麼的測試。
+img/
+captures/

@@ -34,34 +34,89 @@ GLYPH_SIZE = 28
 #: Minimum similarity for a glyph to be accepted at all.
 #: 一個字形要被接受的最低相似度。
 #:
-#: Digits from the app itself score 0.995 and above. Rendered in ten other
-#: fonts, correct matches sit at 0.83+ while the ambiguous "1" shapes (a bare
-#: stroke with no flag) land at 0.70-0.79 - and those are exactly the ones that
-#: get misread. Raising the floor to 0.75 costs one correct read out of a
-#: hundred and removes a whole family of wrong ones.
-#: 來自 App 本身的數字分數都在 0.995 以上。用另外十種字型算繪時，
-#: 正確比對落在 0.83 以上，而模稜兩可的「1」（沒有起筆撇的單一豎線）
-#: 落在 0.70~0.79 —— 而那些正是會被讀錯的。門檻拉到 0.75 只損失百分之一的
-#: 正確讀取，卻消掉一整類的錯誤。
-MIN_SCORE = 0.75
+#: Measured over 325 system fonts that render 10 distinct numerals, at sizes
+#: 18/26/40/64 = 13,000 samples, plus every glyph in the project's own captures.
+#: 實測母體：325 種能畫出 10 個相異數字的系統字型 × 18/26/40/64 四種尺寸
+#: = 13,000 個樣本，再加上專案自己所有截圖裡的字形。
+MIN_SCORE = 0.90
 
-#: Minimum gap between the best digit and the runner-up.
-#: 最佳數字與第二名之間必須拉開的差距。
+#: Absolute floor on the gap between the best digit and the runner-up.
+#: 最佳數字與第二名之間差距的絕對下限。
 #:
-#: Score alone does not separate right from wrong. Measured over every
-#: calibrated glyph plus the same digits rendered in six other fonts:
-#:   correct matches   - margin 0.048 and above (median 0.102)
-#:   incorrect matches - margin 0.031 and below (but scoring up to 0.944!)
-#: A wrong "6"->"5" scored 0.944, comfortably over any sensible score floor, and
-#: was only distinguishable by how close the runner-up was. Anything inside the
-#: gap is reported as unreadable, which callers already handle.
-#: 光看分數分不出對錯。用全部校準字形，加上同樣的數字以另外六種字型算繪，實測：
-#:   正確比對 —— 差距 0.048 以上（中位數 0.102）
-#:   錯誤比對 —— 差距 0.031 以下（但分數可高達 0.944！）
-#: 一個把「6」判成「5」的錯誤拿到 0.944 分，遠高於任何合理的分數門檻，
-#: 唯一能分辨的線索就是第二名貼得多近。落在這個間隔內一律回報成讀不出來，
-#: 呼叫端本來就有處理這種情形。
-MIN_MARGIN = 0.04
+#: THIS NUMBER IS BOUNDED BY THE TEMPLATES THEMSELVES, not chosen freely.
+#: A glyph can only beat the runner-up by as much as the two templates differ.
+#: Pairwise over all 45 templates, the closest cross-digit pair is 6 vs 8 at
+#: similarity 0.9705, so a glyph matching an 8 PERFECTLY beats 6 by at most
+#: 0.0295. Per-digit ceilings (1 - closest other digit):
+#:     0: 0.067   1: 0.170   2: 0.161   3: 0.079   4: 0.170
+#:     5: 0.059   6: 0.0295  7: 0.161   8: 0.0295  9: 0.067
+#: The previous value of 0.04 was 136% of the ceiling for 6 and 8 - physically
+#: unreachable, so every 6 and 8 was rejected however good the match. That is
+#: why a Patches label scoring 0.9931 was thrown away.
+#: 這個數字的上限是「範本本身」決定的，不能隨意挑。
+#: 一個字形能贏第二名多少，受限於兩個範本本身差多少。45 個範本兩兩比對，
+#: 最接近的跨數字組合是 6 對 8，相似度 0.9705 —— 所以即使完全吻合 8 的範本，
+#: 也最多只能贏 6 0.0295。上表是每個數字的上限。
+#: 舊值 0.04 是 6 與 8 上限的 136%，物理上不可能達成，
+#: 所以不管比對多好，每個 6 和 8 都會被拒絕。這就是 0.9931 分的 Patches 標籤
+#: 被丟掉的原因。
+#:
+#: 0.020 uses 68% of that ceiling. The headroom is only 1.5x, so THIS MUST BE
+#: RE-MEASURED whenever tools/calibrate_digits.py is re-run - template
+#: similarity is what sets the ceiling. test_min_margin_is_reachable_for_every_digit
+#: enforces it.
+#: 0.020 用掉上限的 68%，餘裕只有 1.5 倍。所以每次重跑
+#: tools/calibrate_digits.py 都必須重新量測 —— 上限是由範本相似度決定的。
+#: test_min_margin_is_reachable_for_every_digit 會強制檢查這件事。
+MIN_MARGIN = 0.020
+
+#: Required gap as a fraction of the room left below a perfect match.
+#: 要求的差距，佔「距離完全吻合還剩多少」的比例。
+#:
+#: The gap a correct reading can achieve shrinks as the match approaches 1.000,
+#: so a fixed absolute gap is the wrong shape. Required gap becomes
+#:     max(MIN_MARGIN, MIN_RELATIVE_MARGIN * (1 - best_score))
+#: 正確讀取能拉開的差距，會隨著吻合度接近 1.000 而變小，
+#: 所以「固定的絕對差距」形狀就是錯的。要求的差距改成上式。
+#:
+#: DO NOT describe 0.80 as the midpoint of a gap. THERE IS NO GAP. Over the
+#: 13,000-sample sweep the wrong readings' relative margin reaches 2.4 and the
+#: correct readings' reaches 0.00 - the distributions overlap outright. 0.80 is
+#: the LARGEST relative requirement that still lets img/capture2.png resolve,
+#: and the only candidate measured to admit zero wrong readings that the old
+#: gate blocked:
+#:     gate                              correct admitted  wrong admitted  NEWLY wrong
+#:     old   s>=0.75 & m>=0.040                 7,445            491            -
+#:           s>=0.85 & max(0.012, 0.28d)        7,768            260           60
+#:           s>=0.85 & max(0.020, 0.55d)        6,239            131            1
+#:     this  s>=0.90 & max(0.020, 0.80d)        4,522             20            0
+#: 不要把 0.80 說成「間隔的中點」。根本沒有間隔。在 13,000 個樣本的掃描裡，
+#: 錯誤讀取的相對差距最高到 2.4，正確讀取最低到 0.00，兩個分布是重疊的。
+#: 0.80 是「還能讓 img/capture2.png 解出來」的最嚴要求，
+#: 也是唯一實測「不會放行任何舊門檻擋得住的錯誤」的候選。
+#:
+#: Boundary cases worth quoting 值得記下的邊界案例:
+#:   capture2.png label (1,1) "8" 0.9879 / runner-up 0.9594 -> accepted 接受
+#:   capture.png  dot   (5,1) "8" 0.9788 / runner-up 0.9703 -> rejected 拒絕
+#: The second is a genuine coin flip and being rejected is correct.
+#: 第二個是真的難分軒輊，被拒絕才是對的。
+#:
+#: NO MARGIN RULE DETECTS STROKE LOSS. Under heavy JPEG ringing a "4" loses its
+#: diagonal and crossbar and genuinely IS a "1" in the pixels. The classifier is
+#: not confused - it is confidently reading a different digit that is really
+#: there. No confidence statistic can see that; only a better capture can.
+#: 任何差距規則都偵測不到「筆畫掉了」。JPEG 壓縮嚴重時，「4」的斜線與橫槓會消失，
+#: 在像素上它「真的就是」一個「1」。分類器沒有困惑 —— 它很有信心地讀出了
+#: 一個確實存在的、不同的數字。沒有任何信心指標看得到這件事，只有更好的截圖可以。
+#:
+#: Cost, stated honestly: 18 of 100 foreign-font glyphs that read correctly
+#: under the old gate now fail loudly. Documented fallback if that proves too
+#: strict in practice: 0.85 / 0.020 / 0.55 still fixes capture2.png to the
+#: identical tiling and adds exactly one new misread.
+#: 誠實記錄代價：舊門檻下讀得出來的 100 個外來字型字形，現在有 18 個會明確失敗。
+#: 若實務上證明太嚴，已記錄的退路是 0.85 / 0.020 / 0.55 ——
+#: 一樣能讓 capture2.png 解出完全相同的切法，只多放行一個新的誤讀。
+MIN_RELATIVE_MARGIN = 0.80
 
 #: Extra fonts consulted at import time, on top of the baked-in templates.
 #: Purely additive - the program works without any of them.
@@ -186,7 +241,15 @@ def classify_glyph(glyph: np.ndarray) -> tuple[int | None, float]:
     ranked = sorted(best_per_digit.items(), key=lambda kv: -kv[1])
     best_digit, best_score = ranked[0]
     runner_up = ranked[1][1] if len(ranked) > 1 else -1.0
-    if best_score - runner_up < MIN_MARGIN:
+
+    # One gate, here. Callers used to apply MIN_SCORE themselves while this
+    # function applied MIN_MARGIN, so the two halves of one decision lived in
+    # different files and could drift apart.
+    # 判斷集中在這裡。以前呼叫端自己套 MIN_SCORE、這個函式套 MIN_MARGIN，
+    # 同一個決定的兩半散在不同檔案裡，可能各走各的。
+    if best_score < MIN_SCORE:
+        return None, best_score
+    if best_score - runner_up < max(MIN_MARGIN, MIN_RELATIVE_MARGIN * (1.0 - best_score)):
         return None, best_score
     return best_digit, best_score
 

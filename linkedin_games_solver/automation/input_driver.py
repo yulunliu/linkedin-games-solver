@@ -196,6 +196,15 @@ class InputDriver:
     #: tests assert against.
     #: 依序記錄每個動作。預演模式產出的就是這個，測試也是用它來驗證。
     log: list[str] = field(default_factory=list)
+    #: Optional callable() -> bool asked before every action. Returning False
+    #: aborts the plan. This is how BoardWatch stops a fill whose board has been
+    #: replaced; see automation/board_watch.py.
+    #: 選用的 callable() -> bool，每個動作前都會問。回傳 False 就中止計畫。
+    #: BoardWatch 就是靠這個在棋盤被換掉時停下填答；見 automation/board_watch.py。
+    guard: object = None
+    #: Set when `guard` was the thing that stopped us, so the UI can say why.
+    #: 當中止是 `guard` 造成的時設為 True，讓介面能說明原因。
+    stopped_by_guard: bool = False
     _stop_requested: bool = False
 
     def _pause(self, seconds: float):
@@ -207,13 +216,25 @@ class InputDriver:
 
     def reset(self):
         self._stop_requested = False
+        self.stopped_by_guard = False
         self.log.clear()
 
     def _check_abort(self):
         """Checked before every action, so Stop takes effect within one click.
-        每個動作前都會檢查，所以按下停止後最多再過一個點擊就會生效。"""
+        每個動作前都會檢查，所以按下停止後最多再過一個點擊就會生效。
+
+        This is also where the board guard is asked. Hooking it here rather than
+        into each player means every action - clicks, key presses, drags - is
+        covered by construction, and no player can forget to ask.
+        盤面保護也是在這裡詢問。掛在這裡而不是掛進每個 player，代表所有動作
+        （點擊、按鍵、拖曳）在結構上就都被涵蓋，沒有哪個 player 會忘記問。
+        """
         if self._stop_requested:
             raise Aborted("aborted / 已中止")
+        if self.guard is not None and not self.guard():
+            self.stopped_by_guard = True
+            self._stop_requested = True   # latch, so nothing restarts it 鎖定，不會被重啟
+            raise Aborted("board changed / 盤面已改變")
 
     def _record(self, message: str):
         self.log.append(message)
@@ -229,12 +250,24 @@ class InputDriver:
         self._check_abort()
         suffix = f"  ({label})" if label else ""
         self._record(f"click ({x},{y}) x{clicks}{suffix}")
-        if self.dry_run:
-            return
-        _gui().moveTo(x, y, duration=self.move_duration * self.slowdown)
-        self._pause(self.settle_after_move)
+
+        # A dry run must take the SAME abort checks as a live run, so a test can
+        # prove where a plan stops. Only the mouse calls and the sleeps are
+        # skipped - never the loop that decides how often we check.
+        # Measured before this change: a 2-click cell reached _check_abort once
+        # in dry run but three times live, so any test of "where did it stop"
+        # was measuring a code path the user never runs.
+        # 預演必須跟實際執行走過「一樣多」的中止檢查，測試才能證明計畫停在哪裡。
+        # 只跳過操作滑鼠與睡眠，絕不跳過「決定檢查幾次」的迴圈本身。
+        # 改動前實測：兩下的格子在預演只檢查 1 次、實際執行檢查 3 次，
+        # 所以任何「停在哪裡」的測試量到的都是使用者不會走的路徑。
+        if not self.dry_run:
+            _gui().moveTo(x, y, duration=self.move_duration * self.slowdown)
+            self._pause(self.settle_after_move)
         for i in range(clicks):
             self._check_abort()
+            if self.dry_run:
+                continue
             _gui().click()
             # Repeat clicks on one cell must be spaced beyond the OS
             # double-click window, or they register as one gesture instead of
@@ -288,26 +321,47 @@ class InputDriver:
             return
         suffix = f"  ({label})" if label else ""
         self._record(f"drag {len(points)} pts / 點: {points[0]} -> {points[-1]}{suffix}")
-        if self.dry_run:
-            return
 
+        # As in click(): dry run walks the same loop and takes the same abort
+        # checks, and skips only the mouse and the sleeps. Skipping the sleeps
+        # matters as much as skipping the mouse - the Zip fixture interpolates
+        # to 481 steps, which would make a "preview" sit there for ~7.7s.
+        # 跟 click() 一樣：預演走同一個迴圈、做同樣的中止檢查，
+        # 只跳過滑鼠與睡眠。跳過睡眠跟跳過滑鼠一樣重要 ——
+        # Zip 的測試圖會插值成 481 步，不跳的話「預演」會卡在那裡約 7.7 秒。
         dense = self._interpolate(points, DRAG_MAX_STEP_PX)
-        _gui().moveTo(dense[0][0], dense[0][1], duration=self.move_duration * self.slowdown)
-        self._pause(self.settle_after_move)
-        _gui().mouseDown()
+        if not self.dry_run:
+            _gui().moveTo(dense[0][0], dense[0][1], duration=self.move_duration * self.slowdown)
+            self._pause(self.settle_after_move)
+            _gui().mouseDown()
         try:
             for x, y in dense[1:]:
                 self._check_abort()
+                if self.dry_run:
+                    continue
                 _gui().moveTo(x, y)
                 self._pause(self.drag_step_delay)
         finally:
             # mouseUp in `finally`: an abort mid-drag must never leave the
             # button held down, or the user's mouse is stuck selecting things.
+            #
+            # BUT note what that means, because it is NOT a safety net:
+            # releasing partway through COMMITS a shorter drag. For Patches that
+            # is a real rectangle placed on the board - a wrong piece put there
+            # by the abort mechanism itself. So the board guard must be checked
+            # at drag ENTRY, never inside this loop.
             # mouseUp 放在 finally：拖曳中途中止時絕對不能讓按鍵維持按下，
             # 否則使用者的滑鼠會卡在一直選取東西的狀態。
-            self._pause(self.settle_after_move)
-            _gui().mouseUp()
-        self._pause(self.click_interval)
+            #
+            # 但要清楚這代表什麼，它「不是」安全網：中途放開等於「送出」一段較短的
+            # 拖曳。對 Patches 來說那是一個真的被放上棋盤的矩形 ——
+            # 由中止機制自己放上去的錯誤方塊。所以盤面檢查必須在拖曳「開始前」做，
+            # 絕不能放進這個迴圈裡。
+            if not self.dry_run:
+                self._pause(self.settle_after_move)
+                _gui().mouseUp()
+        if not self.dry_run:
+            self._pause(self.click_interval)
 
     def summary(self) -> str:
         mode = "preview, nothing clicked / 預演，不會真的點擊" if self.dry_run \

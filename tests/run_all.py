@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 SUITES = ["test_compat.py", "test_solvers.py", "test_digits.py",
-          "test_recognition.py", "test_automation.py"]
+          "test_recognition.py", "test_automation.py",
+          "test_board_guard.py"]
 
 
 def main():
