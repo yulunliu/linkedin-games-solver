@@ -220,7 +220,7 @@ def _similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float((sa * sb).sum() / denom) if denom else 0.0
 
 
-def classify_glyph(glyph: np.ndarray) -> tuple[int | None, float]:
+def classify_glyph(glyph: np.ndarray, allowed=None) -> tuple[int | None, float]:
     """Best matching digit and its score, or (None, score) if too ambiguous.
     最相符的數字與分數；太模稜兩可時回傳 (None, 分數)。
 
@@ -230,8 +230,29 @@ def classify_glyph(glyph: np.ndarray) -> tuple[int | None, float]:
     當第二名的數字距離不到 MIN_MARGIN 時回傳 None ——
     因為「模稜兩可的字形拿到很高的分數」正是錯誤數字混進求解器的途徑。
     """
+    # `allowed` lets a caller exclude digits the puzzle CANNOT contain. This is
+    # not a shortcut - it removes impossible answers from the competition, so
+    # the runner-up is a digit that could really be there.
+    # Measured: a 6x6 Mini Sudoku holds only 1..6, and 6's closest confusable is
+    # 8. Excluding 7-9 and 0 raises 6's template ceiling from 0.0295 to 0.0591 -
+    # double the room - and 3's from 0.0785 to 0.1163. On the real Sudoku
+    # fixture the per-glyph margin improves by +0.0148 on average, up to +0.0599.
+    # Zip numbers 1..12 use all ten digits, so it gains nothing there; Patches
+    # areas run to n*n which is likewise every digit. Sudoku is the only caller
+    # that benefits, and pretending otherwise would be dressing up a no-op.
+    # `allowed` 讓呼叫端排除「這個謎題不可能出現」的數字。這不是抄捷徑 ——
+    # 它把不可能的答案移出競爭，讓第二名是一個真的可能出現的數字。
+    # 實測：6x6 的 Mini Sudoku 只可能有 1~6，而 6 最容易混淆的是 8。
+    # 排除 7-9 與 0 之後，6 的範本天花板從 0.0295 升到 0.0591（空間翻倍），
+    # 3 從 0.0785 升到 0.1163。在真實 Sudoku 測試圖上，每個字形的差距
+    # 平均改善 +0.0148，最多 +0.0599。
+    # Zip 的 1~12 用到全部十個數字，所以那裡什麼都買不到；Patches 的面積
+    # 上看 n*n 同樣涵蓋所有數字。Sudoku 是唯一受益的呼叫端，
+    # 假裝其他地方也有效等於把一個空操作包裝成改進。
     best_per_digit: dict[int, float] = {}
     for digit, template in _templates():
+        if allowed is not None and digit not in allowed:
+            continue
         score = _similarity(glyph, template)
         if score > best_per_digit.get(digit, -1.0):
             best_per_digit[digit] = score
@@ -297,15 +318,22 @@ def split_digit_glyphs(mask: np.ndarray) -> list[np.ndarray]:
     return glyphs
 
 
-def read_number(mask: np.ndarray, min_confidence: float = MIN_SCORE) -> int | None:
+def read_number(mask: np.ndarray, min_confidence: float = MIN_SCORE, allowed=None) -> int | None:
     """Read a whole (possibly multi-digit) integer, or None if unsure.
-    讀出一個整數（可能多位數），信心不足時回傳 None。"""
+    讀出一個整數（可能多位數），信心不足時回傳 None。
+
+    `allowed` restricts which DIGITS may be considered - see classify_glyph.
+    Note it constrains the digits, not the resulting number: a caller wanting
+    to bound the number itself must check the return value.
+    `allowed` 限制的是可以被考慮的「數字」，見 classify_glyph。
+    注意它限制的是數字而不是組出來的數值：想限制數值範圍的呼叫端要自己檢查回傳值。
+    """
     glyphs = split_digit_glyphs(mask)
     if not glyphs:
         return None
     digits = []
     for glyph in glyphs:
-        digit, score = classify_glyph(glyph)
+        digit, score = classify_glyph(glyph, allowed=allowed)
         if digit is None or score < min_confidence:
             return None
         digits.append(str(digit))

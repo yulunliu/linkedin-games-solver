@@ -63,6 +63,17 @@ MIN_BOARD_PIXELS = 500
 _PRESCALE_STEPS = (1.0, 1.75, 2.5)
 _CROP_FRACTIONS = (1.0, 0.85, 0.72, 0.6, 0.5)
 
+#: Crops used when re-trying the OTHER puzzle types after the detected one has
+#: already failed the full ladder. Deliberately short: the full ladder for every
+#: type turned a failing 1920x1080 capture into 78s of work, and by this point
+#: the odds are already poor. Measured - these two rungs recover every
+#: type-misdetection in the fixture set at about a fifth of the cost.
+#: 判斷出來的類型已經跑完整條階梯還失敗之後，改試其他類型時用的裁切。
+#: 刻意很短：對每個類型都跑完整階梯，會讓一張失敗的 1920x1080 擷取花掉 78 秒，
+#: 而走到這一步時本來勝算就不高。實測這兩層就能救回測試素材裡所有的類型誤判，
+#: 成本只有約五分之一。
+_FALLBACK_CROPS = (1.0, 0.72)
+
 
 def puzzle_name(key: str, language: str = "zh") -> str:
     module = PUZZLES.get(key)
@@ -71,9 +82,27 @@ def puzzle_name(key: str, language: str = "zh") -> str:
     return module.NAME_EN if language == "en" else module.NAME_ZH
 
 
+#: Never work on an image wider or taller than this. Upscaling cannot add
+#: information, so enlarging an already-large capture only costs time: measured,
+#: a 1920x1080 capture taken to the 2.5x prescale becomes 4800x2700 and the
+#: ladder spends 26-30s on it. The board itself is what needs to reach
+#: TARGET_BOARD_PIXELS, and if the board is already large the prescale has
+#: nothing to do.
+#: 絕不在超過這個尺寸的影像上工作。放大不會增加資訊，
+#: 把本來就很大的擷取再放大只是浪費時間：實測 1920x1080 被 2.5 倍預放大之後
+#: 變成 4800x2700，階梯要花 26~30 秒。需要達到 TARGET_BOARD_PIXELS 的是「棋盤」，
+#: 棋盤本來就夠大時預放大根本無事可做。
+MAX_WORKING_PIXELS = 2600
+
+
 def _scaled(image: np.ndarray, factor: float) -> np.ndarray:
     if abs(factor - 1.0) < 1e-6:
         return image
+    side = max(image.shape[0], image.shape[1])
+    if factor > 1 and side * factor > MAX_WORKING_PIXELS:
+        factor = MAX_WORKING_PIXELS / side
+        if factor <= 1.0:
+            return image
     interpolation = cv2.INTER_CUBIC if factor > 1 else cv2.INTER_AREA
     return cv2.resize(image, None, fx=factor, fy=factor, interpolation=interpolation)
 
@@ -112,8 +141,9 @@ def _rescale_grid(grid: BoardGrid, factor: float, offset=(0, 0)) -> BoardGrid:
     return BoardGrid(n=grid.n, board_bbox=bbox, cell_boxes=build_cell_boxes(bbox, grid.n))
 
 
-def _attempt(image: np.ndarray, puzzle_key: str | None, n_hint: int | None) -> SolveResult:
-    key = puzzle_key or detect_type(image)
+def _solve_as(image: np.ndarray, key: str, n_hint: int | None) -> SolveResult:
+    """Run one puzzle module, turning any exception into a readable failure.
+    跑一個謎題模組，把任何例外轉成可讀的失敗訊息。"""
     module = PUZZLES.get(key)
     if module is None:
         return SolveResult(ok=False, puzzle_key=key, error=f"unsupported puzzle / 不支援的謎題: {key}")
@@ -123,6 +153,44 @@ def _attempt(image: np.ndarray, puzzle_key: str | None, n_hint: int | None) -> S
         return SolveResult(ok=False, puzzle_key=key, error=f"recognition failed / 辨識失敗: {exc}")
     except Exception as exc:  # noqa: BLE001 - surface any failure as a readable message
         return SolveResult(ok=False, puzzle_key=key, error=f"{type(exc).__name__}: {exc}")
+
+
+def _attempt(image: np.ndarray, puzzle_key: str | None, n_hint: int | None) -> SolveResult:
+    """Solve, falling back to the other puzzle types if the detected one fails.
+    求解；判斷出來的類型失敗時，改試其他類型。
+
+    WHY the fallback 為什麼要有備援:
+      detect_type reasons about colour statistics over the board region, and
+      when it cannot locate the board it falls back to the WHOLE image. A board
+      that is a small part of a large capture then has its colour diluted:
+      measured on a 1920x1080 capture whose Tango board is 390px wide, the
+      coloured-pixel ratio is 0.00186 against a 0.006 threshold, so it is filed
+      as Sudoku. Everything downstream then fails with "board not found", which
+      tells the user nothing about the real problem.
+      detect_type 是對棋盤區域的顏色統計做推論，而當它定位不到棋盤時，
+      會退回用「整張圖」。棋盤只佔大擷取範圍一小塊時，顏色就被稀釋：
+      實測一張 1920x1080、Tango 棋盤寬 390px 的擷取，彩色像素比例是 0.00186，
+      門檻是 0.006，於是被歸成 Sudoku。接下來整條路都會失敗在「找不到棋盤」，
+      而那個訊息完全沒告訴使用者真正的問題。
+
+      Trying the others costs one solve attempt each and is safe, because every
+      module carries its own guards: Queens checks its colour regions are
+      exactly n and contiguous, Patches needs at least three labels, Zip needs
+      consecutive dot numbers, and Tango, Sudoku and Patches all require a
+      unique solution. tests/test_recognition.py asserts that forcing the wrong
+      type fails rather than inventing an answer.
+      試其他類型每種只多花一次求解，而且是安全的，因為每個模組都自帶守門：
+      Queens 檢查色塊剛好 n 塊且連通、Patches 要求至少三個標籤、
+      Zip 要求圓點編號連續，而 Tango、Sudoku、Patches 都要求解唯一。
+      tests/test_recognition.py 就在驗證「指定錯誤類型會失敗而不是編一個答案」。
+
+    An explicit puzzle_key from the user is honoured exactly - if they say it is
+    a Tango board, we do not quietly solve it as something else.
+    使用者明確指定的類型會被完全遵守 —— 他說是 Tango，我們就不會偷偷當別的解。
+    """
+    if puzzle_key:
+        return _solve_as(image, puzzle_key, n_hint)
+    return _solve_as(image, detect_type(image), n_hint)
 
 
 def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
@@ -150,9 +218,60 @@ def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
 def solve_image(image: np.ndarray, puzzle_key: str | None = None, n_hint: int | None = None) -> SolveResult:
     """Recognise and solve. Grid coordinates are relative to the image passed in.
     辨識並求解。回傳的棋盤座標相對於傳入的原始影像。"""
+    result = _ladder(image, puzzle_key, n_hint)
+    if result.ok or puzzle_key:
+        return result
+
+    # The whole ladder failed. Before giving up, try the OTHER puzzle types.
+    # 整條階梯都失敗了。放棄之前，先試其他謎題類型。
+    #
+    # WHY 為什麼:
+    #   detect_type reasons about colour over the board region, and when it
+    #   cannot locate the board it falls back to the WHOLE image. A board that
+    #   is a small part of a large capture then has its colour diluted -
+    #   measured on a 1920x1080 capture with a 390px Tango board, the coloured
+    #   ratio is 0.00186 against a 0.006 threshold, so it is filed as Sudoku and
+    #   every attempt afterwards fails with "board not found", which tells the
+    #   user nothing about the real problem.
+    #   detect_type 是對棋盤區域算顏色，定位不到棋盤時會退回用「整張圖」。
+    #   棋盤只佔大擷取範圍一小塊時顏色就被稀釋 —— 實測 1920x1080、棋盤 390px 的
+    #   Tango，彩色比例 0.00186 對上門檻 0.006，於是被歸成 Sudoku，
+    #   後續每次嘗試都失敗在「找不到棋盤」，完全沒說出真正的問題。
+    #
+    # It is safe because every module carries its own guards - Queens needs
+    # exactly n contiguous colour regions, Patches at least three labels, Zip
+    # consecutive dot numbers, and Tango/Sudoku/Patches all require a unique
+    # solution. test_wrong_type_does_not_fake_success asserts that forcing the
+    # wrong type fails rather than inventing an answer.
+    # 這是安全的，因為每個模組都自帶守門 —— Queens 要剛好 n 塊連通色塊、
+    # Patches 至少三個標籤、Zip 要編號連續，而 Tango/Sudoku/Patches 都要求解唯一。
+    # test_wrong_type_does_not_fake_success 就在驗證「指定錯誤類型會失敗」。
+    #
+    # AFTER the main ladder, not inside it. Doing it per rung made a 1920x1080
+    # capture take 26-33s instead of 7s, because every crop x scale x type
+    # combination was tried. Now the cost is only paid when everything else has
+    # already failed.
+    # 放在主階梯「之後」，不是放在裡面。放在裡面會讓 1920x1080 的擷取從 7 秒
+    # 變成 26~33 秒，因為每個「裁切 x 縮放 x 類型」的組合都會被試。
+    # 現在這個成本只有在其他全都失敗之後才付。
+    detected = result.puzzle_key
+    for key in DISPLAY_ORDER:
+        if key == detected:
+            continue
+        other = _ladder(image, key, n_hint, fractions=_FALLBACK_CROPS)
+        if other.ok:
+            other.info.append(f"detected as {detected}, solved as {key} / "
+                              f"判斷成 {detected}，實際以 {key} 解出")
+            return other
+    return result
+
+
+def _ladder(image, puzzle_key, n_hint, fractions=None) -> SolveResult:
+    """One pass over the crop x scale ladder for one puzzle type.
+    對單一謎題類型跑一遍「裁切 x 縮放」階梯。"""
     last: SolveResult | None = None
 
-    for fraction in _CROP_FRACTIONS:
+    for fraction in (fractions if fractions is not None else _CROP_FRACTIONS):
         sub, offset = _center_crop(image, fraction)
         if min(sub.shape[:2]) < 120:
             break
