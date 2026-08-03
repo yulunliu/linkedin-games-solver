@@ -199,9 +199,41 @@ def clicks_needed(state: str | None) -> int:
 # ---------------------------------------------------------------------------
 # Solver 求解
 # ---------------------------------------------------------------------------
-def solve_positions(n: int, region_ids: list[list[int]]) -> list[tuple[int, int]] | None:
+#: Wall-clock cap for the crown search. Every other solver in the project has
+#: one; this was the only solver with no bound at all.
+#: 皇冠搜尋的時間上限。專案裡其他求解器都有；這裡原本是唯一完全沒有上限的。
+SOLVE_TIME_LIMIT = 20.0
+
+
+def solve_positions(n: int, region_ids: list[list[int]], require_unique: bool = True):
     """Constraint-solve the crown positions.
-    用約束求解算出皇后位置。"""
+    用約束求解算出皇后位置。
+
+    require_unique is the guard this solver was missing entirely.
+    require_unique 是這個求解器原本完全沒有的守門。
+
+    Queens was the only puzzle with no uniqueness check. A published board has
+    exactly one crown layout, so a SECOND layout means the colour regions were
+    misread - and unlike a missing region or a non-contiguous one, a misread
+    that still yields n contiguous regions passes regions_look_valid() and
+    every check downstream.
+    Queens 是唯一沒有唯一性檢查的謎題。出版的盤面只有一種皇冠佈局，
+    所以找得到「第二種」就代表色塊被讀錯了 —— 而且跟「少一塊」或「不連通」不同，
+    一個仍然產生 n 塊連通色塊的誤讀，會通過 regions_look_valid() 與下游每一道檢查。
+
+    Measured on live_queens_2.png (n=9, genuinely unique): moving ONE cell into
+    an orthogonally adjacent region gives 7 perturbations that still pass
+    regions_look_valid AND change the answer, 6 of which have more than one
+    solution. Nothing downstream catches it: automation/verify.py accepts 85%
+    region agreement, so a 1-in-81 misread is 1.2% and passes, and the verifier
+    then only asks whether the crowns IT chose are present - so the wrong
+    layout is clicked and reported "9/9 correct".
+    在 live_queens_2.png（n=9，本身唯一）實測：把「一格」移到正交相鄰的色塊，
+    有 7 種擾動仍然通過 regions_look_valid 而且改變了答案，其中 6 種有多組解。
+    下游沒有任何東西攔得住：automation/verify.py 接受 85% 的色塊吻合度，
+    所以 81 分之 1 的誤讀只有 1.2%、直接通過，而驗證器接著只問
+    「它自己選的那些皇冠在不在」—— 於是錯誤佈局被點下去，還回報「9/9 正確」。
+    """
     model = cp_model.CpModel()
     cells = [[model.NewBoolVar(f"q_{r}_{c}") for c in range(n)] for r in range(n)]
 
@@ -227,9 +259,32 @@ def solve_positions(n: int, region_ids: list[list[int]]) -> list[tuple[int, int]
                     model.AddAtMostOne([cells[r][c], cells[nr][nc]])
 
     solver = cp_model.CpSolver()
-    if solver.Solve(model) not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+    solver.parameters.max_time_in_seconds = SOLVE_TIME_LIMIT
+
+    if not require_unique:
+        if solver.Solve(model) not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
+        return [(r, c) for r in range(n) for c in range(n) if solver.Value(cells[r][c])]
+
+    # Enumerate, stopping at two. Two layouts means a region was misread.
+    # 列舉，找到兩組就停。有兩種佈局就代表某個色塊被讀錯了。
+    class _Collector(cp_model.CpSolverSolutionCallback):
+        def __init__(self):
+            super().__init__()
+            self.found = []
+
+        def on_solution_callback(self):
+            self.found.append([(r, c) for r in range(n) for c in range(n)
+                               if self.Value(cells[r][c])])
+            if len(self.found) >= 2:
+                self.StopSearch()
+
+    collector = _Collector()
+    solver.parameters.enumerate_all_solutions = True
+    solver.Solve(model, collector)
+    if len(collector.found) != 1:
         return None
-    return [(r, c) for r in range(n) for c in range(n) if solver.Value(cells[r][c])]
+    return collector.found[0]
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +336,17 @@ def solve(image: np.ndarray, n_hint: int | None = None) -> SolveResult:
 
     queens = solve_positions(grid.n, region_ids)
     if queens is None:
-        return failure(KEY, "no solution / 找不到符合規則的解", grid=grid, info=info)
+        # Distinguish the two ways this fails - they mean different things to
+        # the user. No solution at all means the regions are wrong in a way that
+        # makes the puzzle impossible; more than one means the regions are wrong
+        # in a way that still looks legal, which is the dangerous case.
+        # 區分兩種失敗方式 —— 對使用者的意義不同。完全無解代表色塊錯到讓謎題
+        # 不可能成立；多組解代表色塊錯得「看起來仍然合法」，那才是危險的情況。
+        if solve_positions(grid.n, region_ids, require_unique=False) is None:
+            return failure(KEY, "no solution / 找不到符合規則的解", grid=grid, info=info)
+        return failure(KEY, "more than one crown layout fits - a colour region was "
+                            "misread / 有多種皇冠佈局都成立，代表色塊讀錯了",
+                       grid=grid, info=info)
 
     states = read_cell_states(image, grid)
     already = {pos for pos, s in states.items() if s == STATE_QUEEN}

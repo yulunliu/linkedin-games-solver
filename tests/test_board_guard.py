@@ -80,7 +80,7 @@ def test_guard_locates_every_pristine_board():
     failures = []
     for name in ALL_FIXTURES:
         image, result, mapper, plan, crop = _plan_for(name)
-        watch = BoardWatch(mapper=mapper, n=result.grid.n, grab=lambda *a, _c=crop: _c)
+        watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0, grab=lambda *a, _c=crop: _c)
         if not watch.arm(crop):
             failures.append(f"{name} ({result.puzzle_key}) n={result.grid.n} "
                             f"{crop.shape[1]}px")
@@ -97,7 +97,7 @@ def test_guard_never_fires_while_filling_a_pristine_board():
         if plan is None:
             continue
         expected = _actions(plan)
-        watch = BoardWatch(mapper=mapper, n=result.grid.n, grab=lambda *a, _c=crop: _c)
+        watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0, grab=lambda *a, _c=crop: _c)
         assert watch.arm(crop), f"{name}: arm failed / 自我檢驗失敗"
         driver = InputDriver(dry_run=True)
         driver.guard = watch.still_there
@@ -125,7 +125,7 @@ def test_plan_stops_the_moment_the_board_disappears():
             _s["n"] += 1
             return _c if _s["n"] <= 1 else _g
 
-        watch = BoardWatch(mapper=mapper, n=result.grid.n, grab=grab)
+        watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0, grab=grab)
         assert watch.arm(crop)
         driver = InputDriver(dry_run=True)
         driver.guard = watch.still_there
@@ -169,7 +169,7 @@ def test_guard_survives_our_own_filling():
             for c in range(n):
                 y0, x0 = r * ch + ch // 4, c * cw + cw // 4
                 cv2.rectangle(painted, (x0, y0), (x0 + cw // 2, y0 + ch // 2), (30, 30, 30), -1)
-        watch = BoardWatch(mapper=mapper, n=n, grab=lambda *a, _p=painted: _p)
+        watch = BoardWatch(mapper=mapper, n=n, min_interval=0.0, grab=lambda *a, _p=painted: _p)
         assert watch.arm(crop), f"{name}: arm failed / 自我檢驗失敗"
         assert watch.still_there(), \
             f"{name}: aborted because we filled the board in / 因為我們自己填了棋盤而中止"
@@ -186,7 +186,7 @@ def test_guard_latches():
         _s["n"] += 1
         return np.full_like(_c, 245) if _s["n"] == 2 else _c
 
-    watch = BoardWatch(mapper=mapper, n=result.grid.n, grab=flaky)
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0, grab=flaky)
     assert watch.arm(crop)
     assert watch.still_there() is True
     assert watch.still_there() is False, "should report gone / 應回報不見了"
@@ -206,7 +206,7 @@ def test_guard_refuses_to_judge_without_a_self_test():
     不是棋盤不見了的證據。就是這一個檢查能在使用者之前抓到 Tango/Patches 的退步。
     """
     image, result, mapper, plan, crop = _plan_for("live_queens_3.png")
-    watch = BoardWatch(mapper=mapper, n=result.grid.n,
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0,
                        grab=lambda *a: np.zeros((10, 10, 3), np.uint8),
                        locate=lambda img, n: None)
     assert watch.arm(crop) is False
@@ -229,7 +229,7 @@ def test_guard_stops_when_the_screen_cannot_be_read():
     def explode(*a, **k):
         raise OSError("screen gone")
 
-    watch = BoardWatch(mapper=mapper, n=result.grid.n, grab=explode)
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0, grab=explode)
     assert watch.arm(crop)
     assert watch.still_there() is False
     assert "capture failed" in watch.reason or "擷取螢幕失敗" in watch.reason
@@ -244,7 +244,7 @@ def test_guard_detects_a_different_puzzle_in_the_same_place():
 
     other = read_image(FIXTURES / "live_patches.png")
     other = cv2.resize(other, (crop.shape[1], crop.shape[0]))
-    watch = BoardWatch(mapper=mapper, n=result.grid.n, grab=lambda *a, _o=other: _o)
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0, grab=lambda *a, _o=other: _o)
     assert watch.arm(crop)
     assert not watch.still_there(), \
         "a different puzzle in the same rect went unnoticed / 同位置換成另一款謎題沒被發現"
@@ -351,6 +351,116 @@ def test_known_blind_spot_is_documented():
     print("  known blind spot (translucent scrim) still documented OK")
 
 
+def test_rate_limit_bounds_the_cost_without_hiding_a_change():
+    """
+    The guard is asked before every action, and a plan has many: measured
+    tango 72, queens 27, sudoku 72, zip 481, patches 169 - 821 for one sitting.
+    At 110-160ms per real evaluation that is 73-104s of pure checking, so
+    still_there() reuses its last answer inside min_interval.
+    保護在每個動作前都會被問，而計畫的動作很多：實測 tango 72、queens 27、
+    sudoku 72、zip 481、patches 169 —— 一輪五款共 821 次。每次真正評估
+    110~160 毫秒，等於 73~104 秒純檢查，所以 still_there() 在 min_interval
+    之內會沿用上一次的答案。
+
+    The throttle must bound COST, never hide a change for longer than the
+    interval.
+    節流只能界定「成本」，絕不能把改變隱藏超過那個間隔。
+    """
+    import time
+
+    image, result, mapper, plan, crop = _plan_for("live_tango.png")
+    calls = {"n": 0}
+
+    def counting_grab(*a, _c=crop, _k=calls):
+        _k["n"] += 1
+        return _c
+
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.25,
+                       grab=counting_grab)
+    assert watch.arm(crop)
+    driver = InputDriver(dry_run=True)
+    driver.guard = watch.still_there
+    plan.run(driver)
+    actions = len(driver.log)
+    assert actions >= 20, f"need a long plan to test this / 需要夠長的計畫: {actions}"
+    assert calls["n"] <= 3, (
+        f"throttle not working: {calls['n']} real evaluations for {actions} actions "
+        f"/ 節流沒作用：{actions} 個動作卻真正評估了 {calls['n']} 次"
+    )
+
+    # And it must still notice, once the interval has passed.
+    # 而且間隔一過就必須察覺得到。
+    gone = np.full_like(crop, 245)
+    watch2 = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.05,
+                        grab=lambda *a, _g=gone: _g)
+    assert watch2.arm(crop)
+    assert watch2.still_there() is False, "first real evaluation must see it / 第一次真正評估就該看到"
+
+    watch3 = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.05,
+                        grab=lambda *a, _c=crop: _c)
+    assert watch3.arm(crop)
+    assert watch3.still_there() is True
+    watch3.grab = lambda *a, _g=gone: _g
+    assert watch3.still_there() is True, "inside the interval it reuses the answer / 間隔內沿用答案"
+    time.sleep(0.06)
+    assert watch3.still_there() is False, "after the interval it must notice / 間隔過後必須察覺"
+    print("  rate limit bounds cost without hiding a change OK")
+
+
+def test_a_drag_is_never_interrupted_by_the_guard():
+    """
+    Bug this guards: the guard was asked inside drag_path's interpolation loop,
+    contradicting that function's own comment. A drag is COMMITTED by mouseUp
+    wherever the pointer is, so aborting partway does not cancel it - it sends a
+    SHORTER drag. Measured on live_patches.png: a rectangle intended as 1x4 was
+    released after 12 steps and the page received 1x2; at 45 steps a 3x1 became
+    2x1. The safety mechanism was placing wrong pieces on the board.
+    這個測試守住的問題：保護原本是在 drag_path 的插值迴圈裡被詢問的，
+    跟那個函式自己的註解矛盾。拖曳是靠 mouseUp 在指標當下位置送出的，
+    所以中途中止不是取消而是「送出一段較短的拖曳」。
+    在 live_patches.png 實測：本來要 1x4 的矩形在第 12 步被放開，網頁收到 1x2；
+    第 45 步時 3x1 變成 2x1。安全機制自己在棋盤上放了錯誤的方塊。
+
+    The board must be checked BEFORE a drag starts, never during.
+    盤面必須在拖曳「開始前」檢查，進行中絕不檢查。
+    """
+    for name in ("live_patches.png", "S__104316937_0.jpg"):
+        image, result, mapper, plan, crop = _plan_for(name)
+        state = {"n": 0}
+
+        # Report the board gone from the very first question onwards.
+        # 從第一次詢問起就回報棋盤不見了。
+        def always_gone(*a, _c=crop, _s=state):
+            _s["n"] += 1
+            return np.full_like(_c, 245)
+
+        watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0,
+                           grab=always_gone)
+        assert watch.arm(crop)
+
+        asked_during_drag = {"n": 0}
+        driver = InputDriver(dry_run=True)
+        real_check = driver._check_abort
+
+        def spy(ask_guard=True, _r=real_check, _d=asked_during_drag, _drv=None):
+            if not ask_guard:
+                _d["n"] += 1
+            return _r(ask_guard=ask_guard)
+
+        driver._check_abort = spy
+        driver.guard = watch.still_there
+        try:
+            plan.run(driver)
+        except Aborted:
+            pass
+        # Every in-drag check must have gone through the ask_guard=False path.
+        # 拖曳中的每一次檢查都必須走 ask_guard=False 那條路。
+        assert asked_during_drag["n"] > 0 or len(driver.log) == 0, (
+            f"{name}: drag steps did not use ask_guard=False / 拖曳步驟沒有用 ask_guard=False"
+        )
+    print("  a drag is never interrupted by the guard OK")
+
+
 if __name__ == "__main__":
     print("Board guard tests / 盤面保護測試")
     test_guard_locates_every_pristine_board()
@@ -364,4 +474,6 @@ if __name__ == "__main__":
     test_guard_survives_every_real_board_state()
     test_guard_detects_replacement_scenarios()
     test_known_blind_spot_is_documented()
+    test_rate_limit_bounds_the_cost_without_hiding_a_change()
+    test_a_drag_is_never_interrupted_by_the_guard()
     print("\nAll passed / 全部通過")

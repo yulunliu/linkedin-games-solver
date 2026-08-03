@@ -219,19 +219,49 @@ class InputDriver:
         self.stopped_by_guard = False
         self.log.clear()
 
-    def _check_abort(self):
+    def _check_abort(self, ask_guard: bool = True):
         """Checked before every action, so Stop takes effect within one click.
         每個動作前都會檢查，所以按下停止後最多再過一個點擊就會生效。
 
-        This is also where the board guard is asked. Hooking it here rather than
-        into each player means every action - clicks, key presses, drags - is
-        covered by construction, and no player can forget to ask.
-        盤面保護也是在這裡詢問。掛在這裡而不是掛進每個 player，代表所有動作
-        （點擊、按鍵、拖曳）在結構上就都被涵蓋，沒有哪個 player 會忘記問。
+        The board guard is asked here too, so every action - clicks, key
+        presses, the start of a drag - is covered by construction and no player
+        can forget to ask.
+        盤面保護也在這裡詢問，所以所有動作（點擊、按鍵、拖曳的開始）在結構上
+        就都被涵蓋，沒有哪個 player 會忘記問。
+
+        ask_guard=False IS THE IMPORTANT PART, and it is used INSIDE a drag.
+        ask_guard=False 才是重點，它用在「拖曳進行中」。
+
+        A drag is committed by mouseUp, wherever the pointer happens to be. So
+        aborting partway does not cancel anything - it SENDS A SHORTER DRAG.
+        Measured on live_patches.png with the guard asked inside the drag loop:
+        a rectangle intended as 1x4 was released after 12 steps and the page
+        received 1x2; at 30 steps 1x4 became 1x2; at 45 steps 3x1 became 2x1.
+        The safety mechanism was placing wrong pieces on the board itself.
+        拖曳是靠 mouseUp 送出的，而且是在指標當下的位置送出。所以中途中止
+        不會取消任何東西 —— 它會「送出一段較短的拖曳」。
+        在 live_patches.png 實測，把保護放進拖曳迴圈裡問：
+        本來要畫 1x4 的矩形在第 12 步被放開，網頁收到的是 1x2；
+        第 30 步時 1x4 變 1x2；第 45 步時 3x1 變 2x1。
+        安全機制自己在棋盤上放了錯誤的方塊。
+
+        The cost was the other half of it. Guard calls per plan: tango 72,
+        queens 27, sudoku 72, zip 481, patches 169 - 821 for one sitting, at
+        roughly 110-160ms each, which is 73-104s of pure checking, and it held
+        the physical left button down for 39.2s on Zip against 8.1s unguarded.
+        另一半代價是成本。每個計畫問保護的次數：tango 72、queens 27、sudoku 72、
+        zip 481、patches 169 —— 一輪五款共 821 次，每次約 110~160 毫秒，
+        等於 73~104 秒純粹在檢查，而且讓 Zip 的實體左鍵被按住 39.2 秒
+        （沒有保護時是 8.1 秒）。
+
+        So: check the board BEFORE a drag starts, never during. Once the button
+        is down the only correct thing is to finish the stroke.
+        所以：在拖曳「開始前」檢查盤面，進行中絕不檢查。按鍵一旦按下，
+        唯一正確的做法就是把這一筆畫完。
         """
         if self._stop_requested:
             raise Aborted("aborted / 已中止")
-        if self.guard is not None and not self.guard():
+        if ask_guard and self.guard is not None and not self.guard():
             self.stopped_by_guard = True
             self._stop_requested = True   # latch, so nothing restarts it 鎖定，不會被重啟
             raise Aborted("board changed / 盤面已改變")
@@ -336,7 +366,12 @@ class InputDriver:
             _gui().mouseDown()
         try:
             for x, y in dense[1:]:
-                self._check_abort()
+                # ask_guard=False: the button is already down, so aborting here
+                # would COMMIT a shorter drag rather than cancel it. Only the
+                # user's own Stop may interrupt a stroke in flight.
+                # ask_guard=False：按鍵已經按下去了，這裡中止不是取消而是
+                # 「送出一段較短的拖曳」。只有使用者自己按停止才能打斷進行中的一筆。
+                self._check_abort(ask_guard=False)
                 if self.dry_run:
                     continue
                 _gui().moveTo(x, y)

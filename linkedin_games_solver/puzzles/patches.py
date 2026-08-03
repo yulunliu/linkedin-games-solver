@@ -382,9 +382,35 @@ def solve(image: np.ndarray, n_hint: int | None = None) -> SolveResult:
     if blank_count and numbered_total >= grid.n * grid.n:
         return failure(KEY, "numbers already fill the board / 數字總和已不小於格數", grid=grid, info=info)
 
-    rects = solve_tiling(grid.n, usable)
+    # solve_tiling_unique, NOT solve_tiling. The unique version has existed
+    # since the blank-label work but was only ever reached on the unreadable
+    # rescue branch above - the success path took the first tiling CP-SAT
+    # happened to return.
+    # 用 solve_tiling_unique，不是 solve_tiling。唯一性版本從支援空白標籤時就存在，
+    # 但一直只有上面「讀不出來」的救援分支會走到 —— 成功路徑拿的是 CP-SAT
+    # 剛好先找到的那一種切法。
+    #
+    # Measured on live_patches.png (n=7, 14 labels): blanking any one of the 7
+    # numbered labels - exactly what read_label_value does when a digit fails
+    # its height filter - produced a DIFFERENT tiling returned as ok=True, 7
+    # times out of 7. solve_tiling_unique rejects all 7.
+    # 在 live_patches.png（n=7、14 個標籤）實測：把 7 個有數字的標籤任一個變成空白 ——
+    # 那正是 read_label_value 在數字沒通過高度過濾時會做的事 —— 都會產生
+    # 「不同的」切法而且回報 ok=True，7 次全中。solve_tiling_unique 全部擋下。
+    #
+    # It is NOT conditional on blank labels, which is what the earlier analysis
+    # assumed. A 6x6 with six "6" labels down the diagonal has zero blanks, its
+    # numbers sum to exactly n*n, it passes both guards above, and it has four
+    # legal tilings.
+    # 這跟「有沒有空白標籤」無關 —— 那是先前分析的錯誤假設。
+    # 6x6 對角線放六個「6」的盤面，零空白、數字總和剛好等於 n*n、
+    # 通過上面兩道守門，而它有四種合法切法。
+    rects = solve_tiling_unique(grid.n, usable)
     if rects is None:
-        return failure(KEY, "no valid tiling / 找不到符合規則的切法", grid=grid, info=info)
+        if solve_tiling(grid.n, usable) is None:
+            return failure(KEY, "no valid tiling / 找不到符合規則的切法", grid=grid, info=info)
+        return failure(KEY, "tiling is not unique - a label was probably misread "
+                            "/ 切法不唯一，可能有標籤讀錯", grid=grid, info=info)
 
     return SolveResult(
         ok=True, puzzle_key=KEY, grid=grid, info=info,

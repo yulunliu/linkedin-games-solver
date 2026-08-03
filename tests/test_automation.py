@@ -194,7 +194,7 @@ def test_dry_run_checks_abort_as_often_as_a_live_run():
         driver.move_duration = driver.drag_step_delay = driver.same_spot_gap = 0.0
         calls = []
         original = driver._check_abort
-        driver._check_abort = lambda: (calls.append(1), original())[1]
+        driver._check_abort = lambda *a, **k: (calls.append(1), original(*a, **k))[1]
         saved = input_driver_module._pyautogui
         input_driver_module._pyautogui = _StubGui()
         try:

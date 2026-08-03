@@ -62,6 +62,7 @@ them. The realistic completion behaviour - replacing the board - IS caught.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import cv2
@@ -184,6 +185,28 @@ class BoardWatch:
     grab: object = capture_region
     locate: object = locate_board
 
+    #: Minimum seconds between two real evaluations. In between, the last answer
+    #: is reused.
+    #: 兩次真正評估之間的最短間隔（秒）。中間直接沿用上一次的答案。
+    #:
+    #: WHY 為什麼:
+    #:   The guard is asked before every action, and a plan has a lot of actions:
+    #:   measured, tango 72, queens 27, sudoku 72, zip 481, patches 169 - 821 for
+    #:   one sitting of five puzzles. Each real evaluation costs a screen grab
+    #:   (18-33ms) plus locate_board (89-127ms), so unthrottled that is 73-104
+    #:   seconds of pure checking added to a sitting.
+    #:   保護在每個動作前都會被問，而一個計畫的動作很多：實測 tango 72、
+    #:   queens 27、sudoku 72、zip 481、patches 169 —— 五款一輪共 821 次。
+    #:   每次真正評估要一次螢幕擷取（18~33 毫秒）加上 locate_board（89~127 毫秒），
+    #:   不節流的話等於替一輪加上 73~104 秒純檢查時間。
+    #:
+    #:   0.25s bounds the exposure: the board can be gone for at most a quarter
+    #:   of a second before we notice, which is well under the time any single
+    #:   click takes at the default speed (about 1s per Queens cell).
+    #:   0.25 秒界定了曝險：棋盤最多消失四分之一秒就會被發現，
+    #:   這遠短於預設速度下任何一次點擊所需的時間（Queens 每格約 1 秒）。
+    min_interval: float = 0.25
+
     #: Set once arm() succeeds. Until then the watch refuses to judge anything.
     #: arm() 成功之後才會設為 True。在那之前這個 watch 拒絕對任何事下判斷。
     armed: bool = False
@@ -191,6 +214,7 @@ class BoardWatch:
     reason: str = ""
     _gone: bool = False
     _checks: int = field(default=0)
+    _last_at: float = field(default=0.0)
 
     def arm(self, board_image: np.ndarray) -> bool:
         """Prove the locator can find the board in the frame the plan came from.
@@ -231,6 +255,13 @@ class BoardWatch:
             return True          # never judge when we were not able to self-test
         if self._gone:
             return False
+        # Rate limit. Between real evaluations reuse the last answer - see
+        # min_interval for the measured cost this avoids.
+        # 節流。兩次真正評估之間沿用上一次的答案 —— 省下的成本見 min_interval。
+        now = time.perf_counter()
+        if self._last_at and (now - self._last_at) < self.min_interval:
+            return True
+        self._last_at = now
         self._checks += 1
         left, top, w, h = self.mapper.board_rect_on_screen()
         try:

@@ -204,6 +204,53 @@ def test_stops_when_board_changes():
     print("  stops when the board changes OK")
 
 
+def test_board_position_survives_the_working_size_cap():
+    """
+    Bug this guards: MAX_WORKING_PIXELS clamped the scale factor inside _scaled
+    and threw the real value away, while the grid was mapped back using the
+    UNCLAMPED factor. Result: ok=True, a correct answer, and a board rectangle
+    up to 1.6 cells from the real board - and those are the coordinates the
+    mouse uses.
+    這個測試守住的問題：MAX_WORKING_PIXELS 在 _scaled 內部把倍率夾住、
+    把真正的值丟掉，而棋盤座標卻是用「沒夾住」的倍率換算回去的。
+    結果是 ok=True、答案正確，但棋盤矩形跟真實位置差到 1.6 格 ——
+    而那正是滑鼠會用的座標。
+
+    The trigger is a TALL capture with a board small enough that
+    max_side * (794 / board_px) exceeds the cap - not any of the square-ish
+    fixtures, all of which are correct either way.
+    觸發條件是「直式的擷取」加上「棋盤小到 max_side * (794/board_px) 超過上限」——
+    不是那些接近正方形的測試圖，那些不管有沒有上限都正確。
+    """
+    import cv2
+    import numpy as np
+
+    base = _load("live_queens_2.png")
+    result = solve_image(base)
+    assert result.ok
+    x, y, w, h = result.grid.board_bbox
+    card = base[y : y + h, x : x + w]
+
+    for target, (canvas_w, canvas_h) in [(500, (870, 1882)), (450, (870, 1882)),
+                                         (560, (1000, 2000)), (700, (1200, 1400))]:
+        factor = target / max(card.shape[:2])
+        scaled = cv2.resize(card, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+        canvas = np.full((canvas_h, canvas_w, 3), 255, np.uint8)
+        oy, ox = (canvas_h - scaled.shape[0]) // 2, (canvas_w - scaled.shape[1]) // 2
+        canvas[oy : oy + scaled.shape[0], ox : ox + scaled.shape[1]] = scaled
+
+        got = solve_image(canvas)
+        assert got.ok, f"{canvas_w}x{canvas_h} board {target}px: {got.error}"
+        bx, by, bw, bh = got.grid.board_bbox
+        cell = scaled.shape[1] / got.grid.n
+        off_x, off_y = abs(bx - ox) / cell, abs(by - oy) / cell
+        assert off_x < 0.2 and off_y < 0.2, (
+            f"{canvas_w}x{canvas_h} board {target}px: reported ({bx},{by}) vs true "
+            f"({ox},{oy}) = {off_x:.2f},{off_y:.2f} cells out / 位置偏差過大"
+        )
+    print("  board position survives the working-size cap OK")
+
+
 if __name__ == "__main__":
     print("Recognition tests / 辨識測試")
     test_puzzle_type_detection()
@@ -213,4 +260,5 @@ if __name__ == "__main__":
     test_live_patches_with_blank_labels()
     test_wrong_type_does_not_fake_success()
     test_stops_when_board_changes()
+    test_board_position_survives_the_working_size_cap()
     print("\nAll passed / 全部通過")

@@ -95,14 +95,34 @@ def puzzle_name(key: str, language: str = "zh") -> str:
 MAX_WORKING_PIXELS = 2600
 
 
+def _effective_factor(image: np.ndarray, factor: float) -> float:
+    """The factor that will ACTUALLY be applied, after the working-size cap.
+    套用工作尺寸上限之後「實際會用」的倍率。
+
+    THE CAP AND THE COORDINATE MAPPING MUST AGREE. _scaled used to clamp the
+    factor privately and throw the real value away, while _rescale_grid mapped
+    the answer back using the UNCLAMPED one. Measured on a 500px board centred
+    on an 870x1882 canvas: ok=True, but the reported board was (162,601,436,437)
+    against a true (185,691,500,500) - 1.6 cells out vertically, and those are
+    the coordinates the mouse would have used.
+    上限與座標換算必須一致。_scaled 原本是私下把倍率夾住、把真正的值丟掉，
+    而 _rescale_grid 卻用「沒夾住」的倍率把答案換算回去。
+    實測：500px 的棋盤置中在 870x1882 的畫布上，回報 ok=True，
+    但棋盤位置是 (162,601,436,437) 而真值是 (185,691,500,500) ——
+    垂直差 1.6 格，而那正是滑鼠會用的座標。
+    """
+    if factor <= 1.0:
+        return factor
+    side = max(image.shape[0], image.shape[1])
+    if side <= 0 or side * factor <= MAX_WORKING_PIXELS:
+        return factor
+    return max(1.0, MAX_WORKING_PIXELS / side)
+
+
 def _scaled(image: np.ndarray, factor: float) -> np.ndarray:
+    factor = _effective_factor(image, factor)
     if abs(factor - 1.0) < 1e-6:
         return image
-    side = max(image.shape[0], image.shape[1])
-    if factor > 1 and side * factor > MAX_WORKING_PIXELS:
-        factor = MAX_WORKING_PIXELS / side
-        if factor <= 1.0:
-            return image
     interpolation = cv2.INTER_CUBIC if factor > 1 else cv2.INTER_AREA
     return cv2.resize(image, None, fx=factor, fy=factor, interpolation=interpolation)
 
@@ -211,6 +231,7 @@ def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
     ideal = TARGET_BOARD_PIXELS / board_width_in_sub
     if abs(ideal - factor) / max(ideal, factor) <= 0.15:
         return factor, result
+    ideal = _effective_factor(sub, ideal)
     better = _attempt(_scaled(sub, ideal), puzzle_key, n_hint)
     return (ideal, better) if better.ok else (factor, result)
 
@@ -292,6 +313,10 @@ def _ladder(image, puzzle_key, n_hint, fractions=None) -> SolveResult:
                 continue
             tried.append(factor)
 
+            # The cap may reduce the factor; the mapping back must use whatever
+            # was actually applied, not what we asked for.
+            # 上限可能把倍率調小；換算回去必須用「實際套用」的那個值，不是我們要求的值。
+            factor = _effective_factor(sub, factor)
             result = _attempt(_scaled(sub, factor), puzzle_key, n_hint)
             if result.ok:
                 factor, result = _renormalise(sub, result, factor, puzzle_key, n_hint)
