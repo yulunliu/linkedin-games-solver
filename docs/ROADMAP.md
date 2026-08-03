@@ -118,12 +118,21 @@ timed game, silence is indistinguishable from a hang.
 
 ### The remaining ten
 
-Lower severity and each documented in the audit: an unclamped erase rectangle in
-`find_walls`, `write_image` raising on an unwritable path, the region entry
-fields accepting values that silently do nothing, Zip's speculative
-`solve_path` calls carrying a 60s cap each, stale `self.busy` interactions with
-the Test/Pick buttons, and several confusing-message cases. None of them can
-produce a wrong answer or a wrong click.
+None of these can produce a wrong answer or a click on the wrong cell. They lose
+work, lose settings, or explain themselves badly.
+
+| # | Defect | What you would see |
+|---|---|---|
+| R1 | **`locate_board` cannot find a Zip board once the path is drawn.** Measured on a 7x7, 808px board: pristine locates, a line through ≥6 of 49 cells does not. Connectivity is the cause, not ink — a dot in every path cell still locates | Zip fills correctly (the drag is no longer interrupted, see 1.1.0), then the guard reports "board changed" at the end and the post-fill check never runs. Confirm against one real mid-drag capture before rewriting the locator; the trail in the repro was simulated |
+| R2 | **`write_image()` raises where it documents returning `False`** | GUI Save appears to do nothing; CLI `--out` aborts a `--go` run *after* solving but *before* any click |
+| R3 | **One unparseable region field silently substitutes the default region** — and then permanently overwrites the calibrated one on save | Your calibrated capture region is gone and nothing said so |
+| R4 | **Stop pressed during the capture window is discarded** | You press Stop, the fill starts anyway |
+| R5 | **Sudoku's box-shape fallback returns a box that does not tile the board** — bare `IndexError` for n = 5, 7, 10, 11. Caught by `_solve_as`, so nothing crashes | An unhelpful error instead of "that board size is not supported" |
+| R6 | **`read_image()` violates its contract for directories and locked files** | `--image <a directory>` gives a raw `PermissionError` instead of a message |
+| R7 | **The "zoom in with `Ctrl` `+`" hint is appended to failures unrelated to board size** | You zoom in repeatedly against a problem that is not about zoom |
+| R8 | **`--region` with a zero or negative dimension escapes as a raw `mss.ScreenShotError`** | A traceback instead of "width and height must be positive" |
+| R9 | **pyautogui's fail-safe surfaces as a raw traceback and the word "Error"** | The documented escape hatch — slam the mouse into a corner — looks like a crash |
+| R10 | **`argparse` output is written before stdout is reconfigured** | `PuzzleSolverCLI.exe --help` crashes on a non-UTF-8 console. Any other bad flag is fine — it prints the usage block and exits 2 |
 
 ---
 
