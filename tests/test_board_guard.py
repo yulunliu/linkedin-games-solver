@@ -461,6 +461,183 @@ def test_a_drag_is_never_interrupted_by_the_guard():
     print("  a drag is never interrupted by the guard OK")
 
 
+def test_guard_survives_a_real_mid_drag_patches_capture():
+    """The false abort a user actually hit, reproduced from a screen recording.
+    使用者實際碰到的誤判中止，從螢幕錄影重現。
+
+    2026-08-04: a user reported Tango and Patches stopping partway through a
+    real fill, both just short of completion. Extracted from their screen
+    recording at fine (0.2s) time steps and fed straight through locate_board:
+    detect_grid_size failed from the moment 1 of 6 patches was placed, while
+    the board was demonstrably still there and still being filled (more
+    patches kept appearing in later frames). This fixture is that capture's
+    board region at 1-of-6 patches placed - the drawn patch's pastel fill
+    reads as "mostly dark" in grayscale over a wide span, breaking
+    detect_grid_size's sparse-line assumption for every threshold it sweeps.
+    Before the _mask_own_marks fallback this fixture failed; after it, it
+    locates.
+    2026-08-04：使用者回報 Tango 與 Patches 在真實填答途中停手，都在快解完的
+    時候。從他的螢幕錄影用細粒度（0.2 秒）切格，直接餵給 locate_board：
+    從畫了第一個貼塊開始，detect_grid_size 就失敗，而棋盤明顯還在、
+    還在繼續被填（後面的畫面持續有更多貼塊出現）。這張測試圖就是那段
+    擷取裡棋盤填了 1/6 貼塊時的畫面——貼塊的粉彩填色在灰階下一大片
+    被讀成「大部分是暗的」，讓 detect_grid_size 掃過的每一個門檻都失效。
+    加上 _mask_own_marks 這道備援之前，這張圖會失敗；加上之後定位得到。
+
+    See test_guard_still_fails_late_in_the_same_capture below for what this
+    fix does NOT reach.
+    這個修法「救不回來」的部分，見下面的 test_guard_still_fails_late_in_the_same_capture。
+    """
+    from linkedin_games_solver.automation.board_watch import locate_board
+
+    image = read_image(FIXTURES / "patches_mid_drag_1of6.png")
+    assert image is not None, "missing fixture / 缺少測試圖"
+    assert locate_board(image, 6) is not None, (
+        "guard would falsely abort on a board that is still there / "
+        "保護會對一個明明還在的棋盤誤判中止"
+    )
+    print("  guard survives a real mid-drag Patches capture OK")
+
+
+def test_guard_still_fails_late_in_the_same_capture():
+    """Known remaining gap: masking does not reach late-stage fill. Not fixed;
+    documented so a future change is judged against a real number.
+    已知還沒解決的缺口：遮色救不到填答後期。沒有修好，先記錄下來，
+    這樣未來的改動才有一個真實的數字可以對照。
+
+    Same capture as the test above, at 5 of 6 patches placed. detect_grid_size
+    fails even on the masked crop here: the masked-out span can eat the one
+    thin internal grid line that would have told the patch apart from the
+    board's own faint dashed lines, since a grid line drawn ON a colour fill
+    can carry similar saturation to the fill itself - saturation alone cannot
+    tell "our fill" apart from "our fill's own internal line".
+    同一段擷取，填到 6 格中的 5 格。這裡連遮色後的裁切也會讓 detect_grid_size
+    失敗：被遮掉的那一段可能正好吃掉了本來能把貼塊跟棋盤自己的淡虛線分開的
+    那一條細內部格線，因為畫在填色上的格線，飽和度可能跟填色本身很接近——
+    光看飽和度沒辦法把「我們的填色」跟「我們填色裡自己的格線」分開。
+
+    An envelope-only fallback (check just the outer border via find_board_bbox,
+    skip re-deriving n) was tried and reverted: it recovered this fixture, but
+    it also made test_guard_detects_replacement_scenarios fail on THREE cases -
+    random noise, a different puzzle at the same size, and our own puzzle at
+    the wrong size all started reading as "still our board". A fix that revives
+    a board that finished 12s ago is not an improvement over one that stops 12s
+    early - both move the mouse onto the wrong thing, just at different times.
+    曾經試過另一種備援（只用 find_board_bbox 檢查外框在不在，不重新推算
+    格數），這張圖能救回來，但代價是讓 test_guard_detects_replacement_scenarios
+    的三個情況失敗——純雜訊、同尺寸的另一款謎題、我們自己的謎題但格數不對，
+    全部開始被判定成「還是我們的棋盤」。一個「讓已經解完 12 秒的棋盤復活」的
+    修法，並不比「提早 12 秒停手」更好——兩者都會讓滑鼠點到錯的東西，
+    只是發生的時間點不同。已復原、沒有採用。
+    """
+    from linkedin_games_solver.automation.board_watch import locate_board
+
+    image = read_image(FIXTURES / "patches_mid_drag_5of6.png")
+    assert image is not None, "missing fixture / 缺少測試圖"
+    assert locate_board(image, 6) is None, (
+        "this fixture started locating - either detect_grid_size or the mask "
+        "changed; re-measure before assuming it is fixed / "
+        "這張圖開始定位得到了——detect_grid_size 或遮色邏輯有變動；"
+        "先重新量測，不要假設它已經修好"
+    )
+    print("  guard still fails late in the same capture (documented gap) OK")
+
+
+def test_patches_finishes_despite_the_documented_late_fill_gap():
+    """End to end: the ask_guard=False tail lets a real Patches plan finish
+    even though a REAL BoardWatch, pointed at that fixture, would abort every
+    single time it is actually asked.
+    整合測試：即使把一個真正的 BoardWatch 指向那張測試圖——它只要真的被問，
+    每一次都會判定中止——最後兩塊矩形的計畫還是跑得完。
+
+    A 2-rectangle plan means BOTH rectangles fall inside
+    PatchesPlayer.LAST_UNGUARDED_RECTS (=2), so neither should ever call
+    driver.guard at all. Proven two ways at once: the plan completes without
+    raising Aborted, AND watch.checks_made() is 0 - not "the guard happened to
+    agree", but "the guard was never consulted". A 3rd rectangle added to this
+    same plan WOULD raise Aborted, because it falls outside the unguarded tail
+    - that is the guard doing its job everywhere else, unchanged.
+    2 塊矩形的計畫，兩塊都落在 PatchesPlayer.LAST_UNGUARDED_RECTS（=2）範圍內，
+    所以理論上完全不該呼叫 driver.guard。用兩種方式同時證明：計畫跑完、
+    沒有拋出 Aborted，而且 watch.checks_made() 是 0——不是「保護剛好判定通過」，
+    是「保護根本沒被問過」。如果對同一個計畫加上第 3 塊矩形，那一塊「會」
+    拋出 Aborted，因為它落在不受保護的尾段之外——這正是保護在其他地方
+    照常運作、沒有被這個改動動到的證明。
+    """
+    mapper = _mapper(6)
+    rects = [(0, 0, 2, 2), (0, 2, 2, 2)]
+    plan = build_plan("patches", mapper, {"rects": rects})
+
+    # arm() proves the locator on the PLAN's own (locatable) frame; still_there()
+    # is then pointed at the known-failing fixture via grab() - same underlying
+    # puzzle (n=6), just a later point in the same fill.
+    # arm() 是拿計畫「自己那一幀」（定位得到的）去證明定位器可用；之後
+    # still_there() 透過 grab() 指向那張已知會失敗的測試圖——同一個謎題
+    # （n=6），只是填答更後面的時刻。
+    pristine = read_image(FIXTURES / "patches_mid_drag_1of6.png")
+    failing_image = read_image(FIXTURES / "patches_mid_drag_5of6.png")
+    assert pristine is not None and failing_image is not None, "missing fixture / 缺少測試圖"
+
+    # A throwaway probe watch, separate from the one the plan actually uses -
+    # proves the fixture genuinely fails a real check, without leaving any
+    # state on the watch the plan will run against.
+    # 一個用完即丟的探針 watch，跟計畫實際使用的分開——證明這張測試圖真的會讓
+    # 一次真正的檢查失敗，同時不會在計畫要用的那個 watch 上留下任何狀態。
+    probe = BoardWatch(mapper=mapper, n=6, min_interval=0.0, grab=lambda *a: failing_image)
+    assert probe.arm(pristine), (
+        "patches_mid_drag_1of6.png must self-locate for this test to mean anything / "
+        "patches_mid_drag_1of6.png 自己要定位得到，這個測試才有意義"
+    )
+    assert probe.still_there() is False, (
+        "the fixture must make a real check fail, or this test proves nothing / "
+        "這張圖必須讓真正的檢查失敗，否則這個測試證明不了任何事"
+    )
+
+    watch = BoardWatch(mapper=mapper, n=6, min_interval=0.0, grab=lambda *a: failing_image)
+    assert watch.arm(pristine)
+
+    driver = InputDriver(dry_run=True)
+    driver.guard = watch.still_there
+    try:
+        plan.run(driver)
+    except Aborted:
+        raise AssertionError(
+            "plan aborted even though both rectangles fall inside the "
+            "unguarded tail / 計畫中止了，但這兩塊矩形都落在不受保護的尾段內"
+        )
+    assert len(driver.log) == len(rects), (
+        f"expected both rectangles to run, got {len(driver.log)} actions / "
+        f"預期兩塊矩形都執行，實際 {len(driver.log)} 個動作"
+    )
+    assert watch.checks_made() == 0, (
+        f"the guard should never have been consulted, but was asked "
+        f"{watch.checks_made()} time(s) / 保護本來就不該被問到，但實際被問了 "
+        f"{watch.checks_made()} 次"
+    )
+    print("  Patches finishes despite the documented late-fill gap OK")
+
+
+def _mapper(n):
+    """Same synthetic n x n board tests/test_automation.py uses, duplicated
+    here so this file has no cross-file test dependency.
+    跟 tests/test_automation.py 一樣的合成 n x n 棋盤，在這裡重複一份，
+    這樣這個檔案不會依賴另一個測試檔。"""
+    grid = _FakeGrid(n)
+    blank = np.zeros((n * 10, n * 10, 3), np.uint8)
+    from linkedin_games_solver.automation.capture import ScreenShot
+    return BoardMapper(shot=ScreenShot(blank, 0, 0), grid=grid)
+
+
+class _FakeGrid:
+    def __init__(self, n):
+        self.n = n
+        self.board_bbox = (0, 0, n * 10, n * 10)
+        self.cell_boxes = [[(c * 10, r * 10, 10, 10) for c in range(n)] for r in range(n)]
+
+    def cell_center(self, r, c):
+        return c * 10 + 5, r * 10 + 5
+
+
 if __name__ == "__main__":
     print("Board guard tests / 盤面保護測試")
     test_guard_locates_every_pristine_board()
@@ -476,4 +653,7 @@ if __name__ == "__main__":
     test_known_blind_spot_is_documented()
     test_rate_limit_bounds_the_cost_without_hiding_a_change()
     test_a_drag_is_never_interrupted_by_the_guard()
+    test_guard_survives_a_real_mid_drag_patches_capture()
+    test_guard_still_fails_late_in_the_same_capture()
+    test_patches_finishes_despite_the_documented_late_fill_gap()
     print("\nAll passed / 全部通過")

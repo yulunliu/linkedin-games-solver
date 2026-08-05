@@ -177,18 +177,46 @@ class PatchesPlayer(BasePlayer):
     """Drag each rectangle from its top-left cell to its bottom-right cell.
     每塊矩形從左上角格子拖到右下角格子。"""
 
+    #: How many of the FINAL rectangles run with the mid-plan board guard
+    #: turned off for that one drag.
+    #: 最後幾個矩形，這幾筆拖曳會把中途盤面保護關掉。
+    #:
+    #: WHY 為什麼: Patches tiles the WHOLE board, so by the last rectangle or
+    #: two almost nothing of the original grid is left exposed - the guard's
+    #: structural re-check is fighting the puzzle's own design at that point,
+    #: not catching a real problem. Confirmed 2026-08-04 on a real capture: with
+    #: 5 of 6 rectangles already drawn, both of the guard's locators failed
+    #: (detect_grid_size AND, once two rectangles touched the board's own
+    #: edges, find_board_bbox too - it picked a drawn rectangle's border
+    #: instead of the board's), while the board was demonstrably still there
+    #: and the fill was still correct. This is a deliberate, bounded trade,
+    #: made with the user: the guard still protects the first N-2 rectangles
+    #: (which is most of a typical fill) and the mid-drag interruption fix from
+    #: 1.1.0 still applies to every rectangle; only the last two lose the
+    #: "board replaced mid-drag" check specifically.
+    #: 為什麼：拼塊會鋪滿整個棋盤，填到最後一兩塊時，原始格線幾乎完全不剩，
+    #: 保護的結構性重新檢查在這個階段對抗的是謎題本身的設計，不是在抓真的問題。
+    #: 2026-08-04 用真實擷取確認過：6 塊填了 5 塊時，保護的兩個定位器都失敗
+    #: （detect_grid_size 失敗，而且一旦兩塊碰到棋盤自己的邊緣，連
+    #: find_board_bbox 也失敗——它找到的是某塊矩形自己的邊框，不是棋盤的），
+    #: 但棋盤明明還在、填答也還是對的。這是跟使用者一起做的、範圍有限的取捨：
+    #: 前面 N-2 塊（一般填答的大部分）保護照常運作，1.1.0 修好的「拖曳中途
+    #: 中斷」也對每一塊都還有效；只有最後兩塊不再檢查「棋盤是不是被換掉了」。
+    LAST_UNGUARDED_RECTS = 2
+
     def build_plan(self, data: dict) -> PlayPlan:
         rects = data["rects"]
         actions, description = [], []
-        for r0, c0, height, width in rects:
+        for i, (r0, c0, height, width) in enumerate(rects):
             start = self.mapper.cell_center(r0, c0)
             end = self.mapper.cell_center(r0 + height - 1, c0 + width - 1)
-            actions.append((start, end, f"({r0+1},{c0+1}) {height}x{width}"))
+            ask_guard = i < len(rects) - self.LAST_UNGUARDED_RECTS
+            actions.append((start, end, f"({r0+1},{c0+1}) {height}x{width}", ask_guard))
             description.append(f"  ({r0+1},{c0+1}) -> ({r0+height},{c0+width}) = {height}x{width}")
 
         def run(driver: InputDriver):
-            for start, end, label in actions:
-                driver.drag_path([start, end], label=label)
+            for start, end, label, ask_guard in actions:
+                driver.drag_path([start, end], label=label, ask_guard=ask_guard)
 
         return PlayPlan(description, run)
 

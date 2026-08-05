@@ -123,7 +123,7 @@ work, lose settings, or explain themselves badly.
 
 | # | Defect | What you would see |
 |---|---|---|
-| R1 | **`locate_board` cannot find a Zip board once the path is drawn.** Measured on a 7x7, 808px board: pristine locates, a line through ≥6 of 49 cells does not. Connectivity is the cause, not ink — a dot in every path cell still locates | Zip fills correctly (the drag is no longer interrupted, see 1.1.0), then the guard reports "board changed" at the end and the post-fill check never runs. Confirm against one real mid-drag capture before rewriting the locator; the trail in the repro was simulated |
+| R1 | **`locate_board` cannot find a Zip board once the path is drawn.** Measured on a 7x7, 808px board: pristine locates, a line through ≥6 of 49 cells does not. Connectivity is the cause, not ink — a dot in every path cell still locates. **2026-08-04 update:** confirmed this does *not* reach the mid-plan guard in real play — `ZipPlayer` issues the entire path as ONE `drag_path` call, which asks the guard exactly once, *before* any drawing starts. The stale part of this entry is the post-fill `verify()`/retry path, which does call `locate_board` on the drawn-in board and would still hit this. Confirm against one real mid-drag capture before rewriting the locator; the trail in the repro was simulated | Zip fills correctly (the mid-drag interruption bug is fixed, see 1.1.0, and does not apply here anyway per the update above); the *post-fill* verify/retry check may misfire. Not confirmed against a real capture yet |
 | R2 | **`write_image()` raises where it documents returning `False`** | GUI Save appears to do nothing; CLI `--out` aborts a `--go` run *after* solving but *before* any click |
 | R3 | **One unparseable region field silently substitutes the default region** — and then permanently overwrites the calibrated one on save | Your calibrated capture region is gone and nothing said so |
 | R4 | **Stop pressed during the capture window is discarded** | You press Stop, the fill starts anyway |
@@ -133,6 +133,33 @@ work, lose settings, or explain themselves badly.
 | R8 | **`--region` with a zero or negative dimension escapes as a raw `mss.ScreenShotError`** | A traceback instead of "width and height must be positive" |
 | R9 | **pyautogui's fail-safe surfaces as a raw traceback and the word "Error"** | The documented escape hatch — slam the mouse into a corner — looks like a crash |
 | R10 | **`argparse` output is written before stdout is reconfigured** | `PuzzleSolverCLI.exe --help` crashes on a non-UTF-8 console. Any other bad flag is fine — it prints the usage block and exits 2 |
+
+### Found in real use after 1.1.0, not by the audit
+
+A user's own screen recording of a real Patches fill, played back through the
+actual detection code frame by frame, surfaced a defect none of the 21 audit
+findings above had covered: the fill was stopping early, not because the
+board had changed, but because the guard's own re-check could not survive the
+puzzle's own drawn answer. Fixed in 1.2.0, with a documented residual gap
+rather than a full fix — see the [1.2.0 changelog entry](../CHANGELOG.md) for
+the measured evidence.
+
+- **Patches fills stopped early: `detect_grid_size` cannot survive its own
+  puzzle's drawn fill.** A drawn patch's pastel colour reads as "mostly dark"
+  in grayscale over a wide span, breaking the assumption that only thin grid
+  lines are dark. Reproduced directly on a real mid-drag capture.
+  *Fixed* with a masking fallback in `board_watch.locate_board` (pixels above
+  HSV saturation 50 replaced with white before a second attempt) — recovers
+  roughly the first two-thirds of a fill.
+- **The masking fix does not reach the last stretch of a fill.** Past roughly
+  two-thirds filled, a patch's own internal grid line can share masking's
+  saturation threshold with its surrounding fill. A more aggressive fix
+  (verify only the outer border, skip re-deriving grid size) was tried,
+  measured, and reverted the same day: it also let random noise and a
+  different puzzle at the same size read as "still our board". *Mitigated*,
+  not fixed: `PatchesPlayer` now runs its last two rectangles with the
+  mid-plan check off — a small, bounded, and documented reopening of the risk
+  the guard exists to close, not a silent one.
 
 ---
 

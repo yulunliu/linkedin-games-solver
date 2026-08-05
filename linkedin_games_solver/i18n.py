@@ -78,6 +78,10 @@ _TEXTS: dict[str, dict[str, str]] = {
         "zh": "  已停止操作，不再控制滑鼠。",
     },
     "log_complete_stop": {"en": "  Complete, stopping.", "zh": "  已完成，停止操作。"},
+    "log_guard_frame_saved": {
+        "en": "  Saved the frame that triggered the stop",
+        "zh": "  已存下觸發停止的那一張畫面",
+    },
     "log_retry": {"en": "  Re-clicking", "zh": "  補點"},
     "log_no_improve": {
         "en": "  No improvement; stopping to avoid undoing correct cells.",

@@ -538,6 +538,27 @@ class SolverApp:
             if getattr(self.driver, "stopped_by_guard", False):
                 reason = getattr(self.watch, "reason", "") or translator("log_board_changed")
                 self._ui(self._log, f"  {reason}")
+                # Save the exact frame the guard rejected. Without this, a real
+                # abort and a false-positive one look identical in the log -
+                # both just say "board changed". The saved frame lets it be
+                # checked afterwards instead of guessed at.
+                # 存下守衛判定失敗的那張畫面。少了這個，真正的中止和誤判在
+                # 記錄裡看起來完全一樣——都只寫「盤面已改變」。留住那張畫面，
+                # 事後才能檢查而不是用猜的。
+                frame = getattr(self.watch, "last_image", None)
+                if frame is not None:
+                    # A diagnostic save must never break the abort-handling path
+                    # itself, so failures here are swallowed - see write_image's
+                    # own contract note about raising rather than returning False.
+                    # 診斷用的存檔絕不能弄壞中止流程本身，所以這裡失敗就吞掉——
+                    # 原因見 write_image 自己文件裡「會拋例外而不是回傳 False」那段。
+                    try:
+                        path = (settings_store.captures_dir()
+                                 / f"boardwatch_stop_{int(time.time() * 1000)}.png")
+                        if write_image(str(path), frame):
+                            self._ui(self._log, f"  {translator('log_guard_frame_saved')}: {path}")
+                    except Exception:
+                        pass
             self._ui(self._finish, translator("status_stopped"))
         except Exception:
             self._ui(self._log, traceback.format_exc())

@@ -3,6 +3,92 @@
 Notable changes. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 重要變更紀錄。格式大致依照 Keep a Changelog。
 
+## [1.2.0] — 2026-08-04
+
+**Upgrade from 1.1.0.** A user's own screen recordings, played back frame by
+frame through the actual detection code, showed the mid-plan board guard
+added in 1.1.0 stopping Patches fills that were still correct - the guard
+built to catch a real bug was itself producing a different kind of false
+stop. Every claim below was checked by feeding real captures (from those
+recordings, and from the guard's own new diagnostic dump) straight into the
+functions that make the decision, not by reasoning about what should happen.
+**建議從 1.1.0 升級。** 使用者自己錄的螢幕畫面，逐格切開直接餵給真正的偵測
+程式碼後，顯示 1.1.0 新增的填答中途盤面保護，會讓其實還沒出錯的拼塊填答
+中止——這個為了抓真的 bug 而做的保護，自己也會產生另一種誤判。以下每一項
+都是把真實擷取（來自那些錄影，以及保護自己新增的診斷存檔）直接丟進做判斷
+的函式驗證過的，不是用推論的。
+
+### Fixed — the mid-plan board guard 填答中途的盤面保護
+
+- **Patches fills stopped early because the guard's own structural check
+  cannot survive the puzzle's own drawn answer.** `detect_grid_size` reads
+  grid lines as thin dark columns/rows against a light background; a drawn
+  patch's pastel fill reads as "mostly dark" over a wide span instead,
+  breaking that assumption from the moment the first patch is drawn.
+  Reproduced directly: `build_grid` raised `grid size not detected` on a real
+  mid-drag capture extracted from a user's recording. Added a masking
+  fallback in `board_watch.locate_board` - pixels above HSV saturation 50 (our
+  own fills measure 76-94 over a wide area; the pristine background is under
+  3 for 90% of pixels) are replaced with white before a second locate attempt.
+  Recovers detection from roughly 1/6 through 2/3 of a typical fill, verified
+  against two real fixtures pulled from that recording.
+  **拼塊填答會提早停手，因為保護自己的結構性檢查撐不過謎題自己畫出來的答案。**
+  `detect_grid_size`是把格線讀成淺色背景上細細的深色欄/列；貼塊畫上去的
+  粉彩填色，卻會在一大片範圍內被讀成「大部分是暗的」，從畫上第一塊貼塊
+  開始就打破這個假設。已直接重現：對一張從使用者錄影切出來的真實拖曳中
+  截圖，`build_grid` 拋出「無法自動偵測棋盤格數」。在 `board_watch.locate_board`
+  加了一道遮色備援——HSV 飽和度超過 50 的像素（我們自己的填色量到
+  76~94，涵蓋很大一片；乾淨背景 90% 的像素都在 3 以下）先換成白色再試一次。
+  能救回大約從填答 1/6 到 2/3 這段範圍的誤判，用那段錄影切出的兩張真實
+  測試圖驗證過。
+
+- **The masking fix does not reach the very end of a Patches fill, and that
+  gap is now a deliberate, bounded trade instead of an unexplained failure.**
+  Past roughly 2/3 filled, a drawn patch's own internal grid line can share
+  masking's saturation threshold with its surrounding fill, so the fix cannot
+  tell them apart. Rather than guess at a cleverer detector - one earlier
+  attempt this same day (verify only the outer border, skip re-deriving grid
+  size) was tried, measured, and reverted, because it also made random noise
+  and a different puzzle at the same size read as "still our board", which is
+  worse than the bug it fixed - `PatchesPlayer` now runs its LAST TWO
+  rectangles with the mid-plan check turned off. Confirmed on a real capture:
+  once two drawn patches touched the board's own edges, even the cheaper
+  outer-border check (`find_board_bbox`) picked a patch's own border instead
+  of the board's.
+  **這個遮色修正救不到拼塊填答的最後一段，這個缺口現在是刻意、範圍有限的
+  取捨，不再是沒解釋的失敗。** 填到大約三分之二之後，貼塊自己畫出來的內部
+  格線，飽和度可能跟周圍填色太接近，遮色沒辦法把兩者分開。與其硬猜一個
+  更聰明的偵測法——同一天真的試過一種（只驗外框、不重新推算格數），
+  量測後發現它會讓純雜訊、換成同尺寸的另一款謎題都被判定成「還是我們的
+  棋盤」，比它想修的 bug 更糟，已經復原——現在改成讓 `PatchesPlayer` 對
+  **最後兩塊矩形**關閉中途盤面檢查。已用真實擷取確認：兩塊貼塊同時碰到
+  棋盤自己的邊緣時，連比較便宜的外框檢查（`find_board_bbox`）都會挑到
+  某一塊貼塊自己的邊框，不是棋盤的。
+
+### Added 新增
+
+- **The guard now saves the exact frame that triggered a stop**, to
+  `img/boardwatch_stop_<timestamp>.png`, logged with its path. Before this,
+  a real board replacement and a false structural failure produced the
+  identical log line - there was no way to tell them apart after the fact.
+  This is what made the fixes above possible to verify against a real
+  production capture rather than a reconstructed one.
+  **保護現在會存下觸發中止的那一張畫面**，存到
+  `img/boardwatch_stop_<時間戳>.png`，記錄欄印出路徑。在這之前，真正的
+  盤面被換掉，跟結構性檢查誤判，記錄裡印出的是完全一樣的一行字——事後
+  沒有辦法分辨。上面這兩項修正能對著真正在跑的 exe 產生的擷取驗證，
+  而不是重建出來的畫面，靠的就是這個。
+
+### Known limitation, unchanged from before 已知限制，沿用之前的說明
+
+Filling the last two Patches rectangles while the board has genuinely been
+replaced (window covered, tab switched) would go unnoticed for those two
+drags only - a small, bounded reopening of the exact risk 1.1.0's guard was
+built to close, accepted as a deliberate trade rather than left undocumented.
+拼塊填最後兩塊矩形時，如果棋盤真的被換掉（視窗被蓋住、切走分頁），
+只有這兩筆拖曳不會被發現——這是 1.1.0 那個保護原本要防的風險，
+被重新打開了一小段、範圍有限，是刻意接受的取捨，不是沒說明的缺口。
+
 ## [1.1.0] — 2026-08-03
 
 **Upgrade from 1.0.0.** Two of the five puzzles could not be solved on a

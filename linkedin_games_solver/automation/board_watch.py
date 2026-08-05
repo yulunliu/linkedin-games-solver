@@ -77,6 +77,58 @@ from .capture import capture_region
 TARGET_BOARD_PIXELS = 794
 
 
+#: Saturation (HSV) above which a pixel is treated as OUR OWN drawn mark
+#: rather than board structure, and is masked to white before a second
+#: locate attempt.
+#: 高於這個飽和度（HSV）的像素視為「我們自己畫上去的東西」而不是棋盤結構，
+#: 第二次定位嘗試前會先把它遮成白色。
+#:
+#: MEASURED on a real mid-drag Patches capture (extracted from a screen
+#: recording, board_watch.py's own locate_board on the raw crop, 2026-08-04):
+#: a drawn patch's fill is S 76-94 over a broad area (p90-p96 of the whole
+#: crop); the same board's UNFILLED background is S <3 for 90% of pixels,
+#: with the only high-S outliers being the small pre-printed number badges
+#: (S up to 213, but confined to tiny circles, not lines). The gap between
+#: "broad drawn fill" (76+) and "background, plus small label dots" (<3,
+#: with rare isolated spikes) is wide enough that masking >50 removes the
+#: fill without touching grid lines, which are gray/black and low-S by
+#: construction.
+#: 對一次真實的、拖曳到一半的 Patches 擷取實測（從螢幕錄影切出來，
+#: 用 board_watch.py 自己的 locate_board 對原始裁切測，2026-08-04）：
+#: 已畫的貼塊填色在一大片範圍內飽和度是 76~94（整張裁切的 p90~p96）；
+#: 同一張棋盤「還沒畫」的背景 90% 像素飽和度 <3，唯一的高飽和度離群值是
+#: 印在格子上的小數字標籤圓圈（最高到 213，但只佔一小塊圓形，不是線）。
+#: 「大片填色」（76 以上）跟「背景加上零星小標籤」（<3，偶爾有孤立尖峰）
+#: 之間的差距很大，遮住 >50 足以去掉填色，又不會動到格線本身——
+#: 格線是灰色或黑色，本來就是低飽和度。
+_OWN_MARK_SATURATION = 50
+
+
+def _mask_own_marks(crop: np.ndarray) -> np.ndarray:
+    """Replace our own high-saturation drawn marks with white.
+    把我們自己畫的高飽和度標記換成白色。
+
+    WHY this exists 為什麼需要這個: detect_grid_size works on grayscale
+    brightness, expecting only THIN grid lines to read as dark. A drawn
+    Patches rectangle's pastel fill is not black, but it is dark enough in
+    grayscale to make a whole column or row read as "mostly dark" instead of
+    "mostly light with one thin dark line" - which breaks the sparse-line
+    assumption for every threshold the sweep tries, not just one. Confirmed by
+    direct reproduction: build_grid raised "grid size not detected" on a real
+    mid-drag Patches capture where a drawn rectangle touched two board edges.
+    為什麼需要這個：detect_grid_size 是靠灰階亮度工作的，預期只有「細細的格線」
+    會被讀成暗色。Patches 畫上去的粉彩填色不是黑的，但轉成灰階已經暗到讓
+    整欄或整列被讀成「大部分是暗的」而不是「大部分是亮的、只有一條細暗線」——
+    這會讓掃描的每一個門檻都失效，不是只有某一個。已直接重現確認：對一張
+    真實的、有矩形貼塊碰到兩側棋盤邊的拖曳中截圖，build_grid 拋出
+    「無法自動偵測棋盤格數」。
+    """
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    masked = crop.copy()
+    masked[hsv[:, :, 1] > _OWN_MARK_SATURATION] = (255, 255, 255)
+    return masked
+
+
 def locate_board(crop: np.ndarray, n: int):
     """Whichever locator this board actually needs. Returns a grid or None.
     這個棋盤真正需要的定位器。回傳 grid 或 None。
@@ -136,6 +188,22 @@ def locate_board(crop: np.ndarray, n: int):
     for locator in (build_grid, build_grid_from_lines):
         try:
             grid = locator(crop)
+        except Exception:
+            continue
+        if grid is not None and _size_is_ours(grid.n, n):
+            return grid
+
+    # Second pass, only if the first failed: mask our own drawn marks and try
+    # again. Tried SECOND, never first, so every board that already located
+    # fine on the raw crop keeps doing exactly that - this only ever adds
+    # coverage, never changes an existing answer.
+    # 第二輪，只有第一輪失敗才會試：把我們自己畫的東西遮掉再試一次。
+    # 一定放在「第二」而不是第一，這樣任何在原始裁切上就定位得到的棋盤
+    # 完全不受影響——這一輪只會增加涵蓋範圍，不會改動任何既有的答案。
+    masked = _mask_own_marks(crop)
+    for locator in (build_grid, build_grid_from_lines):
+        try:
+            grid = locator(masked)
         except Exception:
             continue
         if grid is not None and _size_is_ours(grid.n, n):
@@ -212,6 +280,14 @@ class BoardWatch:
     armed: bool = False
     #: Why we stopped, for the log. 停止的原因，寫進記錄。
     reason: str = ""
+    #: The frame that failed to locate, so a real abort can be inspected after
+    #: the fact instead of guessed at. None unless still_there() just returned
+    #: False because locate() failed - never set for a screen-capture failure,
+    #: since there is no frame to save in that case.
+    #: 判定失敗的那一張畫面，讓真正發生的中止事後能被檢視，而不是用猜的。
+    #: 只有在 still_there() 因為 locate() 失敗才剛回傳 False 時才會設定 ——
+    #: 螢幕擷取本身失敗的情況不會設定，因為那種情況下根本沒有畫面可存。
+    last_image: object = None
     _gone: bool = False
     _checks: int = field(default=0)
     _last_at: float = field(default=0.0)
@@ -276,6 +352,7 @@ class BoardWatch:
         image = getattr(shot, "image", shot)
         if self.locate(image, self.n) is None:
             self._gone = True
+            self.last_image = image
             self.reason = ("board is no longer where it was - stopping so the "
                            "remaining clicks do not land on something else / "
                            "棋盤已不在原處，停止動作以免剩下的點擊落在別的東西上")

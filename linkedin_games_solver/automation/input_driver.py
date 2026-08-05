@@ -334,7 +334,7 @@ class InputDriver:
                 dense.append((round(x0 + (x1 - x0) * i / steps), round(y0 + (y1 - y0) * i / steps)))
         return dense
 
-    def drag_path(self, points: list[tuple[int, int]], label: str = ""):
+    def drag_path(self, points: list[tuple[int, int]], label: str = "", ask_guard: bool = True):
         """
         Drag with the left button held along a sequence of points.
         Used by Zip (the path) and Patches (each rectangle).
@@ -345,8 +345,27 @@ class InputDriver:
         rejects the result as out of order.
         路徑會先做插值。少了這一步，網頁只會收到起點與終點，
         中間經過的格子完全不會被記錄，Zip 就會判定順序錯誤。
+
+        ask_guard controls only the ONE check at entry, below - never the
+        interpolation loop, which already always skips it (see the comment
+        inside that loop). A caller sets this False for a specific drag it has
+        decided is safe to run blind - e.g. PatchesPlayer does this for the
+        last couple of rectangles, because a fully-tiled board defeats the
+        guard's own structural check (2026-08-04: confirmed on a real capture -
+        find_board_bbox picked a DRAWN RECTANGLE's own border instead of the
+        board's once two rectangles touched the board's edges). That is a
+        deliberate, bounded trade of a little protection at the very end for
+        not aborting a fill the board never actually lost.
+        ask_guard 只控制下面「進入時」這一次檢查，永遠不影響插值迴圈本身
+        （迴圈裡已經固定跳過，見迴圈內的註解）。呼叫者會在自己判斷「這一筆
+        拖曳可以安全地不檢查」時把這裡設成 False——例如 PatchesPlayer 對最後
+        幾個矩形就是這樣做，因為填滿的棋盤本身就會讓保護的結構性檢查失效
+        （2026-08-04：用真實擷取確認過——兩個矩形碰到棋盤邊緣之後，
+        find_board_bbox 找到的是某個矩形自己的邊框，不是棋盤的）。
+        這是刻意、範圍有限的取捨：犧牲填答最後一點點保護，換取不要對一個
+        其實根本沒有不見的棋盤誤判中止。
         """
-        self._check_abort()
+        self._check_abort(ask_guard=ask_guard)
         if len(points) < 2:
             return
         suffix = f"  ({label})" if label else ""

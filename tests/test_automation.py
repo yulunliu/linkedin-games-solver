@@ -115,6 +115,45 @@ def test_tango_click_counts_follow_current_state():
     print("  tango click counts OK")
 
 
+# --------------------------------------------------------------- Patches
+def test_patches_asks_the_guard_for_all_but_the_last_two_rects():
+    """Only the FINAL rectangles skip the mid-plan board guard.
+    只有最後幾塊矩形不做中途盤面保護檢查。
+
+    2026-08-04: a fully-tiled Patches board defeats the guard's structural
+    re-check by design (see PatchesPlayer.LAST_UNGUARDED_RECTS for the measured
+    evidence), so the last two rectangles run with ask_guard=False. This test
+    proves the boundary is exactly at len(rects) - 2, not "all of them" and not
+    "none of them" - a plan with N rectangles must still ask the guard for the
+    first N-2.
+    2026-08-04：填滿的拼塊棋盤天生就會讓保護的結構性重新檢查失效
+    （量測依據見 PatchesPlayer.LAST_UNGUARDED_RECTS），所以最後兩塊矩形用
+    ask_guard=False 執行。這個測試證明界線精確落在 len(rects) - 2，
+    不是「全部都不檢查」也不是「全部都檢查」——N 塊矩形的計畫，
+    前 N-2 塊仍然必須詢問保護。
+    """
+    from linkedin_games_solver.automation.players import PatchesPlayer
+
+    mapper = _mapper(6)
+    rects = [(0, 0, 2, 2), (0, 2, 2, 2), (0, 4, 2, 2),
+             (2, 0, 2, 2), (2, 2, 2, 2), (2, 4, 2, 2)]
+    plan = build_plan("patches", mapper, {"rects": rects})
+
+    guard_calls = []
+    driver = InputDriver(dry_run=True)
+    driver.guard = lambda: (guard_calls.append(1), True)[1]
+    plan.run(driver)
+
+    expected = len(rects) - PatchesPlayer.LAST_UNGUARDED_RECTS
+    assert len(guard_calls) == expected, (
+        f"expected the guard to be asked {expected} times (all but the last "
+        f"{PatchesPlayer.LAST_UNGUARDED_RECTS}), got {len(guard_calls)} / "
+        f"預期保護被問 {expected} 次（除了最後 {PatchesPlayer.LAST_UNGUARDED_RECTS} 塊），"
+        f"實際 {len(guard_calls)} 次"
+    )
+    print("  Patches asks the guard for all but the last two rects OK")
+
+
 # --------------------------------------------------------------- dragging
 def test_drag_is_interpolated():
     """
@@ -297,6 +336,7 @@ if __name__ == "__main__":
     test_queens_complete_board_does_nothing()
     test_queens_clears_misplaced_crowns()
     test_tango_click_counts_follow_current_state()
+    test_patches_asks_the_guard_for_all_but_the_last_two_rects()
     test_drag_is_interpolated()
     test_dry_run_does_not_act()
     test_stop_aborts()

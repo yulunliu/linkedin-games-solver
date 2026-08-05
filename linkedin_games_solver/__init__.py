@@ -11,4 +11,4 @@ Layers 分層:
   ui          desktop GUI and command line         桌面介面與命令列
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
