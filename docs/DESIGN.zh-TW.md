@@ -269,7 +269,7 @@ DRAG_MAX_STEP_PX = 12
 還有一個相關的常數，用在同一格要點兩次的時候：
 
 ```python
-SAME_SPOT_CLICK_GAP = 0.55    # 否則網頁會讀成 double-click
+SAME_SPOT_CLICK_GAP = 0.15    # 同一格連點間的停頓；理由見常數自己的註解
 ```
 
 ### 接續填一半的盤面

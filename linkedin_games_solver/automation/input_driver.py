@@ -140,16 +140,55 @@ def focus_window_at(x: int, y: int) -> str | None:
 #: Minimum gap (seconds) between two clicks on the SAME spot.
 #: 同一個位置連點時，兩次點擊之間至少要隔這麼久（秒）。
 #:
-#: Measured behaviour: clicking one spot rapidly makes the OS classify the
-#: clicks as a double/triple-click gesture (the page receives one gesture, not
-#: two separate clicks). A game that cycles state per click - Tango's
-#: empty -> sun -> moon - then advances only one step instead of two.
-#: Windows' default double-click window is 500ms, so this sits just above it.
-#: 實測行為：在同一點快速連點，作業系統會把它們歸類成「雙擊/三擊」手勢
-#: （網頁收到的是一個手勢，不是兩次獨立點擊）。遊戲若是每點一下就循環一次狀態 ——
-#: 例如 Tango 的 空白 -> 太陽 -> 月亮 —— 就只會前進一步而不是兩步。
-#: Windows 預設的雙擊判定時間是 500ms，所以這裡取略高於它的值。
-SAME_SPOT_CLICK_GAP = 0.55
+#: HISTORY 沿革: this was 0.55 - just above Windows' double-click window
+#: (GetDoubleClickTime() measured 500ms on this machine) - because rapid
+#: same-spot clicks were observed being swallowed into one double-click
+#: gesture, advancing a state-cycling cell (Tango's empty -> sun -> moon)
+#: one step instead of two. BUT that observation was made against a Tkinter
+#: test window, never against the real page - the project's own docs list
+#: verifying it on the real site as an open item that was never done.
+#: 沿革：原本是 0.55——略高於 Windows 的雙擊判定時間（這台機器用
+#: GetDoubleClickTime() 量到 500ms）——因為觀察到同一點快速連點會被吞成
+#: 一個雙擊手勢，讓循環狀態的格子（Tango 的 空白->太陽->月亮）只前進一步
+#: 而不是兩步。但那個觀察是對著「Tkinter 測試視窗」做的，從來沒有對真實
+#: 網頁驗證過——專案自己的文件一直把「在真實網站上驗證這個值」列為
+#: 未完成的待辦。
+#:
+#: WHY 0.15 IS WORTH TRYING 為什麼值得改成 0.15:
+#:   1. Browsers fire BOTH `click` events even inside the OS double-click
+#:      window - `dblclick` is delivered in addition to, not instead of, the
+#:      two clicks - so a web game listening to click/pointer events receives
+#:      two events regardless. The Tkinter behaviour does not transfer.
+#:   2. The failure mode is already covered: if a pair ever IS swallowed,
+#:      the cell reads one state short, the post-fill verify pass sees it,
+#:      and the retry plan recomputes clicks from the FRESH state - a
+#:      distance of 1, a single click, no same-spot pair involved - so the
+#:      retry converges even if every rapid pair failed.
+#:   3. Measured cost of 0.55 at the default speed: one moon cell took
+#:      ~0.99s (0.08 move + 0.24 settle + 0.55 gap + 0.12 interval), which
+#:      is exactly the "feels like a second per moon" the user reported.
+#:      At 0.15 the same cell is ~0.59s; a Tango with 12 moons saves ~4.8s.
+#:   1. 瀏覽器就算在作業系統的雙擊判定時間內，也會把「兩次」click 事件都
+#:      送出——dblclick 是「額外」多送一個，不是取代那兩次 click——所以
+#:      監聽 click/pointer 事件的網頁遊戲無論如何都收得到兩次。Tkinter 的
+#:      行為不能直接套用到網頁上。
+#:   2. 失敗情況本來就有安全網：萬一連點真的被吞掉，該格會少一個狀態，
+#:      填完後的驗證會看到，補點計畫會用「最新讀到的狀態」重新計算點擊
+#:      次數——距離是 1，單獨一次點擊，不再有同格連點——所以就算每一組
+#:      快速連點都失敗，補點也會收斂。
+#:   3. 0.55 在預設速度下的實測成本：一個月亮格約 0.99 秒（移動 0.08 +
+#:      緩衝 0.24 + 間隔 0.55 + 點後間隔 0.12），正是使用者回報的
+#:      「每個月亮感覺停頓一秒」。改 0.15 後同一格約 0.59 秒；一盤有
+#:      12 個月亮的 Tango 可省約 4.8 秒。
+#:
+#: TO BE VALIDATED IN REAL PLAY 待真實遊玩驗證: if cells start coming out
+#: one state short (sun where a moon belongs, X where a crown belongs) and
+#: the verify rounds in the session log show repeated single-click repairs,
+#: THIS value is the cause - raise it back toward 0.55 and re-measure.
+#: 待真實遊玩驗證：如果開始出現格子少一個狀態（該是月亮的變太陽、該是
+#: 皇冠的變 X），而且執行記錄檔裡的驗證輪次顯示反覆用單擊補救，原因就是
+#: 這個值——把它調回 0.55 方向並重新量測。
+SAME_SPOT_CLICK_GAP = 0.15
 
 
 #: Maximum pixels the pointer may jump in one step while dragging.

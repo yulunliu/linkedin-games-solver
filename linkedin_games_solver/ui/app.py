@@ -40,6 +40,7 @@ from ..automation import (
     focus_window_at,
     from_file_image,
     verify,
+    wait_for_board,
     wait_for_mouse_release,
 )
 from ..automation import board_watch
@@ -60,10 +61,46 @@ from . import settings as settings_store
 MAX_PREVIEW = 150
 MOUSE_RELEASE_TIMEOUT = 2.0
 
-#: Speed label -> delay multiplier (larger = slower).
-#: 速度選項 -> 延遲倍率（數字越大越慢）。
-SPEED_FACTORS = {"fast": 1.0, "normal": 2.0, "slow": 3.5, "slowest": 5.0}
-SPEED_KEYS = ["fast", "normal", "slow", "slowest"]
+#: Speed label -> InputDriver constructor arguments.
+#: 速度選項 -> InputDriver 的建構參數。
+#:
+#: The four original tiers are a plain delay multiplier. The two new tiers
+#: cannot be expressed as a multiplier: they override the per-delay BASE
+#: values (and same_spot_gap does not scale with the multiplier at all), so
+#: each profile is a full argument dict instead of one number.
+#: 原本的四檔只是單一延遲倍率。新的兩檔沒辦法用倍率表達：它們直接覆寫
+#: 各延遲的「基準值」（而且 same_spot_gap 本來就不隨倍率縮放），
+#: 所以每一檔改成一整組建構參數，而不是一個數字。
+#:
+#: MEASURED 量測依據 (all five real fixtures, stubbed mouse, real sleeps -
+#: five-game fill total 五題填答合計):
+#:     normal 2.0                                37.1s
+#:     fast   1.0                                21.3s
+#:     faster  (fast/fastest averages 兩者平均)  14.8s  <- see below 見下
+#:     fastest (candidate floor 候選下限)         8.4s
+#: "fastest" is the UNVALIDATED floor: settle 0.05 / click gap 0.02 /
+#: same-spot 0.05 / drag step 0.004. Risks if the page cannot keep up:
+#: dropped clicks (covered by verify-and-retry) and skipped Zip path cells
+#: (NOT covered - a drag cannot be retried mid-stroke). "faster" is the
+#: midpoint of fast and fastest, value by value, as a safer step stone.
+#: 「超急快」是尚未驗證的下限：緩衝 0.05／點後 0.02／同格連點 0.05／
+#: 拖曳步 0.004。網頁跟不上時的風險：漏點（有驗證補點兜底）與 Zip 路徑
+#: 跳格（沒有兜底——拖曳中途無法補救）。「極快」是快與超急快逐項取
+#: 平均，作為比較安全的中繼檔。
+SPEED_PROFILES = {
+    "fastest": dict(slowdown=1.0, settle_after_move=0.05, click_interval=0.02,
+                    same_spot_gap=0.05, drag_step_delay=0.004),
+    "faster": dict(slowdown=1.0, settle_after_move=0.085, click_interval=0.04,
+                   same_spot_gap=0.10, drag_step_delay=0.006),
+    "fast": dict(slowdown=1.0),
+    "normal": dict(slowdown=2.0),
+    "slow": dict(slowdown=3.5),
+    "slowest": dict(slowdown=5.0),
+}
+SPEED_KEYS = ["fastest", "faster", "fast", "normal", "slow", "slowest"]
+#: Combo fallback when the saved speed is unknown - "normal", same as before.
+#: 存檔的速度值無法辨識時的預設選項——跟以前一樣是「標準」。
+DEFAULT_SPEED_INDEX = SPEED_KEYS.index("normal")
 
 
 class SolverApp:
@@ -79,6 +116,7 @@ class SolverApp:
         self.driver: InputDriver | None = None
         self._stop_before_run = False
         self._worker_thread: threading.Thread | None = None
+        self._minimized_for_wait = False
         self.image_path: Path | None = None
         self.tk_photo = None
         self.busy = False
@@ -251,7 +289,8 @@ class SolverApp:
         self.type_combo.current(0)
         self.speed_combo["values"] = [translator(f"speed_{k}") for k in SPEED_KEYS]
         speed = self.settings.get("speed", "normal")
-        self.speed_combo.current(SPEED_KEYS.index(speed) if speed in SPEED_KEYS else 1)
+        self.speed_combo.current(SPEED_KEYS.index(speed) if speed in SPEED_KEYS
+                                 else DEFAULT_SPEED_INDEX)
 
         self._retranslate()
         self._on_mode_changed()
@@ -485,37 +524,79 @@ class SolverApp:
         self.start_btn.config(state="disabled")
         self.solve_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.status_label.config(text=translator("status_capturing"))
         self.root.update_idletasks()
 
-        try:
-            shot = self._capture()
-        except Exception:
-            self._finish(translator("dlg_capture_failed"))
-            messagebox.showerror(translator("dlg_capture_failed"), traceback.format_exc().splitlines()[-1])
-            return
+        # WAIT-FIRST MODE 先等題目模式: for the fill button in screen mode, the
+        # button is now pressed BEFORE the puzzle page is opened - the worker
+        # thread polls the screen and fires the instant a board appears, so
+        # none of the user's page-switching reaction time is spent after the
+        # puzzle has loaded. Solve-only and image mode keep the old immediate
+        # capture: neither drives the mouse, so there is no race to win.
+        # 先等題目模式：螢幕模式的「自動解題」按鈕，現在改成在「開啟題目之前」
+        # 就按——工作執行緒會輪詢螢幕，棋盤一出現就立刻開始動作，題目載入
+        # 之後不再花費任何使用者切換頁面的反應時間。「只求解」與圖片模式
+        # 維持原本的立即擷取：它們都不動滑鼠，沒有要搶的時間。
+        wait_first = fill_answers and not image_mode
 
-        self.shot = shot
-        self._clear_stale_result()
-        self._show_image(shot.image)
+        capture_fn = None
+        if wait_first:
+            # Snapshot the region ON THE TK THREAD, before the worker starts -
+            # the region comes from tk.StringVar fields, and Tk objects must
+            # not be read from another thread.
+            # 在工作執行緒啟動之前、於 Tk 執行緒上先把擷取範圍拍板——範圍
+            # 來自 tk.StringVar 欄位，Tk 的物件不能從別的執行緒讀取。
+            if self.settings.get("fullscreen"):
+                capture_fn = capture_screen
+            else:
+                region = self._region()
+                capture_fn = lambda _r=region: capture_region(*_r)  # noqa: E731
+            shot = None
+            self.status_label.config(text=translator("status_waiting_board"))
+            self._log(translator("log_waiting_hint"))
+            # iconify, NOT withdraw: a withdrawn window disappears from the
+            # taskbar too, and during the waiting phase the Stop button is the
+            # ONLY way to abort (no mouse actions happen, so pyautogui's
+            # corner fail-safe is never consulted). Minimised keeps a taskbar
+            # entry the user can restore to press Stop.
+            # 用 iconify 而不是 withdraw：withdraw 會連工作列都消失，而等待
+            # 期間「停止」按鈕是唯一的中止方式（這段期間不會有任何滑鼠動作，
+            # pyautogui 甩角落的緊急煞車根本不會被檢查到）。最小化會在
+            # 工作列留一格，使用者可以點開來按停止。
+            if self.hide_var.get():
+                self.root.iconify()
+                self._minimized_for_wait = True
+        else:
+            self.status_label.config(text=translator("status_capturing"))
+            self.root.update_idletasks()
+            try:
+                shot = self._capture()
+            except Exception:
+                self._finish(translator("dlg_capture_failed"))
+                messagebox.showerror(translator("dlg_capture_failed"), traceback.format_exc().splitlines()[-1])
+                return
 
-        # Stop pressed during _capture() sets _stop_before_run rather than
-        # self.driver (see _on_stop) precisely because no driver for THIS run
-        # exists until the next line - honour it here before one gets built.
-        # 在 _capture() 執行期間按下的停止，設的是 _stop_before_run 而不是
-        # self.driver（見 _on_stop）——因為這一輪的 driver 要到下一行才會
-        # 建出來。在它被建出來之前，這裡先尊重那個停止要求。
-        if self._stop_before_run:
-            self._finish(translator("status_stopped"))
-            return
+            self.shot = shot
+            self._clear_stale_result()
+            self._show_image(shot.image)
+
+            # Stop pressed during _capture() sets _stop_before_run rather than
+            # self.driver (see _on_stop) precisely because no driver for THIS run
+            # exists until the next line - honour it here before one gets built.
+            # 在 _capture() 執行期間按下的停止，設的是 _stop_before_run 而不是
+            # self.driver（見 _on_stop）——因為這一輪的 driver 要到下一行才會
+            # 建出來。在它被建出來之前，這裡先尊重那個停止要求。
+            if self._stop_before_run:
+                self._finish(translator("status_stopped"))
+                return
 
         index = self.type_combo.current()
         puzzle_key = None if index <= 0 else DISPLAY_ORDER[index - 1]
-        speed = SPEED_FACTORS[SPEED_KEYS[max(0, self.speed_combo.current())]]
-        self.driver = InputDriver(dry_run=self.dry_run_var.get(), slowdown=speed)
+        speed_key = SPEED_KEYS[max(0, self.speed_combo.current())]
+        self.driver = InputDriver(dry_run=self.dry_run_var.get(), **SPEED_PROFILES[speed_key])
         self.driver.reset()
         action_log.log("RUN", f"run start: mode={self.mode_var.get()} puzzle={puzzle_key or 'auto'} "
-                        f"fill={fill_answers} dry_run={self.dry_run_var.get()} speed={speed}")
+                        f"fill={fill_answers} dry_run={self.dry_run_var.get()} speed={speed_key} "
+                        f"wait_first={wait_first}")
 
         # Kept so the window-close handler can stop this run cleanly instead
         # of letting a daemon thread get killed mid-drag - see main()'s close
@@ -524,13 +605,34 @@ class SolverApp:
         # 而不是讓一個 daemon 執行緒在拖曳進行到一半時被砍掉——
         # 那樣會留下什麼，見 main() 的關閉處理常式。
         self._worker_thread = threading.Thread(
-            target=self._worker, args=(shot, puzzle_key, fill_answers), daemon=True)
+            target=self._worker, args=(shot, puzzle_key, fill_answers, capture_fn), daemon=True)
         self._worker_thread.start()
 
-    def _worker(self, shot, puzzle_key, fill_answers):
+    def _worker(self, shot, puzzle_key, fill_answers, capture_fn=None):
         timings: dict[str, float] = {}
         started = time.perf_counter()
         try:
+            if shot is None:
+                # Wait-first mode: poll until the puzzle shows up. A Stop
+                # pressed here comes through driver.stop_requested - the
+                # driver for THIS run already exists (built before the
+                # thread started), unlike the old immediate-capture path.
+                # 先等題目模式：輪詢到題目出現為止。這段期間按下的停止會
+                # 透過 driver.stop_requested 傳進來——這一輪的 driver 已經
+                # 存在（執行緒啟動前就建好了），跟舊的立即擷取路徑不同。
+                t0 = time.perf_counter()
+                shot = wait_for_board(
+                    capture_fn,
+                    should_continue=lambda: not self.driver.stop_requested)
+                if shot is None:
+                    self._ui(self._finish, translator("status_stopped"))
+                    return
+                timings["wait"] = time.perf_counter() - t0
+                self.shot = shot
+                self._clear_stale_result()
+                self._ui(self._show_image, shot.image)
+                self._ui(self._log, f"{translator('log_board_appeared')}: {timings['wait']:.2f}s")
+
             self._ui(self.status_label.config, {"text": translator("status_solving")})
             t0 = time.perf_counter()
             result = solve_image(
@@ -747,6 +849,16 @@ class SolverApp:
     # ------------------------------------------------------------- helpers
     def _finish(self, status: str):
         self.busy = False
+        # Restore the window minimised for a wait-first run, whatever way the
+        # run ended (done / stopped / failed) - _finish is the one place every
+        # path already goes through, so the window can never stay stuck in
+        # the taskbar.
+        # 把先等題目模式最小化的視窗還原，不管這次執行是怎麼結束的
+        # （完成／停止／失敗）——所有路徑本來就都會經過 _finish，
+        # 所以視窗絕不會卡在工作列回不來。
+        if self._minimized_for_wait:
+            self._minimized_for_wait = False
+            self.root.deiconify()
         self.start_btn.config(state="normal")
         self.solve_btn.config(state="normal")
         self.stop_btn.config(state="disabled")

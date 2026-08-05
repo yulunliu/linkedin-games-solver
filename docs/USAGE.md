@@ -42,7 +42,7 @@ Windows only.
 |---|---|
 | **Board** | The screen rectangle to capture (X / Y / W / H). **Reset** restores the default; **Test** shows what would be captured |
 | **Puzzle** | Leave on *Auto-detect* unless it guesses wrong |
-| **Speed** | Fast / Normal / Slow / Slowest. Start at Normal; if the page cannot keep up, go slower |
+| **Speed** | Fastest / Faster / Fast / Normal / Slow / Slowest. Start at Normal; if the page cannot keep up, go slower. Measured five-game fill totals: Normal 37s, Fast 21s, Faster 15s, Fastest 8s - but Faster and Fastest are experimental: dropped clicks are self-repaired by the verify pass, a Zip drag that outruns the page is not |
 | **Preview** | Tick this and it prints the plan without touching the mouse |
 | **Hide** | Minimise the app window while it plays |
 | **Verify** | After filling, re-read the board and fix any cells that did not take |
@@ -72,14 +72,25 @@ Your choice is saved and applies next time you open the app.
 
 ## Playing a puzzle on the web
 
-1. Open the puzzle in Chrome and let the page finish loading. Do not scroll the
-   board out of view.
-2. Start the app and select **Screen (auto-play)**.
-3. Optional but recommended the first time: tick **Preview** and press
-   **Solve & Fill**. It prints exactly what it would click without touching
-   anything. Check the puzzle type and board size look right, then untick.
-4. Press **Solve & Fill**.
-5. **Take your hands off the mouse.** It waits about a second, then plays.
+The order is the opposite of what you might expect: **press the button first,
+open the puzzle second**. After you press **Solve & Fill**, the program watches
+the capture region and starts solving and filling the instant a board shows
+up - none of your page-switching reaction time is wasted.
+
+1. Start the app and select **Screen (auto-play)**.
+2. Optional but recommended the first time: tick **Preview**, press
+   **Solve & Fill**, and switch to the puzzle page. It prints exactly what it
+   would click without touching anything. Check the puzzle type and board
+   size look right, then untick.
+3. Press **Solve & Fill**. The status line shows it is watching the screen.
+4. Switch to Chrome and open the puzzle page. Do not scroll the board out of
+   view.
+5. **Take your hands off the mouse.** The moment the board appears, it plays.
+
+Pressing the button with the puzzle already on screen also works - it detects
+the board in under a second and starts right away, so the old workflow still
+functions. While waiting, press **Stop** at any time to cancel (restore the
+window from the taskbar first if it was minimised).
 
 ### While it is running
 

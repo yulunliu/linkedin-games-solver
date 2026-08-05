@@ -37,6 +37,8 @@ _TEXTS: dict[str, dict[str, str]] = {
     "puzzle_type": {"en": "Puzzle", "zh": "謎題類型"},
     "auto_detect": {"en": "Auto-detect", "zh": "自動判斷"},
     "speed": {"en": "Speed", "zh": "速度"},
+    "speed_fastest": {"en": "Fastest", "zh": "超急快"},
+    "speed_faster": {"en": "Faster", "zh": "極快"},
     "speed_fast": {"en": "Fast", "zh": "快"},
     "speed_normal": {"en": "Normal", "zh": "標準"},
     "speed_slow": {"en": "Slow", "zh": "慢"},
@@ -62,8 +64,19 @@ _TEXTS: dict[str, dict[str, str]] = {
     "status_failed": {"en": "Recognition failed", "zh": "辨識失敗"},
     "status_error": {"en": "Error", "zh": "發生錯誤"},
     "status_stopping": {"en": "Stopping...", "zh": "停止中..."},
+    "status_waiting_board": {
+        "en": "Watching the screen - open the puzzle now...",
+        "zh": "偵測畫面中——現在去開啟題目...",
+    },
     # ---- Log messages 訊息 ----
     "log_file": {"en": "Session log file", "zh": "本次執行的記錄檔"},
+    "log_waiting_hint": {
+        "en": "Watching the capture region. Switch to the puzzle page - filling "
+              "starts the moment the board appears. Press Stop to cancel.",
+        "zh": "正在監看擷取範圍。請切換到題目頁面——棋盤一出現就會立刻開始"
+              "填答。按「停止」可取消。",
+    },
+    "log_board_appeared": {"en": "Puzzle appeared after", "zh": "題目出現，等待了"},
     "log_puzzle_type": {"en": "Puzzle type", "zh": "謎題類型"},
     "log_plan": {"en": "=== Fill plan ===", "zh": "=== 填答計畫 ==="},
     "log_elapsed": {"en": "Elapsed", "zh": "耗時"},

@@ -295,7 +295,7 @@ recording of it outrunning the page.
 There is a related constant for clicking the same cell twice:
 
 ```python
-SAME_SPOT_CLICK_GAP = 0.55    # or the page reads it as a double-click
+SAME_SPOT_CLICK_GAP = 0.15    # pause between same-cell clicks; see the constant's comment
 ```
 
 ### Resuming a half-filled board

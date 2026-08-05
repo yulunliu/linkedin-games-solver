@@ -241,7 +241,7 @@ The only file that touches the mouse.
 
 | Constant | Why |
 |---|---|
-| `SAME_SPOT_CLICK_GAP = 0.55` | two clicks on one cell any faster read as a double-click |
+| `SAME_SPOT_CLICK_GAP = 0.15` | pause between two clicks on one cell; the old 0.55 (above the OS double-click window) was calibrated against Tkinter, never the real page - see the constant's own comment for why 0.15 is covered by verify-and-retry |
 | `DRAG_MAX_STEP_PX = 12` | drags are interpolated so the page sees every cell crossed |
 
 Also here: `slowdown` (a global delay multiplier), `settle_after_move`,
