@@ -116,24 +116,26 @@ def test_tango_click_counts_follow_current_state():
 
 
 # --------------------------------------------------------------- Patches
-def test_patches_asks_the_guard_for_all_but_the_last_two_rects():
-    """Only the FINAL rectangles skip the mid-plan board guard.
-    只有最後幾塊矩形不做中途盤面保護檢查。
+def test_patches_asks_the_guard_for_every_rect():
+    """Every rectangle asks the guard - unconditionally, with no exceptions
+    for position in the plan.
+    每一塊矩形都會詢問保護——無條件，不因為在計畫裡的位置而有例外。
 
-    2026-08-04: a fully-tiled Patches board defeats the guard's structural
-    re-check by design (see PatchesPlayer.LAST_UNGUARDED_RECTS for the measured
-    evidence), so the last two rectangles run with ask_guard=False. This test
-    proves the boundary is exactly at len(rects) - 2, not "all of them" and not
-    "none of them" - a plan with N rectangles must still ask the guard for the
-    first N-2.
-    2026-08-04：填滿的拼塊棋盤天生就會讓保護的結構性重新檢查失效
-    （量測依據見 PatchesPlayer.LAST_UNGUARDED_RECTS），所以最後兩塊矩形用
-    ask_guard=False 執行。這個測試證明界線精確落在 len(rects) - 2，
-    不是「全部都不檢查」也不是「全部都檢查」——N 塊矩形的計畫，
-    前 N-2 塊仍然必須詢問保護。
+    2026-08-04: an earlier design had PatchesPlayer skip the guard for a
+    fixed position (the last two rectangles), to work around a fully-tiled
+    board defeating the guard's structural re-check. Replaced by
+    BoardWatch.failure_tolerance (automation/board_watch.py), which reacts to
+    OBSERVED persistent failure instead - a real capture showed the puzzle's
+    edge-touching regions are not reliably drawn last, so a position-based
+    skip could not be trusted. This test proves PatchesPlayer itself no
+    longer makes that decision at all.
+    2026-08-04：先前的設計是讓 PatchesPlayer 對固定位置（最後兩塊矩形）
+    跳過保護，用來繞開填滿的棋盤讓保護的結構性重新檢查失效這件事。
+    已經換成 BoardWatch.failure_tolerance（automation/board_watch.py），
+    改成對「觀察到的持續失敗」做反應——一張真實擷取顯示碰到邊緣的區塊
+    不一定排在最後畫，位置判斷法不可信。這個測試證明 PatchesPlayer
+    自己完全不再做那個決定。
     """
-    from linkedin_games_solver.automation.players import PatchesPlayer
-
     mapper = _mapper(6)
     rects = [(0, 0, 2, 2), (0, 2, 2, 2), (0, 4, 2, 2),
              (2, 0, 2, 2), (2, 2, 2, 2), (2, 4, 2, 2)]
@@ -144,14 +146,12 @@ def test_patches_asks_the_guard_for_all_but_the_last_two_rects():
     driver.guard = lambda: (guard_calls.append(1), True)[1]
     plan.run(driver)
 
-    expected = len(rects) - PatchesPlayer.LAST_UNGUARDED_RECTS
-    assert len(guard_calls) == expected, (
-        f"expected the guard to be asked {expected} times (all but the last "
-        f"{PatchesPlayer.LAST_UNGUARDED_RECTS}), got {len(guard_calls)} / "
-        f"預期保護被問 {expected} 次（除了最後 {PatchesPlayer.LAST_UNGUARDED_RECTS} 塊），"
-        f"實際 {len(guard_calls)} 次"
+    assert len(guard_calls) == len(rects), (
+        f"expected the guard to be asked once per rectangle ({len(rects)}), "
+        f"got {len(guard_calls)} / "
+        f"預期保護每一塊矩形都被問一次（{len(rects)} 次），實際 {len(guard_calls)} 次"
     )
-    print("  Patches asks the guard for all but the last two rects OK")
+    print("  Patches asks the guard for every rect OK")
 
 
 # --------------------------------------------------------------- dragging
@@ -197,6 +197,85 @@ def test_stop_aborts():
     except Aborted:
         pass
     print("  stop aborts OK")
+
+
+def test_stop_mid_drag_from_another_thread_still_releases_the_mouse():
+    """
+    Bug this guards: the GUI's window-close handler used to just call
+    root.destroy() - the worker thread is a daemon, so once the process
+    exits every daemon thread is killed outright, wherever it happens to be.
+    Traced with a fake pyautogui before the fix: MOUSE_DOWN 1, MOUSE_UP 0 -
+    drag_path's own `finally: mouseUp()` never got to run. This test proves
+    the mechanism the fix actually relies on: driver.stop() called from
+    another thread makes an in-flight drag release the mouse and return,
+    rather than needing the drag to finish on its own first.
+    這個測試守住的問題：GUI 的視窗關閉處理常式以前只會呼叫 root.destroy()——
+    工作執行緒是 daemon，行程一結束，不管當下在做什麼都會直接被砍掉。
+    修正前用假的 pyautogui 追蹤過：MOUSE_DOWN 1、MOUSE_UP 0——drag_path
+    自己的 `finally: mouseUp()` 從來沒機會執行。這個測試證明修正實際依賴
+    的機制：從另一個執行緒呼叫 driver.stop()，會讓一筆進行中的拖曳放開
+    滑鼠鍵並返回，不需要等那筆拖曳自己先跑完。
+    """
+    import threading
+    import time as time_module
+
+    from linkedin_games_solver.automation import Aborted
+
+    class _RecordingGui:
+        def __init__(self):
+            self.calls = []
+
+        def moveTo(self, *a, **k): self.calls.append("move")
+        def click(self, *a, **k): self.calls.append("click")
+        def mouseDown(self, *a, **k): self.calls.append("down")
+        def mouseUp(self, *a, **k): self.calls.append("up")
+        def press(self, *a, **k): self.calls.append("press")
+
+    stub = _RecordingGui()
+    saved = input_driver_module._pyautogui
+    input_driver_module._pyautogui = stub
+    try:
+        driver = InputDriver(dry_run=False)
+        # Enough points, spaced far enough apart, that the drag is still in
+        # flight when stop() is called from the main thread below - not
+        # finished before we get the chance to interrupt it.
+        # 點數夠多、間距夠遠，這樣下面主執行緒呼叫 stop() 時這筆拖曳還在
+        # 進行中——不會在我們有機會中斷它之前就先跑完了。
+        points = [(0, 0), (10_000, 0)]  # interpolates to ~830 steps at 12px/step
+        result = {}
+
+        def run():
+            try:
+                driver.drag_path(points)
+                result["aborted"] = False
+            except Aborted:
+                result["aborted"] = True
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        # Wait until the drag has genuinely started (mouseDown recorded)
+        # before pulling the rug out from under it.
+        # 等到這筆拖曳真的開始了（記錄到 mouseDown）才把它中斷。
+        deadline = time_module.perf_counter() + 2.0
+        while "down" not in stub.calls and time_module.perf_counter() < deadline:
+            time_module.sleep(0.005)
+        assert "down" in stub.calls, "drag never started / 拖曳從來沒有開始"
+        assert "up" not in stub.calls, "drag finished before it could be interrupted / 拖曳在能被中斷之前就跑完了"
+
+        driver.stop()
+        thread.join(timeout=2.0)
+
+        assert not thread.is_alive(), (
+            "thread did not stop within the timeout - it would be killed mid-drag / "
+            "執行緒沒有在逾時內停下——會在拖曳進行中被砍掉"
+        )
+        assert result.get("aborted") is True, "drag_path did not raise Aborted / drag_path 沒有丟出 Aborted"
+        assert stub.calls.count("down") == stub.calls.count("up") == 1, (
+            f"mouse button left in an inconsistent state / 滑鼠鍵狀態不一致: {stub.calls}"
+        )
+    finally:
+        input_driver_module._pyautogui = saved
+    print("  stop mid-drag from another thread still releases the mouse OK")
 
 
 def test_dry_run_checks_abort_as_often_as_a_live_run():
@@ -293,6 +372,25 @@ def test_image_mode_needs_no_screen_packages():
     所以光是 import 這個程式就需要它們。圖片模式從不擷取畫面、也不動滑鼠，
     而在 Linux 上沒有 X11 時 import pyautogui 會直接失敗 ——
     所以「圖片模式在任何平台都能用」其實並不成立。
+
+    SECOND bug this guards, found by an audit of the FIRST one: this test
+    used to only import ui.app, never construct SolverApp - and importing
+    was fine, constructing was what broke. _apply_settings() calls
+    default_region() on every first run (DEFAULTS["region"] is None until a
+    region is saved) regardless of mode, which reached mss even in image
+    mode. The test was a false safety signal: it would stay green while the
+    exact bug it claimed to cover was still there. Now actually constructs
+    SolverApp when a display is available; gracefully skips just that part
+    on a genuinely headless machine (CI's Ubuntu jobs) rather than failing
+    for an unrelated reason.
+    這個測試守住的第二個問題，是稽核第一個問題時發現的：這個測試以前只有
+    匯入 ui.app，從來沒有真的建構 SolverApp——匯入沒事，建構才會壞。
+    _apply_settings() 在每一次第一次啟動時都會呼叫 default_region()
+    （DEFAULTS["region"] 在存過一次範圍之前都是 None），不管是哪個模式，
+    這會讓圖片模式也碰到 mss。這個測試以前是一個假的安全訊號：它真正該
+    守住的那個 bug 還在，測試卻一直是綠的。現在會在有顯示裝置時真的去
+    建構 SolverApp；在真正沒有顯示裝置的機器上（CI 的 Ubuntu job）只會
+    優雅地跳過這一段，而不是因為無關的原因失敗。
     """
     import subprocess
 
@@ -307,6 +405,10 @@ def test_image_mode_needs_no_screen_packages():
         "    return real(name, *a, **k)\n"
         "builtins.__import__ = blocked\n"
         "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tempfile as _tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(_tempfile.mkdtemp())\n"
         "from linkedin_games_solver.automation import InputDriver, from_file_image, build_plan\n"
         "import linkedin_games_solver.ui.app\n"
         "from linkedin_games_solver.core import read_image\n"
@@ -320,14 +422,157 @@ def test_image_mode_needs_no_screen_packages():
         "    raise SystemExit('real mouse use should have failed')\n"
         "except ImportError:\n"
         "    pass\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "else:\n"
+        "    import tempfile, os\n"
+        "    from linkedin_games_solver.ui import settings as settings_store\n"
+        "    from pathlib import Path as _Path\n"
+        "    # A settings file already exists on any machine this has run on\n"
+        "    # before (region gets saved on first use), and _apply_settings()\n"
+        "    # only reaches default_region() when NO region is saved yet -\n"
+        "    # so this must point at a genuinely fresh path to actually\n"
+        "    # exercise the first-run code path, or this check silently\n"
+        "    # passes without testing anything (confirmed: it did, against\n"
+        "    # this same dev machine's real settings file).\n"
+        "    # 只要這台機器跑過一次，就會有一份存好的設定檔（第一次使用就會\n"
+        "    # 存下 region），而 _apply_settings() 只有在完全沒存過 region\n"
+        "    # 時才會走到 default_region()——所以這裡一定要指向一個真正全新\n"
+        "    # 的路徑，才會真的走到第一次啟動的程式碼，否則這段檢查會悄悄\n"
+        "    # 通過、卻什麼都沒測到（已確認：對著這台開發機真正的設定檔，\n"
+        "    # 就是這樣）。\n"
+        "    settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "    try:\n"
+        "        app = linkedin_games_solver.ui.app.SolverApp(root)\n"
+        "    finally:\n"
+        "        root.destroy()\n"
+        "    print('APP_CONSTRUCTED')\n"
         "print('OK')\n"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True,
                             text=True, encoding="utf-8", errors="replace")
-    assert "OK" in (result.stdout or ""), \
+    out = result.stdout or ""
+    assert "OK" in out, \
         "image mode requires screen packages / 圖片模式需要螢幕相關套件:\n" + \
         (result.stderr or "")[-600:]
-    print("  image mode works without pyautogui/mss OK")
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  image mode works without pyautogui/mss OK (SolverApp construction skipped - no display)")
+    else:
+        assert "APP_CONSTRUCTED" in out, \
+            "SolverApp did not construct without screen packages / SolverApp 沒有螢幕相關套件時建構失敗:\n" + \
+            (result.stderr or "")[-600:]
+        print("  image mode works without pyautogui/mss OK (SolverApp construction verified)")
+
+
+def test_stop_interrupts_an_in_progress_solve():
+    """
+    Bug this guards (T1): the GUI had no time budget, and pressing "Stop"
+    while a solve was still running (not yet filling) did nothing - it only
+    checked driver.stop() between fill actions, which never happens until
+    solve_image() has already returned. A slow/failing solve (e.g. a bad
+    capture that fools no recogniser) used to run the full multi-second
+    ladder to completion no matter what the user clicked.
+    這個測試守住的問題（T1）：GUI 原本沒有時間預算，在求解階段（還沒開始
+    填答）按下「停止」完全沒有作用——它只在填答動作之間檢查
+    driver.stop()，而那要等到 solve_image() 已經回傳才會發生。一張騙過
+    所有辨識器的失敗截圖，以前不管使用者按什麼都會把整個要花好幾秒的
+    ladder 跑完。
+
+    Verified separately (test_recognition.py) that solve_image()'s own
+    should_continue callback cuts a failing ladder from ~9.23s to ~0.10s.
+    This test proves the GUI actually wires driver.stop_requested into that
+    callback end-to-end: self.result (set synchronously right after
+    solve_image() returns, BEFORE any of the log lines that follow it) must
+    flip to a cancelled result soon after Stop is pressed, not after the
+    full ladder.
+    另外在 test_recognition.py 驗證過 solve_image() 自己的 should_continue
+    回呼能把一次失敗的 ladder 從約 9.23 秒縮短到約 0.10 秒。這個測試要
+    證明的是 GUI 有沒有把 driver.stop_requested 真的接到那個回呼上、整條
+    路線通不通：self.result（在 solve_image() 一回傳就同步設定，早於它
+    後面那串記錄訊息）必須在按下停止後很快變成已取消的結果，而不是等
+    整條 ladder 跑完。
+
+    Deliberately does NOT assert on total worker-thread lifetime. Measured
+    in this environment: each self._ui(...) call (root.after() from a
+    background thread) costs roughly 1s of genuine Tcl cross-thread
+    notifier latency regardless of whether the main thread is pumping
+    events - a pre-existing cost of every _ui() call in the whole app, not
+    something this fix introduced or could reduce, and the failure path
+    alone makes 7 such calls. Asserting on that total would make the test's
+    passing bound a property of this machine's Tk notifier, not of T1.
+    刻意不對「整個工作執行緒的存活時間」做斷言。在這個環境量測到的結果：
+    每一次 self._ui(...) 呼叫（從背景執行緒呼叫 root.after()）都要花大約
+    1 秒真正的 Tcl 跨執行緒通知延遲，不管主執行緒有沒有在抽事件佇列——
+    這是全 app 每一次 _ui() 呼叫本來就有的成本，不是這次修正造成、
+    也不是這次修正能縮短的，而失敗路徑光是記錄訊息就有 7 次這種呼叫。
+    如果斷言在這個總時間上，測試能不能過就變成這台機器 Tk 通知延遲的
+    屬性，而不是 T1 本身的屬性。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile, time\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import numpy as np\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.puzzles import CANCELLED\n"
+        "from linkedin_games_solver.automation import from_file_image\n"
+        "app = app_module.SolverApp(root)\n"
+        "rng = np.random.default_rng(0)\n"
+        "noise = rng.integers(0, 255, (700, 640, 3), dtype='uint8')\n"
+        "app.mode_var.set('image')\n"
+        "app.shot = from_file_image(noise)\n"
+        "app._run(fill_answers=False)\n"
+        "t0 = time.perf_counter()\n"
+        "time.sleep(0.5)\n"
+        "app._on_stop()\n"
+        "cancelled_at = None\n"
+        "for _ in range(80):\n"
+        "    if app.result is not None:\n"
+        "        cancelled_at = time.perf_counter() - t0\n"
+        "        break\n"
+        "    time.sleep(0.05)\n"
+        "result = app.result\n"
+        "# Generous - only guards against a permanent hang (e.g. a should_continue\n"
+        "# wiring that silently never fires), not against the ~1s/call _ui() cost\n"
+        "# above stacking up across the failure path's log lines.\n"
+        "# 給得寬鬆——只防真正的永久卡死（例如 should_continue 接線悄悄沒生效），\n"
+        "# 不是在防上面那個「每次呼叫約 1 秒」的 _ui() 成本，在失敗路徑的\n"
+        "# 記錄訊息上疊加起來。\n"
+        "app._worker_thread.join(timeout=20)\n"
+        "still_alive = app._worker_thread.is_alive()\n"
+        "root.destroy()\n"
+        "assert result is not None, 'self.result never set after stop / 按下停止後 self.result 從未被設定'\n"
+        "assert result.error == CANCELLED, 'solve was not cancelled: %r / 求解沒有被取消：%r' % (result.error, result.error)\n"
+        "assert cancelled_at < 4.0, 'cancellation took too long: %.2fs / 取消花了太久：%.2f 秒' % (cancelled_at, cancelled_at)\n"
+        "assert not still_alive, 'worker never finished draining its UI updates / 工作執行緒從未結束、卡在排入畫面更新'\n"
+        "print('CANCELLED_AT=%.2f' % cancelled_at)\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "stop did not interrupt an in-progress solve / 停止沒有中斷進行中的求解:\n" + \
+        (result.stderr or "")[-1200:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  stop interrupts an in-progress solve OK (skipped - no display)")
+    else:
+        print(f"  stop interrupts an in-progress solve OK ({out.strip().splitlines()[-2]})")
 
 
 if __name__ == "__main__":
@@ -336,11 +581,13 @@ if __name__ == "__main__":
     test_queens_complete_board_does_nothing()
     test_queens_clears_misplaced_crowns()
     test_tango_click_counts_follow_current_state()
-    test_patches_asks_the_guard_for_all_but_the_last_two_rects()
+    test_patches_asks_the_guard_for_every_rect()
     test_drag_is_interpolated()
     test_dry_run_does_not_act()
     test_stop_aborts()
+    test_stop_mid_drag_from_another_thread_still_releases_the_mouse()
     test_dry_run_checks_abort_as_often_as_a_live_run()
     test_dry_run_touches_no_mouse_module()
     test_image_mode_needs_no_screen_packages()
+    test_stop_interrupts_an_in_progress_solve()
     print("\nAll passed / 全部通過")

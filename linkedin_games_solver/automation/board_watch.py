@@ -68,65 +68,14 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ..core import build_grid
-from ..core.board import build_grid_from_lines
+from ..core import action_log, build_grid
+from ..core.board import build_grid_from_lines, mask_saturated
+from ..puzzles import patches
 from .capture import capture_region
 
 #: Board size the locators were calibrated at, matching puzzles/__init__.py.
 #: 定位器校準時的棋盤大小，與 puzzles/__init__.py 一致。
 TARGET_BOARD_PIXELS = 794
-
-
-#: Saturation (HSV) above which a pixel is treated as OUR OWN drawn mark
-#: rather than board structure, and is masked to white before a second
-#: locate attempt.
-#: 高於這個飽和度（HSV）的像素視為「我們自己畫上去的東西」而不是棋盤結構，
-#: 第二次定位嘗試前會先把它遮成白色。
-#:
-#: MEASURED on a real mid-drag Patches capture (extracted from a screen
-#: recording, board_watch.py's own locate_board on the raw crop, 2026-08-04):
-#: a drawn patch's fill is S 76-94 over a broad area (p90-p96 of the whole
-#: crop); the same board's UNFILLED background is S <3 for 90% of pixels,
-#: with the only high-S outliers being the small pre-printed number badges
-#: (S up to 213, but confined to tiny circles, not lines). The gap between
-#: "broad drawn fill" (76+) and "background, plus small label dots" (<3,
-#: with rare isolated spikes) is wide enough that masking >50 removes the
-#: fill without touching grid lines, which are gray/black and low-S by
-#: construction.
-#: 對一次真實的、拖曳到一半的 Patches 擷取實測（從螢幕錄影切出來，
-#: 用 board_watch.py 自己的 locate_board 對原始裁切測，2026-08-04）：
-#: 已畫的貼塊填色在一大片範圍內飽和度是 76~94（整張裁切的 p90~p96）；
-#: 同一張棋盤「還沒畫」的背景 90% 像素飽和度 <3，唯一的高飽和度離群值是
-#: 印在格子上的小數字標籤圓圈（最高到 213，但只佔一小塊圓形，不是線）。
-#: 「大片填色」（76 以上）跟「背景加上零星小標籤」（<3，偶爾有孤立尖峰）
-#: 之間的差距很大，遮住 >50 足以去掉填色，又不會動到格線本身——
-#: 格線是灰色或黑色，本來就是低飽和度。
-_OWN_MARK_SATURATION = 50
-
-
-def _mask_own_marks(crop: np.ndarray) -> np.ndarray:
-    """Replace our own high-saturation drawn marks with white.
-    把我們自己畫的高飽和度標記換成白色。
-
-    WHY this exists 為什麼需要這個: detect_grid_size works on grayscale
-    brightness, expecting only THIN grid lines to read as dark. A drawn
-    Patches rectangle's pastel fill is not black, but it is dark enough in
-    grayscale to make a whole column or row read as "mostly dark" instead of
-    "mostly light with one thin dark line" - which breaks the sparse-line
-    assumption for every threshold the sweep tries, not just one. Confirmed by
-    direct reproduction: build_grid raised "grid size not detected" on a real
-    mid-drag Patches capture where a drawn rectangle touched two board edges.
-    為什麼需要這個：detect_grid_size 是靠灰階亮度工作的，預期只有「細細的格線」
-    會被讀成暗色。Patches 畫上去的粉彩填色不是黑的，但轉成灰階已經暗到讓
-    整欄或整列被讀成「大部分是暗的」而不是「大部分是亮的、只有一條細暗線」——
-    這會讓掃描的每一個門檻都失效，不是只有某一個。已直接重現確認：對一張
-    真實的、有矩形貼塊碰到兩側棋盤邊的拖曳中截圖，build_grid 拋出
-    「無法自動偵測棋盤格數」。
-    """
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    masked = crop.copy()
-    masked[hsv[:, :, 1] > _OWN_MARK_SATURATION] = (255, 255, 255)
-    return masked
 
 
 def locate_board(crop: np.ndarray, n: int):
@@ -196,11 +145,14 @@ def locate_board(crop: np.ndarray, n: int):
     # Second pass, only if the first failed: mask our own drawn marks and try
     # again. Tried SECOND, never first, so every board that already located
     # fine on the raw crop keeps doing exactly that - this only ever adds
-    # coverage, never changes an existing answer.
+    # coverage, never changes an existing answer. Shared with build_grid's
+    # own fallback (core/board.py) - same failure, same fix, one definition.
     # 第二輪，只有第一輪失敗才會試：把我們自己畫的東西遮掉再試一次。
     # 一定放在「第二」而不是第一，這樣任何在原始裁切上就定位得到的棋盤
     # 完全不受影響——這一輪只會增加涵蓋範圍，不會改動任何既有的答案。
-    masked = _mask_own_marks(crop)
+    # 跟 build_grid 自己的備援（core/board.py）共用——同一個失敗、同一個
+    # 修法，只定義一次。
+    masked = mask_saturated(crop)
     for locator in (build_grid, build_grid_from_lines):
         try:
             grid = locator(masked)
@@ -235,6 +187,16 @@ def _size_is_ours(found: int, ours: int) -> bool:
     if found <= 0 or ours <= 0:
         return False
     return found == ours or (found % ours == 0 and found // ours <= _MAX_REFINEMENT)
+
+
+#: The failure_tolerance value ui/app.py applies specifically to Patches.
+#: Measurement and reasoning live on BoardWatch.failure_tolerance itself -
+#: this is just the number, kept next to the class it configures rather than
+#: hidden inside the UI layer.
+#: ui/app.py 專門套用在拼塊上的 failure_tolerance 值。量測依據跟理由都寫在
+#: BoardWatch.failure_tolerance 自己身上——這裡只是那個數字，跟它設定的
+#: class 放在一起，不要藏在 UI 層裡面。
+PATCHES_FAILURE_TOLERANCE = 2
 
 
 @dataclass
@@ -275,6 +237,57 @@ class BoardWatch:
     #:   這遠短於預設速度下任何一次點擊所需的時間（Queens 每格約 1 秒）。
     min_interval: float = 0.25
 
+    #: How many CONSECUTIVE real structural-detection failures to tolerate
+    #: before concluding the board is actually gone. 0 (the default) is the
+    #: original strict behaviour: any failure aborts immediately.
+    #: 連續幾次「真正的結構偵測失敗」可以被容忍，才會判定棋盤真的不見了。
+    #: 預設 0 是原本嚴格的行為：任何一次失敗就立刻中止。
+    #:
+    #: WHY THIS EXISTS 為什麼需要這個:
+    #:   Patches tiles the WHOLE board, so once enough drawn regions touch the
+    #:   board's own edges, detect_grid_size can stay broken for the REST of a
+    #:   fill even though the board never actually moved (see mask_saturated
+    #:   in core/board.py for the underlying cause, and CHANGELOG's 1.2.0 entry
+    #:   for the measured evidence). An earlier fix skipped the guard for a
+    #:   FIXED position - the last two rectangles of a Patches plan - which
+    #:   only helps if THAT specific puzzle's edge-touching regions happen to
+    #:   be drawn last. Measured directly on a real capture: they are not -
+    #:   one of the two edge-touching regions in a real 6-rectangle puzzle was
+    #:   drawn SECOND, not fifth or sixth. A position-based skip could not have
+    #:   protected that run at all.
+    #:   拼塊會鋪滿整個棋盤，一旦夠多已畫的區塊碰到棋盤自己的邊緣，
+    #:   detect_grid_size 可能會在填答「剩下的全部時間」都保持失效，即使棋盤
+    #:   根本沒有真的移動過（根本原因見 core/board.py 的 mask_saturated，
+    #:   量測依據見 CHANGELOG 的 1.2.0 條目）。先前的修法是對「固定位置」
+    #:   （拼塊計畫的最後兩塊矩形）關閉保護——這只在「這一題」剛好把碰邊的
+    #:   區塊排在最後時才有用。直接用一張真實擷取量過：並不是這樣——
+    #:   一個真實 6 塊矩形的拼塊裡，兩塊碰邊的區塊其中一塊是**第二個**畫的，
+    #:   不是第五或第六個。用位置判斷的做法，對那一次執行完全沒有保護作用。
+    #:
+    #:   Tolerating N consecutive failures instead is layout-independent: it
+    #:   reacts to OBSERVED persistent failure wherever it happens, not to a
+    #:   guess about where it will happen. It also keeps a real backstop that
+    #:   the position-based skip did not have - a genuine board replacement
+    #:   still gets caught once it has failed more than N times in a row,
+    #:   wherever in the plan that occurs, instead of never being checked at
+    #:   all during a hard-coded tail.
+    #:   改成容忍連續 N 次失敗則跟版面無關：它是對「觀察到的持續失敗」
+    #:   做反應，不管發生在哪裡，而不是用猜的去猜會發生在哪裡。這樣做也保留了
+    #:   位置判斷法沒有的真正防線——真的棋盤被換掉，只要連續失敗超過 N 次
+    #:   一樣會被抓到，不管發生在計畫的哪個位置，而不是在寫死的尾段完全不檢查。
+    #:
+    #:   VALUE MEASURED, NOT GUESSED 數值是量出來的，不是猜的:
+    #:   on the real capture above, the failure window lasted ~2.4s against a
+    #:   ~1.6s average time between drag-entry checks - about 2 consecutive
+    #:   checks. 2 is applied only to Patches, from app.py, matching the
+    #:   user-approved trade-off this replaces: a LIMITED, documented
+    #:   reopening of the guard's blind spot, not an unlimited one.
+    #:   在上面那次真實擷取裡，失效的時間窗大約 2.4 秒，對照每次拖曳前檢查
+    #:   平均間隔約 1.6 秒——大約是連續 2 次檢查。2 這個值只套用在拼塊，
+    #:   從 app.py 設定，維持跟它取代的那個做法一樣、經使用者同意的取捨：
+    #:   保護的盲點被有限度、有記錄地重新打開一小段，不是無限制打開。
+    failure_tolerance: int = 0
+
     #: Set once arm() succeeds. Until then the watch refuses to judge anything.
     #: arm() 成功之後才會設為 True。在那之前這個 watch 拒絕對任何事下判斷。
     armed: bool = False
@@ -291,6 +304,7 @@ class BoardWatch:
     _gone: bool = False
     _checks: int = field(default=0)
     _last_at: float = field(default=0.0)
+    _consecutive_failures: int = field(default=0)
 
     def arm(self, board_image: np.ndarray) -> bool:
         """Prove the locator can find the board in the frame the plan came from.
@@ -315,6 +329,8 @@ class BoardWatch:
             self.reason = ("board watch disabled: locator could not find the board in "
                            "the plan's own frame / 中途保護未啟用：定位器在計畫自己的"
                            "畫面裡就找不到棋盤")
+        action_log.log("GUARD", f"arm: n={self.n} tolerance={self.failure_tolerance} "
+                        f"-> {'armed' if self.armed else 'FAILED: ' + self.reason}")
         return self.armed
 
     def still_there(self) -> bool:
@@ -348,16 +364,80 @@ class BoardWatch:
             # 完全讀不到螢幕 -> 停。看不到不等於棋盤沒事。
             self._gone = True
             self.reason = f"screen capture failed / 擷取螢幕失敗: {type(exc).__name__}: {exc}"
+            action_log.log("GUARD", f"check #{self._checks}: capture failed -> gone: "
+                            f"{type(exc).__name__}: {exc}")
             return False
         image = getattr(shot, "image", shot)
         if self.locate(image, self.n) is None:
+            self._consecutive_failures += 1
+            if self._consecutive_failures <= self.failure_tolerance:
+                # Tolerated: report "still there" without latching _gone, so a
+                # failure that recovers on the NEXT real check (this counter
+                # resets below) never trips the guard at all. Only sustained,
+                # back-to-back failure past the tolerance is treated as real.
+                # 容忍：回報「還在」，不鎖定 _gone，所以只要下一次真正檢查
+                # 恢復正常（下面會把這個計數器歸零），就完全不會觸發保護。
+                # 只有持續、連續超過容忍次數的失敗才會被當真。
+                # Logged even though it is tolerated - this is exactly the
+                # kind of near-miss that used to be completely invisible;
+                # see the module docstring on WHY every check is logged.
+                # 就算是被容忍的也要記錄——這正是以前完全看不到的驚險時刻；
+                # 為什麼每一次檢查都要記錄，見模組文件字串。
+                action_log.log("GUARD", f"check #{self._checks}: locate failed, "
+                                f"TOLERATED ({self._consecutive_failures}/{self.failure_tolerance})")
+                return True
             self._gone = True
             self.last_image = image
             self.reason = ("board is no longer where it was - stopping so the "
                            "remaining clicks do not land on something else / "
                            "棋盤已不在原處，停止動作以免剩下的點擊落在別的東西上")
+            action_log.log("GUARD", f"check #{self._checks}: locate failed persistently "
+                            f"({self._consecutive_failures} in a row) -> gone")
             return False
+        self._consecutive_failures = 0
+        action_log.log("GUARD", f"check #{self._checks}: ok")
         return True
 
     def checks_made(self) -> int:
         return self._checks
+
+
+def attach(driver, mapper, result, image: np.ndarray) -> BoardWatch:
+    """Arm a BoardWatch for this plan and wire it into driver.guard.
+    Always returns the watch, armed or not, so the caller can log
+    watch.reason and inspect watch.last_image after an abort.
+    替這次計畫掛上一個 BoardWatch，並接進 driver.guard。不管有沒有成功
+    掛上都會回傳這個 watch，讓呼叫端可以記錄 watch.reason、在中止後
+    檢查 watch.last_image。
+
+    WHY THIS IS SHARED, NOT INLINED PER CALLER 為什麼共用而不是各自寫一份:
+    Measured on a scripted screen where the board is replaced after 3
+    actions: the GUI path (which had this wiring inline) stopped after 3 of
+    28 actions; the CLI's `--go` path (which never had it at all) ran all 28,
+    25 of them onto the replaced board. `--go` is the closest thing this
+    project has to "five puzzles fully automatically", and it was the one
+    path that ran blind - not because the guard doesn't work for it, but
+    because nothing ever called it. One shared function that every caller
+    goes through is what makes a THIRD caller unable to forget this again.
+    對一個腳本化的畫面實測：盤面在第 3 個動作後被換掉——GUI 路徑（這段接線
+    是寫在它自己裡面的）在 28 個動作裡走了 3 個就停；CLI 的 `--go` 路徑
+    （從來沒有接過這段）28 個全部走完，25 個點在被換掉的盤面上。`--go`
+    是這個專案最接近「五題全自動」的東西，卻是唯一盲目執行的路徑——不是
+    因為保護對它不管用，是因為根本沒有人呼叫過它。讓每個呼叫端都走同一個
+    共用函式，才能讓「第三個呼叫者」不會再忘記接這段。
+    """
+    bx, by, bw, bh = result.grid.board_bbox
+    # Patches tiles the whole board, so the guard's own detection can go on
+    # failing for the rest of a fill even though the board never moved - see
+    # BoardWatch.failure_tolerance for the measurement. Every other puzzle
+    # keeps the strict default (0).
+    # 拼塊會鋪滿整個棋盤，保護自己的偵測可能在填答剩下的過程中持續失效，
+    # 即使棋盤根本沒有移動過——量測依據見 BoardWatch.failure_tolerance。
+    # 其他每一款謎題都維持嚴格的預設值（0）。
+    tolerance = PATCHES_FAILURE_TOLERANCE if result.puzzle_key == patches.KEY else 0
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, failure_tolerance=tolerance)
+    action_log.log("GUARD", f"attach: puzzle={result.puzzle_key} n={result.grid.n} "
+                    f"tolerance={tolerance}")
+    if watch.arm(image[by : by + bh, bx : bx + bw]):
+        driver.guard = watch.still_there
+    return watch

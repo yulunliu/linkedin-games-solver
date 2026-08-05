@@ -33,7 +33,8 @@ from ..automation import (
     verify,
     wait_for_mouse_release,
 )
-from ..core import read_image, write_image
+from ..automation import board_watch
+from ..core import action_log, read_image, write_image
 from ..puzzles import puzzle_name, render_overlay, solve_image
 
 
@@ -55,6 +56,26 @@ def parse_args():
     return parser.parse_args()
 
 
+def _parse_region(text: str) -> tuple[int, int, int, int] | None:
+    """Parse 'L,T,W,H', printing a reason and returning None on anything
+    invalid - including width/height <= 0, which used to reach mss
+    unvalidated and escape as a raw mss.ScreenShotError.
+    解析 'L,T,W,H'，任何不合法的情況（包含寬或高 <= 0）都印出原因、
+    回傳 None——寬高 <= 0 以前完全沒驗證，會一路傳進 mss，
+    以原始的 mss.ScreenShotError 逸出。
+    """
+    try:
+        left, top, width, height = (int(v) for v in text.split(","))
+    except ValueError:
+        print("--region must be L,T,W,H / 格式應為 L,T,W,H")
+        return None
+    if width <= 0 or height <= 0:
+        print(f"--region width and height must be positive, got {width}x{height} / "
+              f"--region 的寬與高必須是正數，收到的是 {width}x{height}")
+        return None
+    return left, top, width, height
+
+
 def acquire(args):
     if args.image:
         image = read_image(args.image)
@@ -65,24 +86,39 @@ def acquire(args):
     if args.screen:
         return capture_screen()
     if args.region:
-        try:
-            left, top, width, height = (int(v) for v in args.region.split(","))
-        except ValueError:
-            print("--region must be L,T,W,H / 格式應為 L,T,W,H")
+        region = _parse_region(args.region)
+        if region is None:
             return None
-        return capture_region(left, top, width, height)
+        return capture_region(*region)
     region = default_region()
     print(f"using default region / 使用預設擷取範圍: {region}")
     return capture_region(*region)
 
 
 def main():
-    args = parse_args()
+    # Reconfigure BEFORE parse_args(), not after: argparse prints --help (and
+    # usage/error text) DURING parse_args() itself and can exit before this
+    # line ever runs. Both strings contain Chinese, so on a non-UTF-8 console
+    # --help used to crash with UnicodeEncodeError before ever reaching a line
+    # that would have fixed the encoding. --out and error text can carry
+    # non-ASCII too, so stderr is reconfigured for the same reason.
+    # 一定要在 parse_args() 之前重設編碼，不是之後：argparse 印 --help
+    # （以及用法／錯誤訊息）是在 parse_args() 「裡面」發生的，還可能在
+    # 這一行執行到之前就結束程式。兩種文字都含中文，所以在非 UTF-8 的
+    # 主控台上，--help 以前會在還沒機會修正編碼之前，就先丟出
+    # UnicodeEncodeError 當掉。--out 跟錯誤訊息也可能含非 ASCII 字元，
+    # 所以 stderr 也一併重設，理由相同。
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    args = parse_args()
 
     shot = acquire(args)
     if shot is None:
         sys.exit(1)
+
+    action_log.log("RUN", f"CLI run start: type={args.type or 'auto'} go={args.go} "
+                    f"slowdown={args.slowdown} retry={args.retry}")
+    print(f"log file / 記錄檔: {action_log.path()}")
 
     timings = {}
     started = time.perf_counter()
@@ -102,8 +138,20 @@ def main():
     if args.out:
         overlay = render_overlay(shot.image, result)
         if overlay is not None:
-            write_image(Path(args.out), overlay)
-            print(f"answer image saved / 答案疊圖已存: {args.out}")
+            # A failed --out must not abort a --go run: solving already
+            # succeeded, and the answer overlay is a nice-to-have debug
+            # artifact, not a precondition for filling. write_image now
+            # honours its documented bool contract instead of raising, so
+            # this is a plain check, not a try/except.
+            # --out 失敗不該中止一次 --go 執行：求解已經成功了，答案疊圖只是
+            # 附加的除錯素材，不是填答的前提。write_image 現在真的遵守自己
+            # 文件寫的布林值約定、不會拋例外，所以這裡只是單純檢查回傳值，
+            # 不需要 try/except。
+            if write_image(Path(args.out), overlay):
+                print(f"answer image saved / 答案疊圖已存: {args.out}")
+            else:
+                print(f"could not save answer image, continuing / "
+                      f"答案疊圖存不了，繼續執行: {args.out}")
 
     mapper = BoardMapper(shot=shot, grid=result.grid)
     print(f"  {mapper.describe()}")
@@ -124,6 +172,21 @@ def main():
     driver = InputDriver(dry_run=not args.go, slowdown=args.slowdown)
     try:
         if args.go:
+            # Attach the mid-plan board guard - the SAME wiring the GUI uses,
+            # not a separate one written out here. Measured before this fix:
+            # on a scripted screen where the board is replaced after 3
+            # actions, the GUI stopped after 3 of 28; --go, which never had
+            # this at all, ran all 28, 25 of them onto the replaced board.
+            # See board_watch.attach's own docstring.
+            # 掛上填答進行中的盤面保護——用跟 GUI 完全一樣的接線，不是在這裡
+            # 另外寫一份。修正前實測：對一個腳本化、盤面在第 3 個動作後被換掉
+            # 的畫面，GUI 在 28 個動作裡走 3 個就停；`--go` 完全沒有接過這段，
+            # 28 個全部走完，25 個點在被換掉的盤面上。見 board_watch.attach
+            # 自己的文件字串。
+            watch = board_watch.attach(driver, mapper, result, shot.image)
+            if not watch.armed:
+                print(f"  {watch.reason}")
+
             cx, cy = mapper.cell_center(0, 0)
             print(f"focused window / 切到目標視窗: {focus_window_at(cx, cy) or '?'}")
             print(f"waited for mouse release / 等待放開滑鼠: {wait_for_mouse_release():.2f}s")
@@ -136,10 +199,13 @@ def main():
             t0 = time.perf_counter()
             _verify_and_retry(args, shot, result, mapper, driver)
             timings["verify"] = time.perf_counter() - t0
-    except (Aborted, KeyboardInterrupt):
+    except (Aborted, KeyboardInterrupt) as exc:
+        action_log.log("ERROR", f"plan aborted: {type(exc).__name__}: {exc} "
+                        f"stopped_by_guard={getattr(driver, 'stopped_by_guard', False)}")
         print("aborted / 已中止")
         sys.exit(1)
     except Exception as exc:  # pyautogui failsafe etc.
+        action_log.log("ERROR", f"{type(exc).__name__}: {exc}")
         print(f"interrupted / 操作中斷: {type(exc).__name__}: {exc}")
         sys.exit(1)
 
@@ -152,8 +218,19 @@ def main():
 
 def _recapture(args, previous):
     if args.region:
-        left, top, width, height = (int(v) for v in args.region.split(","))
-        return capture_region(left, top, width, height)
+        # Reuse the same validated parser as the initial capture, rather than
+        # a second unguarded int() conversion - args.region is already known
+        # good at this point (acquire() validated it at startup), so region
+        # is never actually None here; the fallback exists so a retry cannot
+        # crash on a path the initial capture already proved safe.
+        # 沿用跟第一次擷取一樣、經過驗證的解析器，而不是再寫一次沒防護的
+        # int() 轉換——這個時間點 args.region 早就確定沒問題了（acquire()
+        # 在一開始就驗證過），所以這裡 region 實際上不會是 None；
+        # 保留退路只是為了不讓補點階段在一條「第一次擷取已經證明安全」的
+        # 路徑上當掉。
+        region = _parse_region(args.region)
+        if region is not None:
+            return capture_region(*region)
     return capture_region(previous.origin_x, previous.origin_y,
                           previous.image.shape[1], previous.image.shape[0])
 
@@ -161,6 +238,7 @@ def _recapture(args, previous):
 def _verify_and_retry(args, shot, result, mapper, driver):
     previous_wrong = None
     for attempt in range(1, args.retry + 1):
+        action_log.log("VERIFY", f"CLI check round {attempt}/{args.retry} starting")
         time.sleep(0.9)
         fresh = _recapture(args, shot)
         report = verify(fresh.image, result, n_hint=args.grid_size)

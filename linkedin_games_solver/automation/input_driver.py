@@ -29,6 +29,8 @@ import math
 import time
 from dataclasses import dataclass, field
 
+from ..core import action_log
+
 
 def _gui():
     """Load pyautogui on first real use, not at import time.
@@ -212,7 +214,20 @@ class InputDriver:
             time.sleep(seconds * self.slowdown)
 
     def stop(self):
+        action_log.log("STOP", "InputDriver.stop() called")
         self._stop_requested = True
+
+    @property
+    def stop_requested(self) -> bool:
+        """Public read of the stop flag, so a caller outside this class (the
+        solve step, which runs before any click and so never calls
+        _check_abort itself) can poll it without reaching into a private
+        attribute.
+        公開讀取停止旗標，讓這個類別以外的呼叫端（求解步驟——它在任何點擊
+        之前執行，本身從來不會呼叫 _check_abort）可以用來輪詢，
+        不需要直接存取私有屬性。
+        """
+        return self._stop_requested
 
     def reset(self):
         self._stop_requested = False
@@ -264,10 +279,19 @@ class InputDriver:
         if ask_guard and self.guard is not None and not self.guard():
             self.stopped_by_guard = True
             self._stop_requested = True   # latch, so nothing restarts it 鎖定，不會被重啟
+            # The guard itself (board_watch.still_there) already logged WHY in
+            # detail; this line marks the moment input_driver actually acted
+            # on that verdict and aborted the plan, so the ACTION trace shows
+            # exactly which action never happened.
+            # 保護本身（board_watch.still_there）已經詳細記錄了「為什麼」；
+            # 這一行標記的是 input_driver 真正依照那個判斷中止計畫的那一刻，
+            # 讓動作記錄能明確看出「哪一個動作沒有發生」。
+            action_log.log("GUARD", "guard rejected the next action -> aborting plan")
             raise Aborted("board changed / 盤面已改變")
 
     def _record(self, message: str):
         self.log.append(message)
+        action_log.log("ACTION", message)
 
     def countdown(self, seconds: int, on_tick=None):
         for remaining in range(seconds, 0, -1):
@@ -334,7 +358,7 @@ class InputDriver:
                 dense.append((round(x0 + (x1 - x0) * i / steps), round(y0 + (y1 - y0) * i / steps)))
         return dense
 
-    def drag_path(self, points: list[tuple[int, int]], label: str = "", ask_guard: bool = True):
+    def drag_path(self, points: list[tuple[int, int]], label: str = ""):
         """
         Drag with the left button held along a sequence of points.
         Used by Zip (the path) and Patches (each rectangle).
@@ -346,26 +370,20 @@ class InputDriver:
         路徑會先做插值。少了這一步，網頁只會收到起點與終點，
         中間經過的格子完全不會被記錄，Zip 就會判定順序錯誤。
 
-        ask_guard controls only the ONE check at entry, below - never the
-        interpolation loop, which already always skips it (see the comment
-        inside that loop). A caller sets this False for a specific drag it has
-        decided is safe to run blind - e.g. PatchesPlayer does this for the
-        last couple of rectangles, because a fully-tiled board defeats the
-        guard's own structural check (2026-08-04: confirmed on a real capture -
-        find_board_bbox picked a DRAWN RECTANGLE's own border instead of the
-        board's once two rectangles touched the board's edges). That is a
-        deliberate, bounded trade of a little protection at the very end for
-        not aborting a fill the board never actually lost.
-        ask_guard 只控制下面「進入時」這一次檢查，永遠不影響插值迴圈本身
-        （迴圈裡已經固定跳過，見迴圈內的註解）。呼叫者會在自己判斷「這一筆
-        拖曳可以安全地不檢查」時把這裡設成 False——例如 PatchesPlayer 對最後
-        幾個矩形就是這樣做，因為填滿的棋盤本身就會讓保護的結構性檢查失效
-        （2026-08-04：用真實擷取確認過——兩個矩形碰到棋盤邊緣之後，
-        find_board_bbox 找到的是某個矩形自己的邊框，不是棋盤的）。
-        這是刻意、範圍有限的取捨：犧牲填答最後一點點保護，換取不要對一個
-        其實根本沒有不見的棋盤誤判中止。
+        Every drag asks the guard at entry, unconditionally. An earlier design
+        had a caller (PatchesPlayer) skip this for specific rectangles it
+        judged safe - replaced by BoardWatch.failure_tolerance, which reacts
+        to OBSERVED persistent detection failure instead of a fixed position
+        in the plan (see failure_tolerance's own docstring for why the
+        position-based version could not be trusted). This function no longer
+        needs to know anything about that.
+        每一筆拖曳在進入時都會無條件詢問保護。先前的設計是讓呼叫端
+        （PatchesPlayer）對它判斷安全的特定矩形跳過檢查——已經改用
+        BoardWatch.failure_tolerance 取代，它是對「觀察到的持續偵測失敗」
+        做反應，而不是計畫裡的固定位置（為什麼位置判斷法不可信，見
+        failure_tolerance 自己的文件字串）。這個函式不再需要知道那件事。
         """
-        self._check_abort(ask_guard=ask_guard)
+        self._check_abort()
         if len(points) < 2:
             return
         suffix = f"  ({label})" if label else ""

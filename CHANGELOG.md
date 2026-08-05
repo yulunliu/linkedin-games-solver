@@ -3,6 +3,130 @@
 Notable changes. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 重要變更紀錄。格式大致依照 Keep a Changelog。
 
+## [1.3.0] — 2026-08-05
+
+**Upgrade from 1.2.0.** Two rounds of work. First, a rigorous audit-and-fix
+pass covering every open defect from 1.2.0's known-limitations list: a stale
+result that could save the wrong answer onto a new screenshot, a board guard
+that missed the board simply moving, the CLI's automated path having no board
+guard at all, the GUI unable to start without `mss` even in image mode, a
+malformed saved region crashing startup, and a solve with no time budget that
+"Stop" could not interrupt. Second, a session action log, so a day's single
+real playthrough - the target puzzles reset once every 24 hours, so there is
+no "try again with more logging" - leaves a complete, timestamped record of
+what the program actually did. Confirmed by a full real playthrough of all
+five puzzles in one sitting, no manual intervention needed.
+**建議從 1.2.0 升級。** 這次分兩輪。第一輪是嚴謹的稽核與修正，涵蓋 1.2.0
+已知限制清單裡的每一項開著的缺陷：換圖後沒清空的舊結果可能把答案存到新
+截圖上、盤面守衛偵測不到棋盤只是「移動」了、CLI 的全自動路徑完全沒有
+盤面守衛、圖片模式在沒有 `mss` 時也開不了 GUI、設定檔裡型別錯誤的擷取
+範圍會讓程式啟動時當掉、求解沒有時間預算導致「停止」中斷不了它。
+第二輪是新增一份執行動作記錄——因為目標謎題一天只會重置一次，
+沒有「這次記錄不夠、明天再錄一次」的餘地，這份記錄要在單一次真實遊玩裡
+就留下完整、帶時間戳記的軌跡。已用一次完整、不需人工介入的五題實際遊玩
+確認過。
+
+### Fixed — silent wrong answers and mouse safety 安靜的錯誤答案與滑鼠安全
+
+- **A stale result could save the wrong answer onto a new screenshot.**
+  Picking a new image or region without solving first left the previous
+  puzzle's result in place; Save then wrote the old answer under the new
+  file's name. Fixed by clearing the result atomically with the image.
+  **換了新截圖但還沒求解，存圖可能把舊答案存到新截圖上。** 選新圖片或新
+  範圍卻還沒求解時，舊結果原封不動留著；存圖就會把舊答案存成新檔名。
+  已改為跟影像一起原子性地清空結果。
+- **The board guard and post-fill verify both passed a board that had simply
+  moved**, because both compare cells by grid index, which is
+  translation-invariant. A 9x9 board shifted 80px down still verified as
+  unchanged. Both now reject when the located board's position drifts beyond
+  0.3 cell from where the plan expects it.
+  **守衛跟填完後的驗證，對「只是移動了」的棋盤都會誤判通過**，因為兩者都是
+  用格子索引比對，對平移不敏感。一個 9x9 棋盤往下移 80px 仍被判定沒有改變。
+  現在兩者都會在定位到的棋盤位置偏移超過 0.3 格時判定為已改變。
+- **`ui/cli.py --go` had no mid-plan board guard at all** - the GUI's
+  protection was never wired into the CLI's fully-automated path. Measured
+  on a scripted board replacement: the GUI stopped after 3 of 28 actions,
+  `--go` ran all 28. Fixed by sharing one `board_watch.attach()` function
+  between both callers.
+  **CLI 的 `--go` 完全沒有填答中途的盤面守衛**——GUI 的保護從來沒有接進 CLI
+  的全自動路徑。對一個腳本化的盤面替換實測：GUI 在 28 個動作裡走 3 個就停，
+  `--go` 28 個全部走完。已改為 GUI 與 CLI 共用同一個 `board_watch.attach()`。
+- **Closing the window mid-fill could leave the mouse button physically held
+  down** - the worker thread is a daemon and closing used to just destroy the
+  window, killing the thread before `drag_path`'s own `finally: mouseUp()`
+  could run. Fixed with a proper close handler that stops the driver and
+  joins the thread with a timeout first.
+  **填答途中關閉視窗，可能讓滑鼠鍵維持在按下的狀態**——工作執行緒是
+  daemon，以前關閉視窗只會直接銷毀視窗，讓執行緒在 `drag_path` 自己的
+  `finally: mouseUp()` 有機會執行之前就被砍掉。已改成正式的關閉處理常式，
+  先停止驅動、帶逾時 join 執行緒。
+
+### Fixed — crashes and confusing behaviour 當掉與令人困惑的行為
+
+- **The GUI could not start without `mss`, even in image mode**, which never
+  captures a screen at all - `default_region()` reached `mss` unconditionally
+  on every first run. Now falls back to a fixed rectangle if `mss` cannot be
+  imported.
+  **圖片模式（根本不會擷取畫面）在沒有 `mss` 時也開不了 GUI**——
+  `default_region()` 以前每次第一次啟動都會無條件用到 `mss`。
+  現在 `mss` 匯入失敗就退回固定矩形。
+- **A malformed saved `region` crashed the GUI at startup**, and `fullscreen`
+  has no UI, so hand-editing the settings file was the only way to reach a
+  bad value. Now sanitised on load.
+  **設定檔裡型別錯誤的 `region` 會讓 GUI 一啟動就當掉**，而 `fullscreen`
+  沒有介面，手改設定檔是唯一能碰到壞值的方式。現在讀取時會先清洗過。
+- **No wall-clock budget on a solve, and Stop could not interrupt one** - a 4K
+  screen grab took 29-49s with no check-in point anywhere in that time. Added
+  a `should_continue` callback polled between recognition-ladder rungs, wired
+  to the GUI's Stop button end to end.
+  **求解沒有時間預算，「停止」中斷不了它**——一次 4K 螢幕擷取要 29~49 秒，
+  這整段時間完全沒有任何檢查點。新增 `should_continue` 回呼，在辨識階梯的
+  每一階之間輪詢，並整條路線接到 GUI 的「停止」按鈕上。
+- Ten smaller defects fixed alongside these: a save that failed silently, a
+  region field typo permanently overwriting a calibrated value, a Stop
+  pressed during capture being discarded, Sudoku's box-shape fallback
+  returning a size that does not tile the board, `read_image` raising instead
+  of returning `None` for a directory or locked file, a "zoom in" hint
+  appended to unrelated failures, `--region` with a non-positive dimension
+  escaping as a raw exception, pyautogui's emergency-stop fail-safe looking
+  like a crash, and `--help` crashing on a non-UTF-8 console.
+  另外十項較小的缺陷一併修好：存檔失敗會靜默、range 欄位打錯字會永久覆蓋
+  校準值、擷取期間按下的停止會被忽略、數獨的盒子形狀備援回傳不能鋪滿棋盤
+  的尺寸、`read_image` 對目錄或鎖定檔案拋例外而不是回傳 `None`、「請放大」
+  提示被誤貼到無關的失敗上、`--region` 的非正數維度逸出成原始例外、
+  pyautogui 的緊急停止看起來像當機、`--help` 在非 UTF-8 主控台當掉。
+
+### Added — session action log 新增：執行動作記錄
+
+- **`core/action_log.py`**: a timestamped, append-only record of every mouse
+  action, every board-guard check (including tolerated near-misses that were
+  previously invisible), every recognition-ladder attempt, and every
+  recovered-from fallback firing. Written next to the executable so a day's
+  log sits with the session it describes; a write failure is swallowed rather
+  than able to break the feature it is logging. The GUI shows the log file's
+  path on screen from the moment it starts, so a screen recording captures it
+  from the first frame.
+  **`core/action_log.py`**：帶時間戳記、只增不改的記錄——每一次滑鼠動作、
+  每一次盤面守衛檢查（包含以前完全看不到、被容忍住的驚險時刻）、每一次
+  辨識階梯的嘗試、每一次有救回來的備援被觸發。記錄檔存在執行檔旁邊；
+  寫入失敗會被吞掉，不會反過來弄壞它正在記錄的功能。GUI 從啟動的那一刻
+  就會把記錄檔路徑顯示在畫面上，讓螢幕錄影從第一格就拍得到。
+- **`tools/log_summary.py`**: prints a log file's time span, a per-category
+  line count, and every WARN/ERROR line verbatim, as a starting point before
+  reading the full file.
+  **`tools/log_summary.py`**：印出一份記錄檔的時間範圍、依類別的行數統計，
+  以及每一行 WARN/ERROR 的原文，作為讀完整份記錄檔之前的起點。
+
+### Testing 測試
+
+Test suites: 7 → 10 (`test_settings.py`, `test_image_io.py`, `test_cli.py`
+added). All ten pass, `pyflakes` clean, and a batch pass over all 24 project
+fixture/sample images through the full recognise-and-solve pipeline confirmed
+no exceptions and no silent wrong answers.
+測試檔：7 → 10（新增 `test_settings.py`、`test_image_io.py`、
+`test_cli.py`）。十組全過，`pyflakes` 乾淨，對專案裡全部 24 張範例／測試圖
+批次跑完整的辨識求解流程，確認沒有例外、也沒有靜默的錯誤答案。
+
 ## [1.2.0] — 2026-08-04
 
 **Upgrade from 1.1.0.** A user's own screen recordings, played back frame by

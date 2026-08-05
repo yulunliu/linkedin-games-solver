@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from linkedin_games_solver.automation import (  # noqa: E402
     Aborted, BoardMapper, InputDriver, build_plan, from_file_image,
 )
+from linkedin_games_solver.automation import board_watch  # noqa: E402
 from linkedin_games_solver.automation.board_watch import BoardWatch  # noqa: E402
 from linkedin_games_solver.core import read_image  # noqa: E402
 from linkedin_games_solver.puzzles import solve_image  # noqa: E402
@@ -194,6 +195,58 @@ def test_guard_latches():
     print("  guard latches OK")
 
 
+def test_failure_tolerance_defaults_to_the_original_strict_behaviour():
+    """failure_tolerance=0 (the default) must abort on the FIRST failure,
+    exactly like every puzzle that never sets it.
+    failure_tolerance=0（預設值）必須在「第一次」失敗就中止，
+    跟所有沒有設定它的謎題行為完全一樣。"""
+    image, result, mapper, plan, crop = _plan_for("live_queens_3.png")
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0,
+                        grab=lambda *a: np.full_like(crop, 245))
+    assert watch.arm(crop)
+    assert watch.still_there() is False, "must abort on the first failure / 第一次失敗就要中止"
+    print("  failure_tolerance defaults to the original strict behaviour OK")
+
+
+def test_failure_tolerance_absorbs_a_run_that_recovers():
+    """Failures within the tolerance, followed by a real success, must never
+    trip the guard - and the counter must reset so the SAME tolerance is
+    available again for a later run of failures.
+    容忍次數以內的失敗，只要後面接一次真正的成功，就絕對不能觸發保護——
+    而且計數器要歸零，這樣同樣的容忍額度之後才能再用一次。"""
+    image, result, mapper, plan, crop = _plan_for("live_queens_3.png")
+    flat = np.full_like(crop, 245)
+    # fail, fail, succeed, fail, fail, succeed - two runs of 2 consecutive
+    # failures, each within a tolerance of 2, each followed by a recovery.
+    # 失敗、失敗、成功、失敗、失敗、成功——兩輪各連續失敗 2 次，
+    # 都在容忍額度 2 以內，後面都接著恢復正常。
+    sequence = iter([flat, flat, crop, flat, flat, crop])
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0,
+                        grab=lambda *a: next(sequence), failure_tolerance=2)
+    assert watch.arm(crop)
+    for i in range(6):
+        assert watch.still_there() is True, f"call {i + 1}: should still be tolerated / 第 {i + 1} 次呼叫：應該還在容忍範圍內"
+    print("  failure_tolerance absorbs a run that recovers OK")
+
+
+def test_failure_tolerance_still_aborts_once_persistently_exceeded():
+    """More than the tolerated number of CONSECUTIVE failures must still
+    abort - this is what keeps a genuine board replacement from going
+    unnoticed forever just because tolerance is non-zero.
+    連續失敗次數一旦超過容忍額度，還是必須中止——這正是即使容忍值不是 0，
+    真正的棋盤被換掉也不會永遠沒被發現的原因。"""
+    image, result, mapper, plan, crop = _plan_for("live_queens_3.png")
+    flat = np.full_like(crop, 245)
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.0,
+                        grab=lambda *a: flat, failure_tolerance=2)
+    assert watch.arm(crop)
+    assert watch.still_there() is True, "1st failure: tolerated / 第 1 次失敗：容忍"
+    assert watch.still_there() is True, "2nd failure: tolerated / 第 2 次失敗：容忍"
+    assert watch.still_there() is False, "3rd failure: exceeds tolerance, must abort / 第 3 次失敗：超過容忍，必須中止"
+    assert watch.still_there() is False, "must latch / 必須鎖定"
+    print("  failure_tolerance still aborts once persistently exceeded OK")
+
+
 def test_guard_refuses_to_judge_without_a_self_test():
     """
     If arm() fails the guard must never abort anything - it would kill filling.
@@ -219,6 +272,62 @@ def test_guard_refuses_to_judge_without_a_self_test():
     assert not driver.stopped_by_guard
     assert len(driver.log) == _actions(plan), "filling was cut short / 填答被截斷"
     print("  guard refuses to judge without a self-test OK")
+
+
+def test_attach_wires_the_guard_for_any_caller():
+    """board_watch.attach() is the ONE place that wires a guard into a
+    driver - both ui/app.py and ui/cli.py go through it, so a future third
+    caller cannot forget to.
+    board_watch.attach() 是唯一一個把保護接進 driver 的地方——
+    ui/app.py 跟 ui/cli.py 都是走這裡，這樣未來第三個呼叫者才不會忘記接。
+
+    Bug this guards: ui/cli.py's --go path never had this wiring at all.
+    Measured against a scripted screen where the board is replaced after 3
+    actions: the GUI (which had the wiring, just written out inline) stopped
+    after 3 of 28 actions; --go ran all 28, 25 of them onto the replaced
+    board. --go is the closest thing this project has to "five puzzles fully
+    automatically", and it was the one path that ran blind.
+    這個測試守住的問題：ui/cli.py 的 --go 路徑以前完全沒有接過這段。
+    對一個腳本化、盤面在第 3 個動作後被換掉的畫面實測：GUI（接線寫在自己
+    裡面）在 28 個動作裡走 3 個就停；--go 28 個全部走完，25 個點在被換掉
+    的盤面上。--go 是這個專案最接近「五題全自動」的東西，卻是唯一盲目
+    執行的路徑。
+    """
+    image, result, mapper, plan, crop = _plan_for("live_queens_3.png")
+
+    # Succeeds: the plan's own frame locates fine, so attach() must arm and
+    # wire driver.guard.
+    # 成功的情況：計畫自己的畫面定位得到，attach() 就必須啟用並接上 driver.guard。
+    driver = InputDriver(dry_run=True)
+    watch = board_watch.attach(driver, mapper, result, image)
+    assert watch.armed
+    # Bound-method identity (`is`) is unreliable in Python - each attribute
+    # access can mint a new wrapper object - so check the underlying function
+    # and the instance it is bound to instead.
+    # 綁定方法（bound method）的 `is` 比較並不可靠——每次存取屬性都可能產生
+    # 新的包裝物件——所以改成檢查底層函式跟綁定的實體。
+    assert driver.guard is not None, "attach() did not wire driver.guard / attach() 沒有接上 driver.guard"
+    assert driver.guard.__func__ is BoardWatch.still_there and driver.guard.__self__ is watch, (
+        "driver.guard is not watch.still_there / driver.guard 不是 watch.still_there"
+    )
+
+    # Fails: a locator that cannot even find the board in the plan's OWN
+    # frame must not be wired in at all - matching arm()'s own contract.
+    # 失敗的情況：定位器連計畫自己的畫面都找不到棋盤，就完全不能接上——
+    # 跟 arm() 自己的約定一致。
+    driver2 = InputDriver(dry_run=True)
+    blank = np.zeros_like(image)
+    watch2 = board_watch.attach(driver2, mapper, result, blank)
+    assert not watch2.armed
+    assert watch2.reason
+    assert driver2.guard is None, "a failed arm() must not wire the guard / arm() 失敗時不該接上保護"
+
+    # Patches gets the measured tolerance; every other puzzle (this fixture
+    # is Queens) gets the strict default.
+    # 拼塊會用量測過的容忍值；其他每一款謎題（這張測試圖是 Queens）
+    # 用嚴格的預設值。
+    assert watch.failure_tolerance == 0, f"non-Patches puzzle got tolerance {watch.failure_tolerance}, expected 0"
+    print("  attach() wires the guard for any caller OK")
 
 
 def test_guard_stops_when_the_screen_cannot_be_read():
@@ -396,13 +505,31 @@ def test_rate_limit_bounds_the_cost_without_hiding_a_change():
     assert watch2.arm(crop)
     assert watch2.still_there() is False, "first real evaluation must see it / 第一次真正評估就該看到"
 
-    watch3 = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.05,
+    # WHY 0.3s, not the 0.05s used just above 為什麼是 0.3 秒，不是上面用的 0.05 秒:
+    # A single real evaluation on this fixture measured 36-50ms - right at the
+    # edge of a 50ms interval on its own, before adding anything else. That
+    # made this specific assertion measure system jitter (GC pauses, a
+    # slightly slower run) as often as it measured the throttle itself - it
+    # started failing intermittently once action_log.log()'s own small
+    # overhead (a lock, string formatting, one flushed write) was added to
+    # every still_there() call, not because the throttle logic changed.
+    # 0.3s leaves real headroom over the measured per-call cost, so this
+    # keeps testing "does it reuse the cached answer", not "how fast is this
+    # machine right now".
+    # 在這個測試圖上，單獨一次真正的評估實測要 36~50 毫秒——本身就已經卡在
+    # 50 毫秒間隔的邊緣，還沒加上其他任何東西。這讓這個斷言量到的常常是
+    # 系統本身的抖動（GC 暫停、這一輪剛好跑得慢一點），而不是節流機制本身——
+    # 在 action_log.log() 自己那一點點成本（一次鎖、字串組裝、一次帶 flush
+    # 的寫入）被加進每一次 still_there() 呼叫之後，就開始間歇性失敗，
+    # 不是因為節流的邏輯變了。0.3 秒對量到的單次成本留了真正的餘裕，
+    # 這樣測的才會是「有沒有沿用快取的答案」，而不是「這台機器現在多快」。
+    watch3 = BoardWatch(mapper=mapper, n=result.grid.n, min_interval=0.3,
                         grab=lambda *a, _c=crop: _c)
     assert watch3.arm(crop)
     assert watch3.still_there() is True
     watch3.grab = lambda *a, _g=gone: _g
     assert watch3.still_there() is True, "inside the interval it reuses the answer / 間隔內沿用答案"
-    time.sleep(0.06)
+    time.sleep(0.35)
     assert watch3.still_there() is False, "after the interval it must notice / 間隔過後必須察覺"
     print("  rate limit bounds cost without hiding a change OK")
 
@@ -543,30 +670,26 @@ def test_guard_still_fails_late_in_the_same_capture():
     print("  guard still fails late in the same capture (documented gap) OK")
 
 
-def test_patches_finishes_despite_the_documented_late_fill_gap():
-    """End to end: the ask_guard=False tail lets a real Patches plan finish
-    even though a REAL BoardWatch, pointed at that fixture, would abort every
-    single time it is actually asked.
-    整合測試：即使把一個真正的 BoardWatch 指向那張測試圖——它只要真的被問，
-    每一次都會判定中止——最後兩塊矩形的計畫還是跑得完。
+def test_patches_tolerates_persistent_failure_up_to_the_measured_limit():
+    """End to end: PATCHES_FAILURE_TOLERANCE lets a real Patches plan finish
+    even though a REAL BoardWatch, pointed at a known-failing fixture, fails
+    EVERY single time it is asked - as long as the plan has no more actions
+    than the tolerance allows. One more action than that, and the SAME
+    persistent failure correctly stops the plan instead.
+    整合測試：即使一個真正的 BoardWatch 指向一張已知會一直失敗的測試圖——
+    每一次被問都失敗——只要計畫的動作數不超過容忍次數，
+    PATCHES_FAILURE_TOLERANCE 還是能讓一次真實的拼塊計畫跑完。
+    再多一個動作，同樣持續的失敗就會正確地讓計畫停下來。
 
-    A 2-rectangle plan means BOTH rectangles fall inside
-    PatchesPlayer.LAST_UNGUARDED_RECTS (=2), so neither should ever call
-    driver.guard at all. Proven two ways at once: the plan completes without
-    raising Aborted, AND watch.checks_made() is 0 - not "the guard happened to
-    agree", but "the guard was never consulted". A 3rd rectangle added to this
-    same plan WOULD raise Aborted, because it falls outside the unguarded tail
-    - that is the guard doing its job everywhere else, unchanged.
-    2 塊矩形的計畫，兩塊都落在 PatchesPlayer.LAST_UNGUARDED_RECTS（=2）範圍內，
-    所以理論上完全不該呼叫 driver.guard。用兩種方式同時證明：計畫跑完、
-    沒有拋出 Aborted，而且 watch.checks_made() 是 0——不是「保護剛好判定通過」，
-    是「保護根本沒被問過」。如果對同一個計畫加上第 3 塊矩形，那一塊「會」
-    拋出 Aborted，因為它落在不受保護的尾段之外——這正是保護在其他地方
-    照常運作、沒有被這個改動動到的證明。
+    Unlike the position-based mechanism this replaced, nothing here depends
+    on WHERE in the plan the failure happens - only on how many times in a
+    row the guard has actually seen it.
+    跟這裡取代的位置判斷法不同，這裡完全不管失敗發生在計畫的「哪裡」——
+    只看保護實際連續看到失敗幾次。
     """
+    from linkedin_games_solver.automation.board_watch import PATCHES_FAILURE_TOLERANCE
+
     mapper = _mapper(6)
-    rects = [(0, 0, 2, 2), (0, 2, 2, 2)]
-    plan = build_plan("patches", mapper, {"rects": rects})
 
     # arm() proves the locator on the PLAN's own (locatable) frame; still_there()
     # is then pointed at the known-failing fixture via grab() - same underlying
@@ -578,43 +701,57 @@ def test_patches_finishes_despite_the_documented_late_fill_gap():
     failing_image = read_image(FIXTURES / "patches_mid_drag_5of6.png")
     assert pristine is not None and failing_image is not None, "missing fixture / 缺少測試圖"
 
-    # A throwaway probe watch, separate from the one the plan actually uses -
-    # proves the fixture genuinely fails a real check, without leaving any
-    # state on the watch the plan will run against.
-    # 一個用完即丟的探針 watch，跟計畫實際使用的分開——證明這張測試圖真的會讓
-    # 一次真正的檢查失敗，同時不會在計畫要用的那個 watch 上留下任何狀態。
+    # A throwaway probe, separate from the watches the plans below actually
+    # use - proves the fixture genuinely fails a real check.
+    # 一個用完即丟的探針，跟下面計畫實際使用的分開——證明這張測試圖真的會讓
+    # 一次真正的檢查失敗。
     probe = BoardWatch(mapper=mapper, n=6, min_interval=0.0, grab=lambda *a: failing_image)
-    assert probe.arm(pristine), (
-        "patches_mid_drag_1of6.png must self-locate for this test to mean anything / "
-        "patches_mid_drag_1of6.png 自己要定位得到，這個測試才有意義"
-    )
+    assert probe.arm(pristine)
     assert probe.still_there() is False, (
         "the fixture must make a real check fail, or this test proves nothing / "
         "這張圖必須讓真正的檢查失敗，否則這個測試證明不了任何事"
     )
 
-    watch = BoardWatch(mapper=mapper, n=6, min_interval=0.0, grab=lambda *a: failing_image)
+    # Exactly at the tolerance: every rectangle's guard check fails, and the
+    # plan still completes.
+    # 剛好等於容忍次數：每一塊矩形的保護檢查都失敗，計畫還是跑得完。
+    within_tolerance = [(0, 0, 2, 2)] * PATCHES_FAILURE_TOLERANCE
+    plan = build_plan("patches", mapper, {"rects": within_tolerance})
+    watch = BoardWatch(mapper=mapper, n=6, min_interval=0.0, grab=lambda *a: failing_image,
+                        failure_tolerance=PATCHES_FAILURE_TOLERANCE)
     assert watch.arm(pristine)
-
     driver = InputDriver(dry_run=True)
     driver.guard = watch.still_there
     try:
         plan.run(driver)
     except Aborted:
         raise AssertionError(
-            "plan aborted even though both rectangles fall inside the "
-            "unguarded tail / 計畫中止了，但這兩塊矩形都落在不受保護的尾段內"
+            f"a {len(within_tolerance)}-action plan aborted despite exactly "
+            f"matching the tolerance ({PATCHES_FAILURE_TOLERANCE}) / "
+            f"{len(within_tolerance)} 個動作的計畫中止了，明明剛好等於容忍次數"
+            f"（{PATCHES_FAILURE_TOLERANCE}）"
         )
-    assert len(driver.log) == len(rects), (
-        f"expected both rectangles to run, got {len(driver.log)} actions / "
-        f"預期兩塊矩形都執行，實際 {len(driver.log)} 個動作"
-    )
-    assert watch.checks_made() == 0, (
-        f"the guard should never have been consulted, but was asked "
-        f"{watch.checks_made()} time(s) / 保護本來就不該被問到，但實際被問了 "
-        f"{watch.checks_made()} 次"
-    )
-    print("  Patches finishes despite the documented late-fill gap OK")
+    assert len(driver.log) == len(within_tolerance)
+
+    # One action beyond the tolerance: the same persistent failure now
+    # correctly stops the plan before it finishes.
+    # 超過容忍次數一個動作：同樣持續的失敗，現在會在計畫跑完之前正確停下。
+    beyond_tolerance = [(0, 0, 2, 2)] * (PATCHES_FAILURE_TOLERANCE + 1)
+    plan2 = build_plan("patches", mapper, {"rects": beyond_tolerance})
+    watch2 = BoardWatch(mapper=mapper, n=6, min_interval=0.0, grab=lambda *a: failing_image,
+                         failure_tolerance=PATCHES_FAILURE_TOLERANCE)
+    assert watch2.arm(pristine)
+    driver2 = InputDriver(dry_run=True)
+    driver2.guard = watch2.still_there
+    try:
+        plan2.run(driver2)
+        raise AssertionError(
+            "plan should have aborted once persistent failure exceeded the "
+            "tolerance / 持續失敗的次數超過容忍上限後，計畫應該要中止"
+        )
+    except Aborted:
+        pass
+    print("  Patches tolerates persistent failure up to the measured limit OK")
 
 
 def _mapper(n):
@@ -645,7 +782,11 @@ if __name__ == "__main__":
     test_plan_stops_the_moment_the_board_disappears()
     test_guard_survives_our_own_filling()
     test_guard_latches()
+    test_failure_tolerance_defaults_to_the_original_strict_behaviour()
+    test_failure_tolerance_absorbs_a_run_that_recovers()
+    test_failure_tolerance_still_aborts_once_persistently_exceeded()
     test_guard_refuses_to_judge_without_a_self_test()
+    test_attach_wires_the_guard_for_any_caller()
     test_guard_stops_when_the_screen_cannot_be_read()
     test_guard_detects_a_different_puzzle_in_the_same_place()
     test_guard_survives_every_real_board_state()
@@ -655,5 +796,5 @@ if __name__ == "__main__":
     test_a_drag_is_never_interrupted_by_the_guard()
     test_guard_survives_a_real_mid_drag_patches_capture()
     test_guard_still_fails_late_in_the_same_capture()
-    test_patches_finishes_despite_the_documented_late_fill_gap()
+    test_patches_tolerates_persistent_failure_up_to_the_measured_limit()
     print("\nAll passed / 全部通過")

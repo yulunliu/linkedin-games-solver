@@ -28,6 +28,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from . import action_log
+
 
 @dataclass
 class BoardGrid:
@@ -175,17 +177,98 @@ def detect_grid_size(board_roi: np.ndarray, candidates: range = range(4, 13)) ->
     return max(votes.items(), key=lambda kv: kv[1])[0] if votes else None
 
 
+#: Saturation (HSV) above which a pixel is treated as a drawn-in answer mark
+#: (a Patches fill, for instance) rather than board structure.
+#: HSV 飽和度超過這個值的像素，視為畫上去的答案（例如拼塊的填色），
+#: 不是棋盤本身的結構。
+#:
+#: MEASURED on a real mid-drag Patches capture, 2026-08-04 (see
+#: automation/board_watch.py's own history of this same threshold): a drawn
+#: patch's fill is S 76-94 over a broad area; the pristine background is
+#: under 3 for 90% of pixels, with rare small spikes from printed number
+#: badges. The gap between "broad drawn fill" and "background, plus small
+#: label dots" is wide enough that masking above 50 removes the fill without
+#: touching grid lines, which are gray/black and low-S by construction.
+#: 2026-08-04 用一張真實的拖曳中拼塊截圖量的（同一個門檻的沿革見
+#: automation/board_watch.py）：已畫的貼塊填色在一大片範圍內飽和度是
+#: 76~94；乾淨背景 90% 的像素都在 3 以下，只有印出來的數字標籤偶爾有
+#:小範圍的尖峰。「大片填色」跟「背景加上小標籤點」之間的差距夠大，
+#: 遮住超過 50 的部分能去掉填色，又不會動到格線本身——格線是灰色或黑色，
+#: 本來就是低飽和度。
+_ANSWER_MARK_SATURATION = 50
+
+
+def mask_saturated(image: np.ndarray) -> np.ndarray:
+    """Replace high-saturation pixels (our own drawn answer) with white.
+    把高飽和度的像素（我們自己畫上去的答案）換成白色。
+
+    Shared by the initial recognition path (build_grid, below) and the
+    mid-plan board guard (automation/board_watch.py) - both hit the exact
+    same failure for the exact same reason: detect_grid_size reads grid
+    lines as thin dark columns/rows against a light background, and a
+    drawn-in answer's colour reads as "mostly dark" over a wide span
+    instead, breaking that assumption. See build_grid's docstring for when
+    this actually gets exercised.
+    初次辨識（下面的 build_grid）跟填答中途的盤面保護
+    （automation/board_watch.py）共用這個函式——兩邊會踩到完全一樣的失敗、
+    原因也完全一樣：detect_grid_size 是把格線讀成淺色背景上細細的深色
+    欄/列，而畫上去的答案顏色卻會在一大片範圍內被讀成「大部分是暗的」，
+    打破這個假設。什麼時候真的會用到這個，見 build_grid 的文件字串。
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    masked = image.copy()
+    masked[hsv[:, :, 1] > _ANSWER_MARK_SATURATION] = (255, 255, 255)
+    return masked
+
+
 def build_grid(image: np.ndarray, n_hint: int | None = None) -> BoardGrid:
     """Locate a bordered board and split it into cells. Raises ValueError if not found.
-    定位有外框的棋盤並切格。找不到時丟出 ValueError。"""
+    定位有外框的棋盤並切格。找不到時丟出 ValueError。
+
+    Retries grid-size detection with our own high-saturation marks masked out
+    before giving up. WHY 為什麼: a board that already has some cells filled
+    in - the user started manually before running the tool, or a caller
+    re-solves mid-fill - used to fail here even though a person could
+    plainly see the grid. Confirmed by direct reproduction: solve_image() on
+    a real capture with 1 of 6 Patches rectangles drawn raised exactly this
+    error, on the INITIAL scan, not the mid-plan guard. Only tried as a
+    fallback, after the raw image has already failed - every board that
+    locates on the first try is completely unaffected.
+    在放棄之前，先把我們自己畫的高飽和度標記遮掉、重新嘗試一次抓格數。
+    為什麼：一個已經有幾格被填過的棋盤——使用者在跑這個工具之前手動先填了
+    幾格，或呼叫端在填答途中重新求解——以前會在這裡失敗，即使人眼一看
+    就知道格線在哪。已直接重現確認：對一張真實的、6 塊拼塊填了 1 塊的
+    截圖呼叫 solve_image()，會丟出一模一樣的錯誤——而且是在「初次掃描」，
+    不是填答中途的保護。這只在原始影像已經失敗之後才會試——第一次就
+    定位得到的每一個棋盤完全不受影響。
+    """
     bbox = find_board_bbox(image)
     if bbox is None:
         raise ValueError("board not found / 偵測不到棋盤外框")
 
     x, y, w, h = bbox
-    n = n_hint or detect_grid_size(image[y : y + h, x : x + w])
+    roi = image[y : y + h, x : x + w]
+    n = n_hint or detect_grid_size(roi)
+    if n is None and n_hint is None:
+        # This is the Patches root cause from CHANGELOG's 1.2.0 entry -
+        # exactly the "容易出錯的部分" a session log needs to catch, since it
+        # can keep firing silently for the rest of a fill without ever
+        # surfacing as a user-visible error (build_grid still succeeds).
+        # 這正是 CHANGELOG 1.2.0 條目裡拼塊的根本原因——正是記錄檔要抓住的
+        # 「容易出錯的部分」，因為它可能在填答剩下的過程中持續、靜靜地
+        # 觸發，卻從來不會變成使用者看得到的錯誤（build_grid 還是成功了）。
+        action_log.log("WARN", "detect_grid_size failed on the raw crop, "
+                        "retrying with the mask_saturated fallback")
+        n = detect_grid_size(mask_saturated(roi))
+        action_log.log("WARN", f"mask_saturated fallback: "
+                        f"{'recovered n=' + str(n) if n else 'still failed'}")
     if n is None:
-        raise ValueError("grid size not detected / 無法自動偵測棋盤格數")
+        raise ValueError(
+            "grid size not detected - if the board already has some cells "
+            "filled in, try resetting it first / "
+            "無法自動偵測棋盤格數——如果棋盤已經有部分格子被填過，"
+            "請先重設棋盤再試一次"
+        )
     return BoardGrid(n=n, board_bbox=bbox, cell_boxes=build_cell_boxes(bbox, n))
 
 

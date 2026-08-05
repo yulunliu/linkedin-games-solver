@@ -206,7 +206,7 @@ paragraph, with the tricky lines called out individually.
 python tests/run_all.py
 ```
 
-Seven suites, all offline, no mouse movement:
+Ten suites, all offline, no mouse movement:
 
 - **`test_compat.py`** — that the declared Python 3.9 support is real. Checks
   every file parses at the minimum version and that no PEP 604 union is
@@ -228,6 +228,12 @@ Seven suites, all offline, no mouse movement:
 - **`test_automation.py`** — click plans in dry run: resuming a half-finished
   board, clearing misplaced crowns, drag interpolation, and that image mode runs
   without the screen-mode packages installed.
+- **`test_settings.py`** — a malformed saved region is dropped rather than
+  reaching the GUI and crashing it at startup.
+- **`test_image_io.py`** — reading and writing images always returns a value,
+  never raises: a directory, a locked file, an unwritable path all fail cleanly.
+- **`test_cli.py`** — `--region` parsing: malformed text or a non-positive
+  width/height gets a clear message, not a raw exception.
 
 ---
 

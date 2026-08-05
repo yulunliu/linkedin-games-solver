@@ -14,6 +14,8 @@ import json
 import sys
 from pathlib import Path
 
+from ..core import action_log
+
 SETTINGS_PATH = Path.home() / ".linkedin_games_solver.json"
 
 #: Folder offered by default when saving a capture.
@@ -62,6 +64,31 @@ DEFAULTS = {
 }
 
 
+def _valid_region(value) -> bool:
+    """Exactly four ints, width and height both positive.
+    剛好四個整數，寬跟高都是正數。
+
+    WHY 為什麼: _apply_settings used to do str(int(v)) over whatever load()
+    handed back, with no shape check first. Eight malformed shapes were
+    tried (wrong length, strings, nested lists, negative numbers...) and each
+    raised at startup - in the shipped windowed .exe that is "double-click,
+    and nothing happens", with fullscreen having no UI so hand-editing the
+    settings file was the only way to reach a bad value at all.
+    為什麼：_apply_settings 以前是對 load() 回傳的東西直接做 str(int(v))，
+    完全沒先檢查形狀。試過八種不合法的形狀（長度不對、字串、巢狀 list、
+    負數……），每一種都會在啟動時拋錯——在打包好的視窗版 exe 上就是
+    「點兩下，什麼都沒發生」，而 fullscreen 又沒有介面，手改設定檔是唯一
+    能碰到壞值的方式。
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return False
+    try:
+        left, top, width, height = (int(v) for v in value)
+    except (TypeError, ValueError):
+        return False
+    return width > 0 and height > 0
+
+
 def load() -> dict:
     data = dict(DEFAULTS)
     try:
@@ -73,6 +100,10 @@ def load() -> dict:
         # Corrupt settings must never stop the app from starting.
         # 設定檔壞掉絕對不能讓程式開不起來。
         pass
+    if data.get("region") is not None and not _valid_region(data["region"]):
+        action_log.log("WARN", f"settings.load(): malformed region {data['region']!r} "
+                        f"discarded, falling back to default")
+        data["region"] = DEFAULTS["region"]  # None -> caller computes a fresh default
     return data
 
 

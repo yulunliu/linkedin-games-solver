@@ -53,3 +53,10 @@ desktop.ini
 # 並附上說明它守住什麼的測試。
 img/
 captures/
+
+# Session action logs (core/action_log.py). Same reasoning as img/ above -
+# these can contain timestamps and behaviour tied to the user's own real
+# play sessions, not published material.
+# 執行動作記錄（core/action_log.py）。理由跟上面的 img/ 一樣——
+# 裡面可能含有使用者自己真實遊玩過程的時間戳記與行為，不是要公開的素材。
+logs/

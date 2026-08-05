@@ -28,25 +28,51 @@ import numpy as np
 
 def read_image(path: str | Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
     """Read an image, returning None if it does not exist or cannot be decoded.
-    讀取圖片，檔案不存在或無法解碼時回傳 None。"""
+    讀取圖片，檔案不存在或無法解碼時回傳 None。
+
+    A directory "exists" too, and np.fromfile raises IsADirectoryError /
+    PermissionError for a directory or a locked file rather than returning
+    nothing - both are caught here so the documented "None, never an
+    exception" contract actually holds. Measured: --image <a directory>
+    raised a raw PermissionError before this.
+    資料夾也算「存在」，而 np.fromfile 對資料夾或被鎖住的檔案丟的是
+    IsADirectoryError／PermissionError，不是回傳空值——這裡都接住，
+    讓「只回傳 None、不拋例外」這個文件寫的約定真的成立。實測：
+    --image <一個資料夾> 在這個修正之前會直接丟出原始的 PermissionError。
+    """
     file_path = Path(path)
-    if not file_path.exists():
+    if not file_path.exists() or file_path.is_dir():
         return None
-    raw = np.fromfile(str(file_path), dtype=np.uint8)
+    try:
+        raw = np.fromfile(str(file_path), dtype=np.uint8)
+    except OSError:
+        return None
     if raw.size == 0:
         return None
     return cv2.imdecode(raw, flags)
 
 
 def write_image(path: str | Path, image: np.ndarray) -> bool:
-    """Write an image, returning True on success.
-    寫出圖片，成功回傳 True。"""
+    """Write an image, returning True on success, False on any failure.
+    寫出圖片，成功回傳 True，任何失敗都回傳 False。
+
+    cv2.imencode raises cv2.error rather than returning ok=False under
+    OpenCV 5.0.0 (the version this project ships), and tofile() raises
+    OSError for an unwritable path - both used to escape uncaught, which
+    broke the documented "returns bool" contract every caller relies on.
+    cv2.imencode 在這個專案用的 OpenCV 5.0.0 下，是拋出 cv2.error 而不是
+    回傳 ok=False；tofile() 對寫不進去的路徑則是拋 OSError——這兩種
+    以前都沒接住，直接逸出，破壞了每個呼叫端都依賴的「回傳布林值」約定。
+    """
     file_path = Path(path)
     # Fall back to PNG when the caller gave no extension.
     # 呼叫端沒給副檔名時預設用 PNG。
     suffix = file_path.suffix or ".png"
-    ok, encoded = cv2.imencode(suffix, image)
-    if not ok:
+    try:
+        ok, encoded = cv2.imencode(suffix, image)
+        if not ok:
+            return False
+        encoded.tofile(str(file_path))
+        return True
+    except (cv2.error, OSError):
         return False
-    encoded.tofile(str(file_path))
-    return True

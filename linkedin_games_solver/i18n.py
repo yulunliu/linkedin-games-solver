@@ -63,6 +63,7 @@ _TEXTS: dict[str, dict[str, str]] = {
     "status_error": {"en": "Error", "zh": "發生錯誤"},
     "status_stopping": {"en": "Stopping...", "zh": "停止中..."},
     # ---- Log messages 訊息 ----
+    "log_file": {"en": "Session log file", "zh": "本次執行的記錄檔"},
     "log_puzzle_type": {"en": "Puzzle type", "zh": "謎題類型"},
     "log_plan": {"en": "=== Fill plan ===", "zh": "=== 填答計畫 ==="},
     "log_elapsed": {"en": "Elapsed", "zh": "耗時"},
@@ -81,6 +82,10 @@ _TEXTS: dict[str, dict[str, str]] = {
     "log_guard_frame_saved": {
         "en": "  Saved the frame that triggered the stop",
         "zh": "  已存下觸發停止的那一張畫面",
+    },
+    "log_failsafe": {
+        "en": "  Stopped: the mouse hit a screen corner (pyautogui's fail-safe).",
+        "zh": "  已停止：滑鼠碰到了螢幕角落（pyautogui 的安全逃生機制）。",
     },
     "log_retry": {"en": "  Re-clicking", "zh": "  補點"},
     "log_no_improve": {
@@ -104,6 +109,10 @@ _TEXTS: dict[str, dict[str, str]] = {
     "dlg_capture_failed": {"en": "Capture failed", "zh": "擷取失敗"},
     "dlg_read_failed": {"en": "Cannot read image", "zh": "讀不到圖片"},
     "dlg_saved": {"en": "Saved", "zh": "已儲存"},
+    "dlg_save_failed": {
+        "en": "Could not save - check the path is writable",
+        "zh": "存檔失敗——請確認路徑可以寫入",
+    },
     "dlg_nothing_to_save": {"en": "Nothing captured yet", "zh": "尚未擷取"},
     "dlg_save_title": {"en": "Save captured image", "zh": "存下擷取畫面"},
     "dlg_pick_image": {"en": "Choose a puzzle screenshot", "zh": "選擇謎題截圖"},

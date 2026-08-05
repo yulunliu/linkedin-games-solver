@@ -160,6 +160,78 @@ def test_wrong_type_does_not_fake_success():
     print("  wrong type does not fake success OK")
 
 
+def test_zoom_hint_is_not_appended_to_a_comfortably_large_borderless_board():
+    """
+    Bug this guards: the final failure handler measured board size with
+    find_board_bbox ALONE, which structurally cannot see Tango (it has no
+    outer border - see core/board.py). So board_px was always None for
+    Tango, and EVERY Tango failure got "board too small / not found. Zoom in
+    with Ctrl +" tacked on regardless of the real cause or the real size.
+    S__104316931.jpg's board is 799px - nowhere near MIN_BOARD_PIXELS=500 -
+    yet the old code would still have claimed otherwise.
+    這個測試守住的問題：最後的失敗處理只用 find_board_bbox 量棋盤大小，
+    而它結構上就看不到 Tango（Tango 沒有外框——見 core/board.py）。
+    所以 Tango 的 board_px 以前永遠是 None，不管真正原因或真正大小是什麼，
+    每一次 Tango 失敗都會被硬加上「棋盤太小／找不到。可按 Ctrl + 放大」。
+    S__104316931.jpg 的棋盤有 799px，離 MIN_BOARD_PIXELS=500 還遠得很，
+    但舊的程式碼還是會宣稱相反的事。
+    """
+    # n_hint=99 forces every attempt to fail regardless of the board's real,
+    # comfortably-large size - isolating the zoom-hint logic from whether
+    # the puzzle would otherwise have solved.
+    # n_hint=99 強迫每一次嘗試都失敗，不管棋盤真正的大小其實很夠——
+    # 這樣才能把「zoom 提示的邏輯」跟「這題本來會不會解成功」分開來測。
+    result = solve_image(_load("S__104316931.jpg"), puzzle_key="tango", n_hint=99)
+    assert not result.ok
+    assert "Zoom in" not in result.error and "放大" not in result.error, (
+        f"a 799px board must not be reported as too small / "
+        f"799px 的棋盤不該被講成太小: {result.error!r}"
+    )
+    print("  zoom hint is not falsely appended to a large borderless board OK")
+
+
+def test_initial_recognition_survives_a_partially_filled_patches_board():
+    """
+    Bug this guards: solve_image() - the INITIAL scan, not the mid-plan
+    guard - used to fail with the unhelpful "grid size not detected" on a
+    Patches board that already had some cells filled in. Reachable if a
+    user starts the tool after manually placing a piece, or a caller
+    re-solves mid-fill. build_grid() now retries with high-saturation marks
+    masked out before giving up (core/board.py) - the same fix already
+    proven for the mid-plan guard, shared rather than duplicated.
+    這個測試守住的問題：solve_image()——初次掃描，不是填答中途的保護——
+    以前對一個已經有幾格被填過的拼塊棋盤，只會給一個沒有幫助的
+    「無法自動偵測棋盤格數」。使用者手動放了一塊再啟動工具、或呼叫端在
+    填答途中重新求解，都碰得到。build_grid() 現在會在放棄之前，先把
+    高飽和度的標記遮掉再試一次（core/board.py）——這是已經在中途保護上
+    證明有效的同一個修法，共用而不是複製一份。
+
+    Confirms two things: the grid is actually located (n=6, not a guess),
+    and if the fill happens to have obscured a label, the failure that
+    follows is a specific, honest one - never a fabricated answer.
+    確認兩件事：格數真的定位得到（n=6，不是用猜的），而且如果填色剛好
+    蓋住了某個標籤，接下來的失敗是具體、誠實的——絕不是編出來的答案。
+    """
+    from linkedin_games_solver.core.board import build_grid
+
+    image = _load("patches_mid_drag_1of6.png")
+    grid = build_grid(image)
+    assert grid.n == 6, f"expected n=6, got {grid.n}"
+
+    result = solve_image(image)
+    # This particular fixture has a label obscured by the drawn fill, so the
+    # solver correctly refuses to guess - but it must fail SPECIFICALLY, not
+    # with the old generic "grid size not detected".
+    # 這張測試圖剛好有一個標籤被填色蓋住，所以求解器正確地拒絕用猜的——
+    # 但失敗訊息必須是「具體的」，不能是舊的那句籠統的「無法自動偵測棋盤格數」。
+    if not result.ok:
+        assert "grid size not detected" not in result.error, (
+            f"recognition should get past grid detection now / "
+            f"辨識現在應該能通過格數偵測這一步: {result.error!r}"
+        )
+    print("  initial recognition survives a partially filled Patches board OK")
+
+
 # --------------------------------------------------------------- verify
 def test_stops_when_board_changes():
     """
@@ -202,6 +274,65 @@ def test_stops_when_board_changes():
     result2 = solve_image(with_crowns)
     assert not verify(with_crowns, result2).board_changed
     print("  stops when the board changes OK")
+
+
+def test_stops_when_the_board_shifts_without_disappearing():
+    """
+    Bug this guards: every verifier compares cells by grid INDEX, which is
+    translation-invariant - a board that MOVED within the same capture
+    (page scroll, window resize, a card growing) reads exactly the same as
+    one that never moved. Measured before this fix: a 9x9 Queens board
+    (89px cells) shifted 80px down still verified as unchanged; swept -120px
+    to +300px and board_changed was False at every single offset, while
+    build_grid on the same frame correctly reported the new bbox the whole
+    time. The retry plan then clicks the OLD pixel coordinates, which now
+    belong to a different cell - a silent wrong click, not a crash.
+    這個測試守住的問題：每個驗證器都是用格子「索引」比對，那對平移是不敏感
+    的——棋盤在同一塊擷取範圍裡「移動」過（捲頁、視窗改變大小、卡片長高），
+    讀起來會跟完全沒動過一模一樣。修正前實測：一個 9x9、格子 89px 的 Queens
+    棋盤往下移 80px，依然被判定沒有改變；掃過 -120px 到 +300px，
+    board_changed 在每一個偏移量都是 False，而同一張畫面上 build_grid
+    卻一路正確回報新的 bbox。補點計畫接著會點下「舊的」像素座標，
+    那個位置現在屬於另一格——是安靜的錯誤點擊，不是當機。
+
+    Checked for all three verifiers that support retry (Queens, Tango,
+    Sudoku) - the fix is the same one line in each, and each needs its own
+    proof it actually took effect.
+    對支援補點的三個驗證器都測過（Queens、Tango、Sudoku）——修法在每一個
+    裡面都是同一行，各自都需要自己的證據證明真的生效了。
+    """
+    import numpy as np
+
+    from linkedin_games_solver.automation import verify
+
+    def shifted(image, dy):
+        canvas = np.full_like(image, 255)
+        src_top, dst_top = max(0, -dy), max(0, dy)
+        h = image.shape[0] - abs(dy)
+        canvas[dst_top:dst_top + h, :] = image[src_top:src_top + h, :]
+        return canvas.astype(image.dtype)
+
+    for name in ("live_queens_3.png", "live_tango.png", "S__104316935_0.jpg"):
+        image = _load(name)
+        result = solve_image(image)
+        assert result.ok, f"{name}: {result.error}"
+
+        # A shift smaller than the tolerance must NOT be reported as changed -
+        # this is what stops the fix from being trigger-happy on ordinary
+        # sub-pixel jitter between two independent detections of the SAME,
+        # unmoved board.
+        # 小於容忍範圍的偏移絕不能被判定成改變——這是為了不讓這個修正對
+        # 「同一個沒動過的棋盤」兩次獨立辨識之間本來就會有的次像素級誤差
+        # 反應過度。
+        small = verify(shifted(image, 3), result)
+        assert not small.board_changed, f"{name}: 3px jitter falsely flagged as moved / 誤判成移動"
+
+        # A shift clearly beyond one cell must be caught.
+        # 明顯超過一格的偏移必須被抓到。
+        cell = result.grid.board_bbox[2] / result.grid.n
+        big = verify(shifted(image, round(cell * 1.5)), result)
+        assert big.board_changed, f"{name}: a {cell * 1.5:.0f}px shift was not detected / 沒有偵測到位移"
+    print("  stops when the board shifts without disappearing OK")
 
 
 def test_board_position_survives_the_working_size_cap():
@@ -251,6 +382,59 @@ def test_board_position_survives_the_working_size_cap():
     print("  board position survives the working-size cap OK")
 
 
+def test_should_continue_cuts_a_failing_solve_short():
+    """
+    Bug this guards: solve_image had no time budget and no cancellation -
+    Stop could not interrupt a solve in progress. Measured before this fix:
+    a 4K screen grab took 29-49s, an 8000x8000 one 238-312s, with no check-in
+    point anywhere in that time. On a timed game, silence is indistinguishable
+    from a hang.
+    這個測試守住的問題：solve_image 以前沒有時間預算、也沒有取消機制——
+    「停止」中斷不了正在進行的求解。修正前實測：4K 螢幕擷取要 29~49 秒，
+    8000x8000 要 238~312 秒，這整段時間裡完全沒有任何檢查點。
+    在計時的遊戲裡，安靜跟當機分不出來。
+
+    Pure noise fails every rung of every puzzle type's ladder, so it is
+    guaranteed to keep going until should_continue says stop - proving the
+    callback is actually consulted, not just accepted and ignored.
+    純雜訊會讓每一款謎題、每一階階梯都失敗，保證會一路跑到 should_continue
+    喊停為止——這證明這個回呼真的有被詢問，不是被接受了卻沒有用。
+    """
+    import time as time_module
+
+    import numpy as np
+
+    from linkedin_games_solver.puzzles import CANCELLED
+
+    noise = np.random.RandomState(0).randint(0, 255, (900, 900, 3)).astype(np.uint8)
+
+    t0 = time_module.perf_counter()
+    full = solve_image(noise)
+    full_elapsed = time_module.perf_counter() - t0
+    assert not full.ok
+
+    calls = {"n": 0}
+
+    def cancel_after_3():
+        calls["n"] += 1
+        return calls["n"] <= 3
+
+    t0 = time_module.perf_counter()
+    cancelled = solve_image(noise, should_continue=cancel_after_3)
+    cancelled_elapsed = time_module.perf_counter() - t0
+
+    assert not cancelled.ok
+    assert cancelled.error == CANCELLED, f"expected {CANCELLED!r}, got {cancelled.error!r}"
+    assert calls["n"] > 0, "should_continue was never called / should_continue 從來沒被呼叫過"
+    assert cancelled_elapsed < full_elapsed * 0.5, (
+        f"cancelling after 3 calls ({cancelled_elapsed:.2f}s) should be far "
+        f"faster than the full ladder ({full_elapsed:.2f}s) / "
+        f"3 次後取消（{cancelled_elapsed:.2f}s）應該要遠比跑完整條階梯"
+        f"（{full_elapsed:.2f}s）快"
+    )
+    print("  should_continue cuts a failing solve short OK")
+
+
 if __name__ == "__main__":
     print("Recognition tests / 辨識測試")
     test_puzzle_type_detection()
@@ -259,6 +443,10 @@ if __name__ == "__main__":
     test_live_tango_matches_screen()
     test_live_patches_with_blank_labels()
     test_wrong_type_does_not_fake_success()
+    test_zoom_hint_is_not_appended_to_a_comfortably_large_borderless_board()
+    test_initial_recognition_survives_a_partially_filled_patches_board()
     test_stops_when_board_changes()
+    test_stops_when_the_board_shifts_without_disappearing()
     test_board_position_survives_the_working_size_cap()
+    test_should_continue_cuts_a_failing_solve_short()
     print("\nAll passed / 全部通過")

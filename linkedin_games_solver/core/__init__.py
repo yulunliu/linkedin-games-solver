@@ -9,6 +9,7 @@ Core layer: everything that is shared by all five puzzles.
   result       shared return type                   共用回傳型別
 """
 
+from . import action_log
 from .board import BoardGrid, build_cell_boxes, build_grid, build_grid_from_lines
 from .detect_type import detect_type
 from .image_io import read_image, write_image
@@ -24,4 +25,5 @@ __all__ = [
     "write_image",
     "SolveResult",
     "failure",
+    "action_log",
 ]

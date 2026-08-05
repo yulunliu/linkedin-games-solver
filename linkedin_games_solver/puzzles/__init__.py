@@ -35,10 +35,12 @@ adds the robustness layer that all of them need:
 
 from __future__ import annotations
 
+from typing import Callable
+
 import cv2
 import numpy as np
 
-from ..core import SolveResult, build_cell_boxes, detect_type
+from ..core import SolveResult, action_log, build_cell_boxes, detect_type, failure
 from ..core.board import BoardGrid, find_board_bbox, find_board_by_grid_lines
 from . import patches, queens, sudoku, tango, zip_path
 
@@ -236,11 +238,48 @@ def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
     return (ideal, better) if better.ok else (factor, result)
 
 
-def solve_image(image: np.ndarray, puzzle_key: str | None = None, n_hint: int | None = None) -> SolveResult:
+#: Error text for a solve stopped by should_continue - one string so the UI
+#: layer can recognise "the user asked for this" instead of "recognition
+#: failed" without string-matching a different message per call site.
+#: 被 should_continue 中止的求解用的錯誤文字——只有一個字串，讓介面層能
+#: 分辨「這是使用者自己要求的」而不是「辨識失敗了」，不用對每個呼叫點
+#: 各自比對不同的訊息字串。
+CANCELLED = "cancelled / 已取消"
+
+
+def solve_image(
+    image: np.ndarray,
+    puzzle_key: str | None = None,
+    n_hint: int | None = None,
+    should_continue: Callable[[], bool] | None = None,
+) -> SolveResult:
     """Recognise and solve. Grid coordinates are relative to the image passed in.
-    辨識並求解。回傳的棋盤座標相對於傳入的原始影像。"""
-    result = _ladder(image, puzzle_key, n_hint)
+    辨識並求解。回傳的棋盤座標相對於傳入的原始影像。
+
+    should_continue, if given, is polled between ladder rungs - a solve on a
+    large capture has no other time budget and Stop could not interrupt it.
+    Measured before this: a 4K screen grab took 29-49s, an 8000x8000 one
+    238-312s, and none of that time had a check-in point. Not polled inside
+    a single OpenCV/OR-Tools call - only between attempts - so this bounds
+    the response time to roughly one rung's cost, not the whole ladder's.
+    should_continue，如果有給的話，會在階梯的每一階之間被輪詢——對一張大擷取
+    求解，以前完全沒有其他時間預算，「停止」也中斷不了。修正前實測：4K
+    螢幕擷取要 29~49 秒，8000x8000 要 238~312 秒，這整段時間裡沒有任何
+    一個檢查點。不是在單一次 OpenCV／OR-Tools 呼叫「內部」輪詢——只在
+    嘗試與嘗試之間——所以回應時間的上限大約是「一階」的成本，不是整條
+    階梯的成本。
+    """
+    action_log.log("SOLVE", f"solve_image start: puzzle_key={puzzle_key or 'auto'} "
+                    f"n_hint={n_hint} image={image.shape[1]}x{image.shape[0]}")
+    if should_continue is not None and not should_continue():
+        action_log.log("STOP", "solve_image cancelled by should_continue before the first attempt")
+        return failure(puzzle_key or "unknown", CANCELLED)
+    result = _ladder(image, puzzle_key, n_hint, should_continue=should_continue)
     if result.ok or puzzle_key:
+        action_log.log("SOLVE", f"solve_image done: ok={result.ok} puzzle={result.puzzle_key} "
+                        f"error={result.error!r}")
+        return result
+    if result.error == CANCELLED:
         return result
 
     # The whole ladder failed. Before giving up, try the OTHER puzzle types.
@@ -279,20 +318,34 @@ def solve_image(image: np.ndarray, puzzle_key: str | None = None, n_hint: int | 
     for key in DISPLAY_ORDER:
         if key == detected:
             continue
-        other = _ladder(image, key, n_hint, fractions=_FALLBACK_CROPS)
+        if should_continue is not None and not should_continue():
+            action_log.log("STOP", "solve_image cancelled by should_continue "
+                            "during the fallback-type sweep")
+            return failure(detected, CANCELLED, grid=result.grid, info=result.info)
+        action_log.log("SOLVE", f"fallback: detected={detected} failed, trying type={key}")
+        other = _ladder(image, key, n_hint, fractions=_FALLBACK_CROPS, should_continue=should_continue)
         if other.ok:
             other.info.append(f"detected as {detected}, solved as {key} / "
                               f"判斷成 {detected}，實際以 {key} 解出")
+            action_log.log("SOLVE", f"solve_image done: ok=True puzzle={key} "
+                            f"(recovered via fallback from {detected})")
             return other
+        if other.error == CANCELLED:
+            return other
+    action_log.log("SOLVE", f"solve_image done: ok=False puzzle={result.puzzle_key} "
+                    f"error={result.error!r} (fallback sweep exhausted)")
     return result
 
 
-def _ladder(image, puzzle_key, n_hint, fractions=None) -> SolveResult:
+def _ladder(image, puzzle_key, n_hint, fractions=None, should_continue=None) -> SolveResult:
     """One pass over the crop x scale ladder for one puzzle type.
     對單一謎題類型跑一遍「裁切 x 縮放」階梯。"""
     last: SolveResult | None = None
 
     for fraction in (fractions if fractions is not None else _CROP_FRACTIONS):
+        if should_continue is not None and not should_continue():
+            action_log.log("STOP", f"ladder cancelled before crop={fraction:.0%}")
+            return last or SolveResult(ok=False, puzzle_key=puzzle_key or "unknown", error=CANCELLED)
         sub, offset = _center_crop(image, fraction)
         if min(sub.shape[:2]) < 120:
             break
@@ -309,6 +362,9 @@ def _ladder(image, puzzle_key, n_hint, fractions=None) -> SolveResult:
 
         tried: list[float] = []
         for factor in candidates:
+            if should_continue is not None and not should_continue():
+                action_log.log("STOP", f"ladder cancelled mid crop={fraction:.0%}")
+                return last or SolveResult(ok=False, puzzle_key=puzzle_key or "unknown", error=CANCELLED)
             if any(abs(factor - t) < 0.02 for t in tried):
                 continue
             tried.append(factor)
@@ -318,6 +374,9 @@ def _ladder(image, puzzle_key, n_hint, fractions=None) -> SolveResult:
             # 上限可能把倍率調小；換算回去必須用「實際套用」的那個值，不是我們要求的值。
             factor = _effective_factor(sub, factor)
             result = _attempt(_scaled(sub, factor), puzzle_key, n_hint)
+            action_log.log("SOLVE", f"attempt: crop={fraction:.0%} factor={factor:.2f} "
+                            f"type={puzzle_key or result.puzzle_key} -> "
+                            f"{'OK' if result.ok else 'FAIL: ' + str(result.error).splitlines()[0]}")
             if result.ok:
                 factor, result = _renormalise(sub, result, factor, puzzle_key, n_hint)
                 result.grid = _rescale_grid(result.grid, factor, offset)
@@ -341,8 +400,18 @@ def _ladder(image, puzzle_key, n_hint, fractions=None) -> SolveResult:
                            error="board not found / 找不到棋盤")
 
     # Board too small is by far the most common cause; say so explicitly.
-    # 棋盤太小是最常見的原因，直接講明。
+    # Try both locators, exactly as _locate_board does above - find_board_bbox
+    # alone structurally CANNOT see Tango (it has no outer border), so every
+    # Tango failure used to get "board too small / not found" tacked on
+    # regardless of the real cause, because bbox was always None for it.
+    # 棋盤太小是最常見的原因，直接講明。跟上面的 _locate_board 一樣兩種
+    # 定位器都試——單用 find_board_bbox 結構上就看不到 Tango（它沒有外框），
+    # 所以以前不管真正原因是什麼，每一次 Tango 失敗都會被硬加上
+    # 「棋盤太小／找不到」，因為 bbox 對它來說永遠是 None。
     bbox = find_board_bbox(image)
+    if bbox is None:
+        found = find_board_by_grid_lines(image)
+        bbox = found[0] if found else None
     board_px = bbox[2] if bbox else None
     if board_px is None or board_px < MIN_BOARD_PIXELS:
         hint = (f"board is only ~{board_px}px / 棋盤只有約 {board_px}px" if board_px

@@ -33,8 +33,50 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core import build_grid
+from ..core import action_log, build_grid
 from ..puzzles import queens, sudoku, tango
+
+#: How far (in units of a cell) the board's located position may drift
+#: between the original solve and a later re-capture of the SAME screen
+#: region before it is treated as "the board moved" rather than "still our
+#: board". Comparing cells by grid INDEX (what every verifier below already
+#: does) is translation-invariant and cannot see this at all on its own.
+#: 棋盤定位到的位置，在原始求解跟後來對「同一塊螢幕範圍」重新擷取之間，
+#: 可以偏移多少（以一格為單位），才會被當成「棋盤真的移動了」而不是
+#: 「還是原來那個棋盤」。用格子「索引」比對（下面每個驗證器本來就是這樣做）
+#: 對平移是不敏感的，單靠它自己完全看不到這件事。
+#:
+#: MEASURED 量測依據: a 9x9 Queens board (89px cells) shifted 80px down still
+#: verified as unchanged before this fix - swept -120px to +300px and
+#: board_changed was False at every offset, while build_grid on the same
+#: frame correctly reported the new bbox the whole time. 0.3 cell is well
+#: under the smallest shift that indicates real movement (one cell), while
+#: tolerating the sub-pixel jitter recognition itself has between two
+#: independent detections of the same, unmoved board.
+#: 一個 9x9、格子 89px 的 Queens 棋盤往下移 80px，在這次修正之前依然被判定
+#: 沒有改變——掃過 -120px 到 +300px，board_changed 在每一個偏移量都是
+#: False，而同一張畫面上 build_grid 卻一路正確回報新的 bbox。0.3 格遠低於
+#: 「真的移動了」的最小偏移（一格），同時能容忍同一個沒動過的棋盤，
+#: 兩次獨立辨識之間本來就會有的次像素級誤差。
+_POSITION_TOLERANCE_CELLS = 0.3
+
+
+def _board_shifted(fresh_bbox, original_bbox, n: int) -> bool:
+    """Has the board's located position/size drifted beyond tolerance?
+    棋盤定位到的位置／大小，偏移超過容忍範圍了嗎？"""
+    fx, fy, fw, fh = fresh_bbox
+    ox, oy, ow, oh = original_bbox
+    cell = max(ow, oh) / n if n else 0
+    if cell <= 0:
+        return False
+    tol = cell * _POSITION_TOLERANCE_CELLS
+    shifted = (abs(fx - ox) > tol or abs(fy - oy) > tol
+               or abs(fw - ow) > tol or abs(fh - oh) > tol)
+    if shifted:
+        action_log.log("WARN", f"board shifted beyond tolerance: "
+                        f"was {original_bbox}, now {fresh_bbox} (tol={tol:.1f}px) "
+                        f"-> treating as board_changed")
+    return shifted
 
 
 @dataclass
@@ -72,6 +114,9 @@ def _queens_board_unchanged(image: np.ndarray, result, n_hint):
         grid = build_grid(image, n_hint=n_hint)
     except Exception:
         return None, False
+
+    if _board_shifted(grid.board_bbox, result.grid.board_bbox, grid.n):
+        return grid, False
 
     original = result.data.get("region_ids")
     if original is None:
@@ -131,6 +176,8 @@ def _verify_tango(image: np.ndarray, result, n_hint) -> VerifyReport:
     grid = tango._locate_board(image, n_hint or tango.DEFAULT_GRID_SIZE)
     if grid is None or grid.n != len(solution):
         return VerifyReport(supported=True, ok=True, board_changed=True)
+    if _board_shifted(grid.board_bbox, result.grid.board_bbox, grid.n):
+        return VerifyReport(supported=True, ok=True, board_changed=True)
 
     _puzzle, current = tango.read_board(image, grid)
     targets = [(r, c) for r in range(grid.n) for c in range(grid.n) if (r, c) not in givens]
@@ -151,6 +198,8 @@ def _verify_sudoku(image: np.ndarray, result, n_hint) -> VerifyReport:
     except Exception:
         return VerifyReport(supported=True, ok=True, board_changed=True)
     if grid.n != len(solution):
+        return VerifyReport(supported=True, ok=True, board_changed=True)
+    if _board_shifted(grid.board_bbox, result.grid.board_bbox, grid.n):
         return VerifyReport(supported=True, ok=True, board_changed=True)
 
     now = sudoku.read_givens(image, grid)
@@ -177,11 +226,19 @@ _VERIFIERS = {queens.KEY: _verify_queens, tango.KEY: _verify_tango, sudoku.KEY: 
 def verify(image: np.ndarray, result, n_hint: int | None = None) -> VerifyReport:
     verifier = _VERIFIERS.get(result.puzzle_key)
     if verifier is None:
+        action_log.log("VERIFY", f"{result.puzzle_key}: not supported, cannot read back")
         return VerifyReport(supported=False, reason=f"{result.puzzle_key}: answer cannot be read back / 讀不回作答結果")
     try:
-        return verifier(image, result, n_hint)
+        report = verifier(image, result, n_hint)
     except Exception as exc:  # noqa: BLE001
+        action_log.log("VERIFY", f"{result.puzzle_key}: verifier raised "
+                        f"{type(exc).__name__}: {exc}")
         return VerifyReport(supported=False, reason=f"{type(exc).__name__}: {exc}")
+    action_log.log("VERIFY", f"{result.puzzle_key}: ok={report.ok} "
+                    f"board_changed={report.board_changed} "
+                    f"mismatches={len(report.mismatches)} "
+                    f"filled={report.filled}/{report.total}")
+    return report
 
 
 def build_retry_plan(result, mapper, report: VerifyReport):
@@ -192,10 +249,12 @@ def build_retry_plan(result, mapper, report: VerifyReport):
     # Never click again once the board has changed - the content is different now.
     # 盤面已經改變就絕對不能再點 —— 上面的內容已經不一樣了。
     if report.board_changed:
+        action_log.log("VERIFY", "retry plan skipped: board_changed")
         return None
 
     key = result.puzzle_key
     wrong = {(r, c) for r, c, _got, _want in report.mismatches}
+    action_log.log("VERIFY", f"retry plan: {len(wrong)} cell(s) to re-click for {key}")
     data = dict(result.data)
 
     if key == tango.KEY:

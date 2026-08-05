@@ -42,8 +42,8 @@ from ..automation import (
     verify,
     wait_for_mouse_release,
 )
-from ..automation.board_watch import BoardWatch
-from ..core import read_image, write_image
+from ..automation import board_watch
+from ..core import action_log, read_image, write_image
 from ..i18n import LANGUAGES, translator
 from ..puzzles import (
     DISPLAY_ORDER,
@@ -77,6 +77,8 @@ class SolverApp:
         self.mapper = None
         self.plan = None
         self.driver: InputDriver | None = None
+        self._stop_before_run = False
+        self._worker_thread: threading.Thread | None = None
         self.image_path: Path | None = None
         self.tk_photo = None
         self.busy = False
@@ -86,6 +88,16 @@ class SolverApp:
         self.root.minsize(390, 350)
         self._build_widgets()
         self._apply_settings()
+
+        # Open the session log now, before anything else can happen, and show
+        # its path immediately - if the user is about to screen-record, the
+        # path needs to be on screen from the very first frame, not appear
+        # only after the first solve.
+        # 現在就開啟這次執行的記錄檔，在任何其他事發生之前，並立刻顯示路徑——
+        # 如果使用者正要開始錄影，這個路徑要從第一格畫面就在螢幕上，
+        # 不能等到第一次求解完才出現。
+        action_log.log("RUN", "GUI started")
+        self._log(f"{translator('log_file')}: {action_log.path()}")
 
     # ------------------------------------------------------------------ UI
     def _build_widgets(self):
@@ -245,20 +257,51 @@ class SolverApp:
         self._on_mode_changed()
 
     def _save_settings(self):
-        self.settings.update({
-            "region": list(self._region()),
+        # Only overwrite the stored region with a value the Entry fields
+        # ACTUALLY contain. _save_settings runs automatically on language
+        # change, mode change, and every Start press - not just an explicit
+        # "save" action - so if a field is mid-edit or was typo'd, silently
+        # falling back to _region()'s default-on-parse-failure behaviour
+        # would permanently overwrite a calibrated region with a guess. Keep
+        # whatever was saved before instead.
+        # 只有在輸入框「真的」裝著一個有效值時，才覆蓋存起來的擷取範圍。
+        # _save_settings 會在切換語言、切換模式、每次按開始時自動執行——
+        # 不是只有明確按「儲存」才會跑——所以如果欄位正在編輯中或打錯字，
+        # 沿用 _region() 那種「解析失敗就退回預設值」的行為，會把校準好的
+        # 範圍永久覆蓋成一個猜的值。這裡改成維持原本存的那一份。
+        update = {
             "speed": SPEED_KEYS[max(0, self.speed_combo.current())],
             "language": translator.language,
             "mode": self.mode_var.get(),
-        })
+        }
+        parsed = self._parsed_region()
+        if parsed is not None:
+            update["region"] = list(parsed)
+        self.settings.update(update)
         settings_store.save(self.settings)
 
-    def _region(self) -> tuple[int, int, int, int]:
+    def _parsed_region(self) -> tuple[int, int, int, int] | None:
+        """Strictly parse the Entry fields. None on anything invalid - no
+        silent substitution. See _save_settings for why that matters.
+        嚴格解析輸入框的內容。任何不合法的情況都回傳 None——不做任何靜默替換。
+        原因見 _save_settings。"""
         try:
-            return (int(self.x_var.get()), int(self.y_var.get()),
-                    int(self.w_var.get()), int(self.h_var.get()))
+            left, top, width, height = (int(self.x_var.get()), int(self.y_var.get()),
+                                         int(self.w_var.get()), int(self.h_var.get()))
         except ValueError:
-            return default_region()
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return left, top, width, height
+
+    def _region(self) -> tuple[int, int, int, int]:
+        """Best-effort region for actually capturing the screen - falls back
+        to the default rather than fail, because a capture needs SOME region
+        to try. Never used for deciding what to save; see _parsed_region.
+        用來真正擷取螢幕的「盡力而為」範圍——解析失敗就退回預設值，
+        因為擷取總得試一個範圍。絕不用來決定要存什麼；要存的邏輯在
+        _parsed_region。"""
+        return self._parsed_region() or default_region()
 
     # ----------------------------------------------------------- callbacks
     def _on_language_changed(self, _event=None):
@@ -289,6 +332,26 @@ class SolverApp:
         for var, value in zip((self.x_var, self.y_var, self.w_var, self.h_var), default_region()):
             var.set(str(value))
 
+    def _clear_stale_result(self):
+        """Call this every time self.shot is replaced by a NEW image.
+        每次 self.shot 被換成一張新的圖，就呼叫這個。
+
+        WHY 為什麼: pick puzzle A, solve, pick puzzle B, press Save used to
+        save A's answer drawn on B's screenshot, offered under B's filename,
+        dialog saying "Saved" - because self.result/mapper/plan kept
+        pointing at A. Save is this project's documented bug-report channel;
+        this bug made that channel lie. Cleared atomically with self.shot so
+        there is no window where they can point at different images.
+        為什麼：選 A 題、解完、再選 B 題、按存圖，以前會把 A 的答案畫在
+        B 的截圖上、用 B 的檔名存出去、對話框還顯示「已儲存」——因為
+        self.result/mapper/plan 一直指著 A。存圖是這個專案文件寫明的
+        bug 回報管道；這個 bug 讓那個管道說謊。跟 self.shot 一起原子性地
+        清空，就不會有兩者指著不同圖片的空窗期。
+        """
+        self.result = None
+        self.mapper = None
+        self.plan = None
+
     def _on_pick_image(self):
         path = filedialog.askopenfilename(
             title=translator("dlg_pick_image"),
@@ -303,6 +366,7 @@ class SolverApp:
         self.image_path = Path(path)
         self.image_label_text.config(text=self.image_path.name)
         self.shot = from_file_image(image)
+        self._clear_stale_result()
         self._show_image(image)
         self._clear_log()
         self._log(translator("img_hint"))
@@ -314,6 +378,7 @@ class SolverApp:
             messagebox.showerror(translator("dlg_capture_failed"), traceback.format_exc().splitlines()[-1])
             return
         self.shot = shot
+        self._clear_stale_result()
         self._show_image(shot.image)
         self._clear_log()
         self._log(f"{translator('log_region_preview')}: ({shot.origin_x},{shot.origin_y}) "
@@ -330,6 +395,21 @@ class SolverApp:
         self._run(fill_answers=self.mode_var.get() == "screen")
 
     def _on_stop(self):
+        # Set the flag FIRST, unconditionally - not just on self.driver - so
+        # a Stop pressed while _capture() is still running (its root.update()
+        # calls do pump the event queue, so this is reachable) is not lost.
+        # self.driver at that moment is either None (first run) or the
+        # PREVIOUS run's driver; a fresh InputDriver with _stop_requested
+        # reset to False gets built right after _capture() returns, silently
+        # discarding a stop aimed at the driver that does not exist yet.
+        # 一定先設這個旗標，而且不只在 self.driver 存在時才設——因為
+        # _capture() 還在跑的時候按停止是真的按得到的（它裡面的
+        # root.update() 呼叫會抽出事件佇列）。那個當下 self.driver
+        # 不是 None（第一次執行）就是「上一輪」的 driver；_capture() 一
+        # 回傳，馬上會建一個全新、_stop_requested 重設成 False 的
+        # InputDriver，把針對「還不存在的那個 driver」的停止要求悄悄丟掉。
+        action_log.log("STOP", "user pressed Stop")
+        self._stop_before_run = True
         if self.driver:
             self.driver.stop()
         self.status_label.config(text=translator("status_stopping"))
@@ -359,8 +439,17 @@ class SolverApp:
         )
         if not path:
             return
-        write_image(Path(path), image)
-        messagebox.showinfo(translator("dlg_saved"), path)
+        # write_image now honours its documented bool contract (see its own
+        # docstring), so a failure here is a real False, not an uncaught
+        # exception - but the return value still has to be CHECKED, or a
+        # failed save keeps showing "Saved" regardless.
+        # write_image 現在真的遵守自己文件寫的布林值約定（見它自己的文件字串），
+        # 所以這裡的失敗是真正的 False，不是沒接住的例外——但還是要「檢查」
+        # 這個回傳值，不然存檔失敗照樣顯示「已儲存」。
+        if write_image(Path(path), image):
+            messagebox.showinfo(translator("dlg_saved"), path)
+        else:
+            messagebox.showerror(translator("dlg_save_failed"), path)
 
     # -------------------------------------------------------------- capture
     def _capture(self):
@@ -390,7 +479,9 @@ class SolverApp:
 
         self._save_settings()
         self.busy = True
+        self._stop_before_run = False
         self._clear_log()
+        self._log(f"{translator('log_file')}: {action_log.path()}")
         self.start_btn.config(state="disabled")
         self.solve_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -405,15 +496,36 @@ class SolverApp:
             return
 
         self.shot = shot
+        self._clear_stale_result()
         self._show_image(shot.image)
+
+        # Stop pressed during _capture() sets _stop_before_run rather than
+        # self.driver (see _on_stop) precisely because no driver for THIS run
+        # exists until the next line - honour it here before one gets built.
+        # 在 _capture() 執行期間按下的停止，設的是 _stop_before_run 而不是
+        # self.driver（見 _on_stop）——因為這一輪的 driver 要到下一行才會
+        # 建出來。在它被建出來之前，這裡先尊重那個停止要求。
+        if self._stop_before_run:
+            self._finish(translator("status_stopped"))
+            return
 
         index = self.type_combo.current()
         puzzle_key = None if index <= 0 else DISPLAY_ORDER[index - 1]
         speed = SPEED_FACTORS[SPEED_KEYS[max(0, self.speed_combo.current())]]
         self.driver = InputDriver(dry_run=self.dry_run_var.get(), slowdown=speed)
         self.driver.reset()
+        action_log.log("RUN", f"run start: mode={self.mode_var.get()} puzzle={puzzle_key or 'auto'} "
+                        f"fill={fill_answers} dry_run={self.dry_run_var.get()} speed={speed}")
 
-        threading.Thread(target=self._worker, args=(shot, puzzle_key, fill_answers), daemon=True).start()
+        # Kept so the window-close handler can stop this run cleanly instead
+        # of letting a daemon thread get killed mid-drag - see main()'s close
+        # handler for what that leaves behind.
+        # 留著這個參照，讓關閉視窗的處理常式可以乾淨地停止這次執行，
+        # 而不是讓一個 daemon 執行緒在拖曳進行到一半時被砍掉——
+        # 那樣會留下什麼，見 main() 的關閉處理常式。
+        self._worker_thread = threading.Thread(
+            target=self._worker, args=(shot, puzzle_key, fill_answers), daemon=True)
+        self._worker_thread.start()
 
     def _worker(self, shot, puzzle_key, fill_answers):
         timings: dict[str, float] = {}
@@ -421,7 +533,9 @@ class SolverApp:
         try:
             self._ui(self.status_label.config, {"text": translator("status_solving")})
             t0 = time.perf_counter()
-            result = solve_image(shot.image, puzzle_key=puzzle_key)
+            result = solve_image(
+                shot.image, puzzle_key=puzzle_key,
+                should_continue=lambda: not self.driver.stop_requested)
             timings["solve"] = time.perf_counter() - t0
             self._ui(self._show_timings, timings, started)
             self.result = result
@@ -484,12 +598,15 @@ class SolverApp:
                 # 那是設定問題而不是「棋盤不見了」，所以只記錄、不掛保護 ——
                 # 填答照常運作，事後的 verify() 也照常。讓一個沒被驗證過的定位器
                 # 去下判斷，會在第一次點擊之前就中止。
-                bx, by, bw, bh = result.grid.board_bbox
-                watch = BoardWatch(mapper=self.mapper, n=result.grid.n)
-                if watch.arm(shot.image[by : by + bh, bx : bx + bw]):
-                    driver.guard = watch.still_there
-                    self.watch = watch
-                else:
+                #
+                # Shared with ui/cli.py's --go path via board_watch.attach() -
+                # see that function's own docstring for why this must not be
+                # written out inline per caller.
+                # 跟 ui/cli.py 的 --go 路徑共用 board_watch.attach()——
+                # 為什麼這段不能每個呼叫端各寫一份，見那個函式自己的文件字串。
+                watch = board_watch.attach(driver, self.mapper, result, shot.image)
+                self.watch = watch if watch.armed else None
+                if not watch.armed:
                     self._ui(self._log, f"  {watch.reason}")
 
                 t0 = time.perf_counter()
@@ -535,6 +652,8 @@ class SolverApp:
             # Stop, whether it failed, or whether it protected them.
             # 說明原因。只寫「已中止」會讓使用者搞不清楚是自己按了停止、
             # 是失敗了、還是它保護了自己。
+            action_log.log("ERROR", f"plan aborted: stopped_by_guard="
+                            f"{getattr(self.driver, 'stopped_by_guard', False)}")
             if getattr(self.driver, "stopped_by_guard", False):
                 reason = getattr(self.watch, "reason", "") or translator("log_board_changed")
                 self._ui(self._log, f"  {reason}")
@@ -548,10 +667,15 @@ class SolverApp:
                 frame = getattr(self.watch, "last_image", None)
                 if frame is not None:
                     # A diagnostic save must never break the abort-handling path
-                    # itself, so failures here are swallowed - see write_image's
-                    # own contract note about raising rather than returning False.
+                    # itself, so failures here are swallowed even though
+                    # write_image now honours its documented bool contract -
+                    # this guards against something UNEXPECTED going wrong in
+                    # this specific best-effort save, not against write_image
+                    # itself misbehaving.
                     # 診斷用的存檔絕不能弄壞中止流程本身，所以這裡失敗就吞掉——
-                    # 原因見 write_image 自己文件裡「會拋例外而不是回傳 False」那段。
+                    # 即使 write_image 現在已經遵守自己文件寫的布林值約定，
+                    # 這裡防的是「這次盡力而為的存檔本身出了預期外的狀況」，
+                    # 不是防 write_image 自己行為不對。
                     try:
                         path = (settings_store.captures_dir()
                                  / f"boardwatch_stop_{int(time.time() * 1000)}.png")
@@ -560,15 +684,37 @@ class SolverApp:
                     except Exception:
                         pass
             self._ui(self._finish, translator("status_stopped"))
-        except Exception:
-            self._ui(self._log, traceback.format_exc())
-            self._ui(self._finish, translator("status_error"))
+        except Exception as exc:
+            # pyautogui's FAILSAFE (slam the mouse into a corner to abort) is a
+            # DOCUMENTED escape hatch, not a bug - but it raises, and used to
+            # fall straight into the generic branch below, printing a full raw
+            # traceback with the word "Error" in the log. That makes the
+            # intended emergency stop look exactly like a crash. Checked by
+            # class NAME rather than importing pyautogui here, which would
+            # break "image mode needs no screen packages" - by the time this
+            # runs, dry_run is False and the driver has already imported it.
+            # pyautogui 的 FAILSAFE（把滑鼠甩到角落即中止）是文件裡寫明的緊急
+            # 逃生口，不是 bug——但它是用拋例外實作的，以前會直接落進下面
+            # 那個通用分支，在記錄欄印出一整段原始 traceback、還帶著
+            # 「Error」字樣，讓刻意的緊急停止看起來完全像當機。這裡用類別
+            # 「名稱」判斷而不是在這裡 import pyautogui——那樣會破壞「圖片
+            # 模式不需要螢幕相關套件」——執行到這裡代表 dry_run 已經是
+            # False，driver 早就匯入過它了。
+            if type(exc).__name__ == "FailSafeException":
+                action_log.log("ERROR", "pyautogui FAILSAFE triggered - emergency stop")
+                self._ui(self._log, translator("log_failsafe"))
+                self._ui(self._finish, translator("status_stopped"))
+            else:
+                action_log.log("ERROR", traceback.format_exc())
+                self._ui(self._log, traceback.format_exc())
+                self._ui(self._finish, translator("status_error"))
 
     def _verify_and_retry(self, driver, max_rounds: int = 3):
         """Re-capture, compare, and re-click only what is still wrong.
         重新擷取、比對，只補還沒填對的格子。"""
         previous_wrong = None
         for attempt in range(1, max_rounds + 1):
+            action_log.log("VERIFY", f"GUI check round {attempt}/{max_rounds} starting")
             time.sleep(0.9)  # let the page finish redrawing 等網頁畫面更新完
             fresh = capture_screen() if self.settings.get("fullscreen") else capture_region(*self._region())
             report = verify(fresh.image, self.result)
@@ -614,8 +760,22 @@ class SolverApp:
 
     def _ui(self, func, *args):
         """Run a UI update on the Tk thread from the worker thread.
-        從工作執行緒把畫面更新排回 Tk 主執行緒。"""
-        self.root.after(0, lambda: func(*args))
+        從工作執行緒把畫面更新排回 Tk 主執行緒。
+
+        Swallows the error from a root that is already destroyed. The window
+        can close while the worker thread is still mid-plan - closing joins
+        the thread with a timeout (see main()'s close handler), but does not
+        guarantee the worker has stopped queuing UI updates before that
+        timeout elapses, and root.after() on a destroyed root raises.
+        接住「root 已經被銷毀」的錯誤。視窗可以在工作執行緒還在填答途中時
+        關閉——關閉的處理常式會帶著逾時去 join 這個執行緒（見 main() 的
+        關閉處理常式），但不保證在逾時之前，工作執行緒就已經停止排入畫面
+        更新——對已銷毀的 root 呼叫 root.after() 會拋例外。
+        """
+        try:
+            self.root.after(0, lambda: func(*args))
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _log(self, *lines):
         for line in lines:
@@ -636,6 +796,30 @@ class SolverApp:
         self.image_preview.config(image=self.tk_photo)
 
 
+#: How long to wait for the worker thread to notice a stop request and
+#: release the mouse before closing anyway.
+#: 關閉視窗前，最多等工作執行緒發現停止要求、放開滑鼠鍵多久。
+#:
+#: WHY 為什麼: the worker thread is a daemon, and WM_DELETE_WINDOW used to
+#: just call root.destroy() - once mainloop() returns and the process exits,
+#: every daemon thread is killed outright, wherever it happens to be. Traced
+#: with a fake pyautogui: MOUSE_DOWN 1, MOUSE_UP 0 - drag_path's own
+#: `finally: mouseUp()` never got to run, because the thread was already
+#: dead by the time it would have. driver.stop() makes _check_abort() raise
+#: on the drag loop's NEXT step (drag_step_delay defaults to 8ms, so this is
+#: normally near-instant); the timeout below is what actually gives that
+#: step a chance to happen before the window closes anyway.
+#: 為什麼：工作執行緒是 daemon，WM_DELETE_WINDOW 以前只會呼叫
+#: root.destroy()——mainloop() 一返回、行程一結束，每個 daemon 執行緒
+#:不管當下在做什麼，都會直接被砍掉。用假的 pyautogui 追蹤過：
+#: MOUSE_DOWN 1、MOUSE_UP 0——drag_path 自己 `finally: mouseUp()` 從來沒
+#:機會執行，因為輪到它的時候執行緒早就死了。driver.stop() 會讓
+#: _check_abort() 在拖曳迴圈「下一步」拋出（drag_step_delay 預設 8 毫秒，
+#: 所以正常情況幾乎是立即發生）；下面這個逾時給的就是讓那一步真的有機會
+#: 發生的時間，視窗才不會在那之前就關掉。
+CLOSE_JOIN_TIMEOUT = 2.0
+
+
 def main():
     if sys.platform == "win32":
         try:
@@ -644,5 +828,16 @@ def main():
             pass
     root = tk.Tk()
     app = SolverApp(root)
-    root.protocol("WM_DELETE_WINDOW", lambda: (app._save_settings(), root.destroy()))
+
+    def on_close():
+        action_log.log("RUN", "window closing")
+        if app.driver:
+            app.driver.stop()
+        thread = app._worker_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=CLOSE_JOIN_TIMEOUT)
+        app._save_settings()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()

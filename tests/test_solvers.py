@@ -148,6 +148,36 @@ def test_sudoku_uniqueness_guard():
     print("  sudoku uniqueness guard OK")
 
 
+def test_box_dims():
+    """Every (height, width) must multiply back to n, or be None if it can't.
+    每一組 (高, 寬) 都必須乘得回 n，乘不回的話就要是 None。
+
+    Bug this replaces: the old fallback was
+    {4: 2, 6: 3, 8: 4, 9: 3}.get(n, round(n**0.5)), which for n = 5, 7, 10, 11
+    produced a (height, width) that does NOT multiply back to n - e.g.
+    n=10 -> round(sqrt(10))=3, height=10//3=3, 3*3=9 != 10 - and downstream
+    code iterated box rows/cols past the board's own bounds, crashing with a
+    bare IndexError instead of a clear message. n=10 has a real box shape
+    (2x5) the old heuristic never found; n=5/7/11 are prime and have none at
+    all.
+    這裡取代的 bug：舊的退路是
+    {4: 2, 6: 3, 8: 4, 9: 3}.get(n, round(n**0.5))，對 n = 5、7、10、11
+    算出來的 (高, 寬) 乘不回 n——例如 n=10 時 round(sqrt(10))=3，
+    高=10//3=3，3*3=9 不等於 10——後續程式碼的宮列/宮欄迴圈就會超出
+    棋盤本身的範圍，丟出一個沒有說明的 IndexError，而不是清楚的訊息。
+    n=10 其實有合法的宮形狀（2x5），只是舊的算法從來沒找到過；
+    n=5/7/11 是質數，完全沒有合法形狀。
+    """
+    for n, expected in ((4, (2, 2)), (6, (2, 3)), (8, (2, 4)), (9, (3, 3)), (10, (2, 5))):
+        got = sudoku._box_dims(n)
+        assert got == expected, f"n={n}: expected {expected}, got {got}"
+        height, width = got
+        assert height * width == n, f"n={n}: {height}x{width} != {n}"
+    for n in (5, 7, 11):
+        assert sudoku._box_dims(n) is None, f"n={n} is prime and must return None"
+    print("  box dims OK")
+
+
 # --------------------------------------------------------------- Zip
 def test_zip():
     n = 3
@@ -352,6 +382,7 @@ if __name__ == "__main__":
     test_tango_uniqueness_guard()
     test_sudoku()
     test_sudoku_uniqueness_guard()
+    test_box_dims()
     test_zip()
     test_zip_walls()
     test_patches()

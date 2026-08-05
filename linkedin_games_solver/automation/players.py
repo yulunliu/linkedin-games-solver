@@ -175,48 +175,35 @@ class ZipPlayer(BasePlayer):
 # ---------------------------------------------------------------------------
 class PatchesPlayer(BasePlayer):
     """Drag each rectangle from its top-left cell to its bottom-right cell.
-    每塊矩形從左上角格子拖到右下角格子。"""
+    每塊矩形從左上角格子拖到右下角格子。
 
-    #: How many of the FINAL rectangles run with the mid-plan board guard
-    #: turned off for that one drag.
-    #: 最後幾個矩形，這幾筆拖曳會把中途盤面保護關掉。
-    #:
-    #: WHY 為什麼: Patches tiles the WHOLE board, so by the last rectangle or
-    #: two almost nothing of the original grid is left exposed - the guard's
-    #: structural re-check is fighting the puzzle's own design at that point,
-    #: not catching a real problem. Confirmed 2026-08-04 on a real capture: with
-    #: 5 of 6 rectangles already drawn, both of the guard's locators failed
-    #: (detect_grid_size AND, once two rectangles touched the board's own
-    #: edges, find_board_bbox too - it picked a drawn rectangle's border
-    #: instead of the board's), while the board was demonstrably still there
-    #: and the fill was still correct. This is a deliberate, bounded trade,
-    #: made with the user: the guard still protects the first N-2 rectangles
-    #: (which is most of a typical fill) and the mid-drag interruption fix from
-    #: 1.1.0 still applies to every rectangle; only the last two lose the
-    #: "board replaced mid-drag" check specifically.
-    #: 為什麼：拼塊會鋪滿整個棋盤，填到最後一兩塊時，原始格線幾乎完全不剩，
-    #: 保護的結構性重新檢查在這個階段對抗的是謎題本身的設計，不是在抓真的問題。
-    #: 2026-08-04 用真實擷取確認過：6 塊填了 5 塊時，保護的兩個定位器都失敗
-    #: （detect_grid_size 失敗，而且一旦兩塊碰到棋盤自己的邊緣，連
-    #: find_board_bbox 也失敗——它找到的是某塊矩形自己的邊框，不是棋盤的），
-    #: 但棋盤明明還在、填答也還是對的。這是跟使用者一起做的、範圍有限的取捨：
-    #: 前面 N-2 塊（一般填答的大部分）保護照常運作，1.1.0 修好的「拖曳中途
-    #: 中斷」也對每一塊都還有效；只有最後兩塊不再檢查「棋盤是不是被換掉了」。
-    LAST_UNGUARDED_RECTS = 2
+    Tolerance for the guard's own detection failing partway through a fully-
+    tiled board lives in BoardWatch.failure_tolerance (automation/board_watch.py),
+    set from ui/app.py when arming the watch for a Patches plan - not here.
+    An earlier version had THIS class skip the guard for a fixed position (the
+    last two rectangles); replaced because a real capture showed the puzzle's
+    edge-touching regions are not reliably drawn last. See
+    failure_tolerance's own docstring for the measurement.
+    保護的偵測在填滿整個棋盤的過程中失效時，容忍多少次的邏輯放在
+    BoardWatch.failure_tolerance（automation/board_watch.py），由 ui/app.py
+    在替拼塊計畫掛上保護時設定——不是放在這裡。先前的版本是讓這個類別
+    對固定位置（最後兩塊矩形）跳過保護；已經換掉，因為一張真實擷取顯示
+    碰到邊緣的區塊不一定排在最後畫。量測依據見 failure_tolerance 自己的
+    文件字串。
+    """
 
     def build_plan(self, data: dict) -> PlayPlan:
         rects = data["rects"]
         actions, description = [], []
-        for i, (r0, c0, height, width) in enumerate(rects):
+        for r0, c0, height, width in rects:
             start = self.mapper.cell_center(r0, c0)
             end = self.mapper.cell_center(r0 + height - 1, c0 + width - 1)
-            ask_guard = i < len(rects) - self.LAST_UNGUARDED_RECTS
-            actions.append((start, end, f"({r0+1},{c0+1}) {height}x{width}", ask_guard))
+            actions.append((start, end, f"({r0+1},{c0+1}) {height}x{width}"))
             description.append(f"  ({r0+1},{c0+1}) -> ({r0+height},{c0+width}) = {height}x{width}")
 
         def run(driver: InputDriver):
-            for start, end, label, ask_guard in actions:
-                driver.drag_path([start, end], label=label, ask_guard=ask_guard)
+            for start, end, label in actions:
+                driver.drag_path([start, end], label=label)
 
         return PlayPlan(description, run)
 

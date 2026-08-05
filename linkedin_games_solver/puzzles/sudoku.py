@@ -42,9 +42,10 @@ def _line_thickness(roi_gray: np.ndarray, position: int, axis: int, half_band: i
     return int((profile > 0.7).sum())
 
 
-def detect_box_shape(image: np.ndarray, grid: BoardGrid) -> tuple[int, int]:
-    """Return (box_height, box_width) in cells.
-    回傳宮的 (高, 寬)，以格數計。"""
+def detect_box_shape(image: np.ndarray, grid: BoardGrid) -> tuple[int, int] | None:
+    """Return (box_height, box_width) in cells, or None if n has no valid box
+    shape at all (n is prime - see _box_dims).
+    回傳宮的 (高, 寬)，以格數計；n 完全沒有合法宮形狀時回傳 None（n 是質數，見 _box_dims）。"""
     x, y, w, h = grid.board_bbox
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     roi = gray[y : y + h, x : x + w]
@@ -54,16 +55,40 @@ def detect_box_shape(image: np.ndarray, grid: BoardGrid) -> tuple[int, int]:
     thick_cols = [c for c in range(1, n) if _line_thickness(roi, int(round(c * cell_w)), 0) >= THICK_LINE_MIN]
     thick_rows = [r for r in range(1, n) if _line_thickness(roi, int(round(r * cell_h)), 1) >= THICK_LINE_MIN]
 
-    box_width = thick_cols[0] if thick_cols else _fallback_box_dim(n)
-    box_height = thick_rows[0] if thick_rows else n // _fallback_box_dim(n)
-    if n % box_width or n % box_height or box_width * box_height != n:
-        box_width = _fallback_box_dim(n)
-        box_height = n // box_width
-    return box_height, box_width
+    if thick_cols and thick_rows:
+        box_width, box_height = thick_cols[0], thick_rows[0]
+        if box_width > 0 and box_height > 0 and not n % box_width and not n % box_height \
+                and box_width * box_height == n:
+            return box_height, box_width
+    return _box_dims(n)
 
 
-def _fallback_box_dim(n: int) -> int:
-    return {4: 2, 6: 3, 8: 4, 9: 3}.get(n, int(round(n**0.5)))
+def _box_dims(n: int) -> tuple[int, int] | None:
+    """The most square (height, width) with height*width == n, or None if n
+    has no divisor pair other than 1 and n itself (n is prime).
+    最接近正方形的 (高, 寬)，height*width == n；n 除了 1 和自己沒有其他因數
+    （n 是質數）時回傳 None。
+
+    BUG THIS REPLACES 這裡取代的 bug: the old fallback was
+    `{4: 2, 6: 3, 8: 4, 9: 3}.get(n, round(n**0.5))`, which for n=5, 7, 10, 11
+    produces a (height, width) that does NOT multiply back to n (e.g. n=10 ->
+    round(sqrt(10))=3, height=10//3=3, 3*3=9 != 10) and the "fix up" branch
+    recomputed the exact same wrong numbers instead of finding a real divisor
+    pair. _build_model then iterated box rows/cols past the board's own
+    bounds and crashed with a bare IndexError instead of a message. Measured:
+    n=5/7/11 have no valid box shape at all (they are prime); n=10 does
+    (2x5), which the old heuristic never found.
+    舊的退路是 `{4:2, 6:3, 8:4, 9:3}.get(n, round(n**0.5))`，對 n=5、7、10、11
+    算出來的 (高, 寬) 乘不回 n（例如 n=10 時 round(sqrt(10))=3，
+    高=10//3=3，3*3=9 不等於 10），而「修正」那段又算出完全一樣的錯誤數字，
+    沒有真的去找因數對。接著 _build_model 的宮列/宮欄迴圈就會超出棋盤本身
+    的範圍，丟出一個沒有說明的 IndexError。實測：n=5/7/11 完全沒有合法的
+    宮形狀（它們是質數）；n=10 其實有（2x5），只是舊的算法從來沒找到過。
+    """
+    for d in range(int(n**0.5), 1, -1):
+        if n % d == 0:
+            return d, n // d
+    return None
 
 
 def read_givens(image: np.ndarray, grid: BoardGrid) -> dict[tuple[int, int], int]:
@@ -165,7 +190,15 @@ def solve(image: np.ndarray, n_hint: int | None = None) -> SolveResult:
     except ValueError as exc:
         return failure(KEY, str(exc))
 
-    box_h, box_w = detect_box_shape(image, grid)
+    box_shape = detect_box_shape(image, grid)
+    if box_shape is None:
+        return failure(
+            KEY,
+            f"no valid box shape for a {grid.n}x{grid.n} board / "
+            f"{grid.n}x{grid.n} 的棋盤沒有合法的宮形狀",
+            grid=grid, info=[f"{grid.n}x{grid.n}"],
+        )
+    box_h, box_w = box_shape
     givens = read_givens(image, grid)
     info = [f"{grid.n}x{grid.n}", f"box / 宮 {box_h}x{box_w}", f"givens {len(givens)}"]
 

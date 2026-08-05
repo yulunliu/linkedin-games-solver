@@ -16,6 +16,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from ..core import action_log
+
 #: Default capture region, sized to comfortably contain a centred game card.
 #: 預設擷取範圍，大小足以涵蓋置中的遊戲卡片。
 DEFAULT_REGION_WIDTH = 640
@@ -77,10 +79,40 @@ def primary_monitor() -> dict:
     return monitors[0]
 
 
+#: Fallback origin used when mss cannot even be imported (see default_region).
+#: Not centred on anything real - it exists only so the app can start; the
+#: region controls remain fully editable once it does.
+#: mss 連匯入都失敗時的退路原點（見 default_region）。沒有對齊任何真實的
+#:東西——它存在的唯一目的是讓程式能啟動；啟動之後範圍欄位還是完全可以編輯。
+_FALLBACK_LEFT = 100
+_FALLBACK_TOP = 100
+
+
 def default_region() -> tuple[int, int, int, int]:
     """Default capture rectangle: horizontally centred on the primary monitor.
-    預設擷取矩形：在主螢幕上水平置中。"""
-    monitor = primary_monitor()
+    預設擷取矩形：在主螢幕上水平置中。
+
+    Falls back to a fixed rectangle if the primary monitor cannot even be
+    read. WHY 為什麼: this is called on every GUI first run regardless of
+    mode - DEFAULTS["region"] is None until the user saves one - so a
+    machine where mss cannot be imported (no display, or the package is
+    simply missing) used to prevent the GUI from starting AT ALL, even in
+    image mode, which never captures anything. README and pyproject both
+    promise image mode needs neither mss nor pyautogui; this is what makes
+    that true at startup too, not just while running.
+    如果連主螢幕都讀不到，退回一個固定的矩形。為什麼：這個函式在 GUI 每一次
+    第一次啟動時都會被呼叫，不管是哪個模式——DEFAULTS["region"] 在使用者
+    存過一次之前都是 None——所以一台 mss 連匯入都失敗的機器（沒有顯示裝置，
+    或單純沒裝這個套件），以前會讓 GUI 完全開不起來，即使是根本不會擷取
+    任何畫面的圖片模式。README 跟 pyproject 都保證圖片模式不需要 mss 或
+    pyautogui；這個修正讓這件事在「啟動的當下」也成立，不是只在執行期間。
+    """
+    try:
+        monitor = primary_monitor()
+    except Exception as exc:
+        action_log.log("WARN", f"primary_monitor() failed ({type(exc).__name__}: {exc}), "
+                        f"falling back to a fixed region")
+        return _FALLBACK_LEFT, _FALLBACK_TOP, DEFAULT_REGION_WIDTH, DEFAULT_REGION_HEIGHT
     left = monitor["left"] + (monitor["width"] - DEFAULT_REGION_WIDTH) // 2
     top = monitor["top"] + DEFAULT_REGION_TOP
     return left, top, DEFAULT_REGION_WIDTH, DEFAULT_REGION_HEIGHT
