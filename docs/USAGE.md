@@ -70,27 +70,33 @@ Your choice is saved and applies next time you open the app.
 
 ---
 
-## Playing a puzzle on the web
+## Playing a sitting on the web (continuous mode)
 
 The order is the opposite of what you might expect: **press the button first,
-open the puzzle second**. After you press **Solve & Fill**, the program watches
-the capture region and starts solving and filling the instant a board shows
-up - none of your page-switching reaction time is wasted.
+open the puzzle second**. And **one press covers the whole sitting**: after
+**Solve & Fill**, the program keeps watching the capture region - every
+puzzle that appears gets solved and filled, one after another, until you
+press **Stop**.
 
 1. Start the app and select **Screen (auto-play)**.
 2. Optional but recommended the first time: tick **Preview**, press
    **Solve & Fill**, and switch to the puzzle page. It prints exactly what it
-   would click without touching anything. Check the puzzle type and board
-   size look right, then untick.
+   would click without touching anything (a preview runs one round and
+   stops). Check the puzzle type and board size look right, then untick.
 3. Press **Solve & Fill**. The status line shows it is watching the screen.
-4. Switch to Chrome and open the puzzle page. Do not scroll the board out of
-   view.
+4. Switch to Chrome and open the first puzzle. Do not scroll the board out
+   of view.
 5. **Take your hands off the mouse.** The moment the board appears, it plays.
+6. When a round finishes the status line asks for the next puzzle. Open it
+   and the program takes over again; press **Stop** after the last one.
 
 Pressing the button with the puzzle already on screen also works - it detects
-the board in under a second and starts right away, so the old workflow still
-functions. While waiting, press **Stop** at any time to cancel (restore the
-window from the taskbar first if it was minimised).
+the board within a second and starts right away. If recognition fails on a
+round (say the page's entrance animation had not settled), it automatically
+retries on a fresh capture up to three times; if it still fails it waits on
+that puzzle - play it by hand and open the next one, and the loop carries
+on. Press **Stop** at any time while waiting (restore the window from the
+taskbar first if it was minimised).
 
 ### While it is running
 

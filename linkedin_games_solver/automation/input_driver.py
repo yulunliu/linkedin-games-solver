@@ -128,9 +128,23 @@ def focus_window_at(x: int, y: int) -> str | None:
         if not hwnd:
             return None
         root = user32.GetAncestor(hwnd, 2) or hwnd  # GA_ROOT = 2
-        user32.SetForegroundWindow(root)
         buf = ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(root, buf, 256)
+        # Skip the activation (and its 0.25s settle) when the target window
+        # is ALREADY foreground. WHY 為什麼: in wait-first mode the user's
+        # last action before the fill starts was clicking into the browser
+        # to open the puzzle - the window is already frontmost, and the
+        # 0.25s settle was a measurable quarter-second of the "about a
+        # second before it starts" a user reported. The settle only exists
+        # to let a JUST-ACTIVATED window finish coming to the front.
+        # 目標視窗「已經」在最前面時，跳過啟用動作（以及它的 0.25 秒緩衝）。
+        # 為什麼：先等題目模式下，填答開始前使用者的最後一個動作就是點進
+        # 瀏覽器開題目——視窗本來就在最前面，而這 0.25 秒正是使用者回報
+        # 「開始前大約一秒」裡量得出來的四分之一秒。這個緩衝存在的唯一
+        # 目的，是讓「剛剛才被啟用」的視窗完成切換到前景的過程。
+        if user32.GetForegroundWindow() == root:
+            return buf.value or None
+        user32.SetForegroundWindow(root)
         time.sleep(0.25)
         return buf.value or None
     except Exception:

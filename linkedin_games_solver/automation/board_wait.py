@@ -51,8 +51,8 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from ..core import action_log
-from ..core.board import find_board_bbox, find_board_by_grid_lines
+from ..core import action_log, build_grid
+from ..core.board import find_board_by_grid_lines
 from .capture import ScreenShot
 
 #: Seconds between polls while waiting.
@@ -103,12 +103,33 @@ STABLE_POLLS = 2
 
 
 def _board_present(image) -> bool:
-    """The same cheap locators solve_image() uses, at 1x only - see the
-    module docstring for the measured cost.
-    solve_image() 用的同一組便宜定位器，只用 1 倍縮放——量測依據見模組文件字串。
+    """A board counts as present only when a FULL grid - border AND interior
+    cell structure - can be located, at 1x only.
+    只有在「完整」的棋盤——外框「加上」內部格線結構——都定位得到時，
+    才算棋盤存在。只用 1 倍縮放。
+
+    WHY the full grid, not just a bounding box 為什麼要完整格線、不能只看外框:
+    measured from a real session log (2026-08-06 19:47): the puzzle's entrance
+    animation draws the OUTER border before the interior grid lines finish
+    rendering. A bbox-only check fired on that frame, and solve_image() then
+    burned ~9s running the full ladder plus the fallback-type sweep against a
+    capture whose grid size was genuinely undetectable - every attempt failed
+    with "grid size not detected". Requiring detect_grid_size (inside
+    build_grid) to succeed means we simply keep polling for the extra
+    fraction of a second the animation needs, instead of committing to a
+    frame that cannot be solved.
+    為什麼要完整格線、不能只看外框：真實執行記錄（2026-08-06 19:47）量到：
+    謎題的進場動畫會先畫「外框」、內部格線稍後才渲染完。只看外框的檢查在
+    那一幀就觸發了，solve_image() 接著對一張格數真的讀不出來的截圖白跑了
+    約 9 秒的完整階梯＋備援類型全掃——每一次嘗試都失敗在「無法偵測棋盤
+    格數」。要求 build_grid（內含 detect_grid_size）成功，代表我們只是多
+    輪詢動畫需要的那零點幾秒，而不是拍板一張根本解不出來的影格。
     """
-    if find_board_bbox(image) is not None:
-        return True
+    try:
+        if build_grid(image) is not None:
+            return True
+    except ValueError:
+        pass
     found = find_board_by_grid_lines(image)
     return found is not None
 
@@ -152,3 +173,54 @@ def wait_for_board(
     action_log.log("STOP", f"cancelled while waiting for the puzzle, "
                     f"{polls} poll(s), {time.perf_counter() - started:.2f}s")
     return None
+
+
+def wait_for_board_gone(
+    capture_fn: Callable[[], ScreenShot],
+    should_continue: Callable[[], bool] | None = None,
+    poll_interval: float = POLL_INTERVAL,
+    stable_polls: int = STABLE_POLLS,
+) -> bool:
+    """Poll until NO board is detected stable_polls times in a row. True when
+    the board is gone, False if cancelled first.
+    輪詢到連續 stable_polls 次都「偵測不到」棋盤為止。棋盤消失回傳 True，
+    先被取消回傳 False。
+
+    WHY THIS EXISTS 為什麼需要這個: continuous mode loops wait -> solve ->
+    fill -> wait again. Without this step between rounds, the round that
+    just finished would immediately re-trigger on ITS OWN board - the solved
+    board (or a failed board the user has not navigated away from yet) is
+    still sitting in the capture region. Waiting for absence first means the
+    next detection can only be a genuinely NEW puzzle.
+    為什麼需要這個：連續模式的迴圈是 等待 -> 求解 -> 填答 -> 再等待。
+    兩輪之間少了這一步，剛結束的那一輪會立刻對「自己那個棋盤」重新觸發——
+    解完的棋盤（或辨識失敗、使用者還沒切走的棋盤）都還留在擷取範圍裡。
+    先等它消失，下一次偵測到的才保證是真正的「新」題目。
+
+    The same stability logic as wait_for_board, mirrored: a completion
+    animation can hide the board for one poll mid-transition; requiring
+    stable_polls consecutive misses keeps a flicker from ending the wait
+    early.
+    跟 wait_for_board 同一套穩定邏輯，方向相反：完成動畫的過場可能讓棋盤
+    只消失一次輪詢；要求連續 stable_polls 次都看不到，過場的閃爍才不會
+    提早結束等待。
+    """
+    action_log.log("RUN", "waiting for the current board to leave the screen")
+    started = time.perf_counter()
+    consecutive = 0
+    polls = 0
+    while should_continue is None or should_continue():
+        shot = capture_fn()
+        polls += 1
+        if _board_present(shot.image):
+            consecutive = 0
+        else:
+            consecutive += 1
+            if consecutive >= stable_polls:
+                action_log.log("RUN", f"board gone after {polls} poll(s), "
+                                f"{time.perf_counter() - started:.2f}s")
+                return True
+        time.sleep(poll_interval)
+    action_log.log("STOP", f"cancelled while waiting for the board to go, "
+                    f"{polls} poll(s), {time.perf_counter() - started:.2f}s")
+    return False

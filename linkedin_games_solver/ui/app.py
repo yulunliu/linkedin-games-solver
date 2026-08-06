@@ -41,12 +41,14 @@ from ..automation import (
     from_file_image,
     verify,
     wait_for_board,
+    wait_for_board_gone,
     wait_for_mouse_release,
 )
 from ..automation import board_watch
 from ..core import action_log, read_image, write_image
 from ..i18n import LANGUAGES, translator
 from ..puzzles import (
+    CANCELLED,
     DISPLAY_ORDER,
     MIN_BOARD_PIXELS,
     puzzle_name,
@@ -60,6 +62,37 @@ from . import settings as settings_store
 #: 預覽圖刻意做小，確保訊息區一定有空間，也讓視窗夠精簡，錄影時能跟瀏覽器並排。
 MAX_PREVIEW = 150
 MOUSE_RELEASE_TIMEOUT = 2.0
+
+#: How many solve attempts one detected board gets, each on a FRESH capture.
+#: 一個偵測到的棋盤最多嘗試求解幾次，每一次都用「新擷取」的畫面。
+#:
+#: WHY 為什麼: a real session log (2026-08-06 19:47) showed the entrance
+#: animation can still be settling when detection fires - that capture's
+#: grid was genuinely unreadable and a single attempt failed the whole run,
+#: while the same board solved fine seconds later. A failed first attempt
+#: already costs seconds (the full ladder runs to exhaustion), so by the
+#: time attempt 2 starts the animation is long finished - retrying on a
+#: fresh frame turns "failed today" into "solved a few seconds later".
+#: 3 bounds the cost when the board is REALLY unreadable (wrong zoom etc.).
+#: 為什麼：真實執行記錄（2026-08-06 19:47）顯示，偵測觸發時進場動畫可能
+#: 還沒完全結束——那一幀的格線真的讀不出來，單次嘗試就讓整輪失敗，
+#: 但同一個棋盤幾秒後就能正常解出。第一次失敗本身就要花好幾秒（整條
+#: 階梯會跑到耗盡），所以第二次嘗試開始時動畫早就結束了——用新的一幀
+#: 重試，就把「今天解不了」變成「晚幾秒解出來」。上限 3 次是為了在棋盤
+#: 「真的」讀不出來時（縮放不對等等）把成本鎖住。
+MAX_SOLVE_ATTEMPTS = 3
+
+#: Pause before re-capturing for a retry (seconds).
+#: 重試前、重新擷取畫面之前的停頓（秒）。
+#:
+#: Only matters when the failed attempt was CHEAP (an immediate "board not
+#: found" takes ~1-2s) - it gives the page that little bit longer to finish
+#: rendering. After an expensive failure the animation is already long done
+#: and this adds a negligible half second.
+#: 只有在上一次失敗「很便宜」時才有意義（立刻「找不到棋盤」約 1~2 秒）——
+#: 多給頁面一點時間把畫面畫完。在昂貴的失敗之後，動畫早就結束了，
+#: 這半秒的影響可以忽略。
+SOLVE_RETRY_DELAY = 0.5
 
 #: Speed label -> InputDriver constructor arguments.
 #: 速度選項 -> InputDriver 的建構參數。
@@ -592,7 +625,8 @@ class SolverApp:
         index = self.type_combo.current()
         puzzle_key = None if index <= 0 else DISPLAY_ORDER[index - 1]
         speed_key = SPEED_KEYS[max(0, self.speed_combo.current())]
-        self.driver = InputDriver(dry_run=self.dry_run_var.get(), **SPEED_PROFILES[speed_key])
+        driver_kwargs = dict(dry_run=self.dry_run_var.get(), **SPEED_PROFILES[speed_key])
+        self.driver = InputDriver(**driver_kwargs)
         self.driver.reset()
         action_log.log("RUN", f"run start: mode={self.mode_var.get()} puzzle={puzzle_key or 'auto'} "
                         f"fill={fill_answers} dry_run={self.dry_run_var.get()} speed={speed_key} "
@@ -605,39 +639,109 @@ class SolverApp:
         # 而不是讓一個 daemon 執行緒在拖曳進行到一半時被砍掉——
         # 那樣會留下什麼，見 main() 的關閉處理常式。
         self._worker_thread = threading.Thread(
-            target=self._worker, args=(shot, puzzle_key, fill_answers, capture_fn), daemon=True)
+            target=self._worker, args=(shot, puzzle_key, fill_answers, capture_fn, driver_kwargs),
+            daemon=True)
         self._worker_thread.start()
 
-    def _worker(self, shot, puzzle_key, fill_answers, capture_fn=None):
+    def _worker(self, shot, puzzle_key, fill_answers, capture_fn=None, driver_kwargs=None):
+        # SINGLE-SHOT: image mode and solve-only capture immediately in _run
+        # and run exactly one round. CONTINUOUS: screen-mode fill loops
+        # wait -> solve -> fill -> wait-for-gone until the user presses Stop,
+        # so the button only ever needs pressing once per sitting - the user
+        # reported forgetting to press it again before opening the next
+        # puzzle, which cost more time than the feature saved.
+        # 單發模式：圖片模式與「只求解」在 _run 就立刻擷取，只跑一輪。
+        # 連續模式：螢幕模式的填答會循環「等待 -> 求解 -> 填答 -> 等棋盤
+        # 消失」直到使用者按下停止——一輪五題只需要按一次按鈕。使用者
+        # 回報過會忘記在開下一題之前再按一次，忘記的代價比這個功能省下
+        # 的時間還多。
+        if capture_fn is None:
+            _outcome, text = self._round(shot, puzzle_key, fill_answers, None)
+            self._ui(self._finish, text)
+            return
+
+        round_no = 0
+        while not self._stop_before_run:
+            round_no += 1
+            if round_no > 1:
+                # Fresh driver per round: a guard abort LATCHES the previous
+                # round's stop flag by design (see _check_abort), and in
+                # continuous mode "the board changed" usually just means the
+                # completion screen arrived - the next round must not
+                # inherit that latch.
+                # 每一輪用全新的 driver：守衛中止會刻意鎖死上一輪的停止旗標
+                # （見 _check_abort），而在連續模式裡「盤面已改變」通常只是
+                # 完成畫面出現了——下一輪不能繼承那個鎖。
+                self.driver = InputDriver(**driver_kwargs)
+                self.driver.reset()
+                self._ui(self._log, "")
+                self._ui(self._log, f"=== {translator('log_round', n=round_no)} ===")
+                action_log.log("RUN", f"continuous round {round_no} start")
+
+            def alive():
+                return not self._stop_before_run and not self.driver.stop_requested
+
+            self._ui(self.status_label.config, {"text": translator("status_waiting_board")})
+            t0 = time.perf_counter()
+            shot = wait_for_board(capture_fn, should_continue=alive)
+            if shot is None:
+                break
+            outcome, text = self._round(shot, puzzle_key, fill_answers, capture_fn,
+                                        wait_time=time.perf_counter() - t0)
+            if outcome == "stop":
+                self._ui(self._finish, text)
+                return
+            if self.driver.dry_run:
+                # A continuous PREVIEW would wait forever for a board that
+                # nothing ever fills in - preview runs one round and stops.
+                # 連續「預演」會永遠等一個沒有人會去填的棋盤——
+                # 預演只跑一輪就結束。
+                self._ui(self._finish, text)
+                return
+            self._ui(self.status_label.config, {"text": translator("status_waiting_next")})
+            if not wait_for_board_gone(capture_fn, should_continue=alive):
+                break
+        self._ui(self._finish, translator("status_stopped"))
+
+    def _round(self, shot, puzzle_key, fill_answers, capture_fn, wait_time=None):
+        """One full solve-and-fill round. Returns (outcome, status_text) where
+        outcome is "done", "failed", "guard" or "stop" - only "stop" means the
+        user (or an emergency) asked for everything to end.
+        完整的一輪求解填答。回傳 (結果, 狀態文字)，結果是 "done"、"failed"、
+        "guard" 或 "stop"——只有 "stop" 代表使用者（或緊急機制）要求全部結束。
+        """
         timings: dict[str, float] = {}
         started = time.perf_counter()
+        self.shot = shot
+        self._clear_stale_result()
+        self._ui(self._show_image, shot.image)
+        if wait_time is not None:
+            timings["wait"] = wait_time
+            self._ui(self._log, f"{translator('log_board_appeared')}: {wait_time:.2f}s")
         try:
-            if shot is None:
-                # Wait-first mode: poll until the puzzle shows up. A Stop
-                # pressed here comes through driver.stop_requested - the
-                # driver for THIS run already exists (built before the
-                # thread started), unlike the old immediate-capture path.
-                # 先等題目模式：輪詢到題目出現為止。這段期間按下的停止會
-                # 透過 driver.stop_requested 傳進來——這一輪的 driver 已經
-                # 存在（執行緒啟動前就建好了），跟舊的立即擷取路徑不同。
-                t0 = time.perf_counter()
-                shot = wait_for_board(
-                    capture_fn,
-                    should_continue=lambda: not self.driver.stop_requested)
-                if shot is None:
-                    self._ui(self._finish, translator("status_stopped"))
-                    return
-                timings["wait"] = time.perf_counter() - t0
-                self.shot = shot
-                self._clear_stale_result()
-                self._ui(self._show_image, shot.image)
-                self._ui(self._log, f"{translator('log_board_appeared')}: {timings['wait']:.2f}s")
-
             self._ui(self.status_label.config, {"text": translator("status_solving")})
             t0 = time.perf_counter()
-            result = solve_image(
-                shot.image, puzzle_key=puzzle_key,
-                should_continue=lambda: not self.driver.stop_requested)
+            # Retry failed recognition on a FRESH capture - see
+            # MAX_SOLVE_ATTEMPTS for the real failure this recovers from.
+            # 辨識失敗時用「新擷取」的畫面重試——這救的是哪個真實失敗，
+            # 見 MAX_SOLVE_ATTEMPTS。
+            for attempt in range(1, MAX_SOLVE_ATTEMPTS + 1):
+                result = solve_image(
+                    shot.image, puzzle_key=puzzle_key,
+                    should_continue=lambda: not self.driver.stop_requested
+                                            and not self._stop_before_run)
+                if result.ok or result.error == CANCELLED or capture_fn is None \
+                        or attempt == MAX_SOLVE_ATTEMPTS:
+                    break
+                self._ui(self._log, f"  {translator('log_solve_retry')} "
+                                    f"({attempt}/{MAX_SOLVE_ATTEMPTS})")
+                action_log.log("SOLVE", f"retrying with a fresh capture "
+                                f"(attempt {attempt} failed: "
+                                f"{str(result.error).splitlines()[0]})")
+                time.sleep(SOLVE_RETRY_DELAY)
+                shot = capture_fn()
+                self.shot = shot
+                self._ui(self._show_image, shot.image)
             timings["solve"] = time.perf_counter() - t0
             self._ui(self._show_timings, timings, started)
             self.result = result
@@ -648,13 +752,14 @@ class SolverApp:
                 self._ui(self._log, f"  {line}")
 
             if not result.ok:
+                if result.error == CANCELLED:
+                    return "stop", translator("status_stopped")
                 reason = result.error or translator("status_failed")
                 self._ui(self._log, "")
                 self._ui(self._log, reason)
                 self._ui(self._log, "")
                 self._ui(self._log, translator("log_fail_hint"))
-                self._ui(self._finish, f"{translator('status_failed')}: {reason.splitlines()[0]}")
-                return
+                return "failed", f"{translator('status_failed')}: {reason.splitlines()[0]}"
 
             # Draw the answer on the ORIGINAL image (the pipeline works on a
             # scaled copy, so the overlay has to be regenerated here).
@@ -680,8 +785,7 @@ class SolverApp:
             if not fill_answers or self.plan is None:
                 timings["total"] = time.perf_counter() - started
                 self._ui(self._show_timings, timings, started)
-                self._ui(self._finish, translator("status_solved_only"))
-                return
+                return "done", translator("status_solved_only")
 
             driver = self.driver
             self.watch = None
@@ -746,8 +850,8 @@ class SolverApp:
                      + ", ".join(f"{k} {v:.2f}s" for k, v in timings.items()))
             if driver.dry_run:
                 self._ui(self._log, translator("log_preview_note"))
-            self._ui(self._finish, translator("status_preview_done") if driver.dry_run
-                     else translator("status_done"))
+            return "done", (translator("status_preview_done") if driver.dry_run
+                            else translator("status_done"))
 
         except Aborted:
             # Say WHY. "Stopped" alone leaves the user guessing whether they hit
@@ -756,7 +860,9 @@ class SolverApp:
             # 是失敗了、還是它保護了自己。
             action_log.log("ERROR", f"plan aborted: stopped_by_guard="
                             f"{getattr(self.driver, 'stopped_by_guard', False)}")
-            if getattr(self.driver, "stopped_by_guard", False):
+            guard_stopped = (getattr(self.driver, "stopped_by_guard", False)
+                             and not self._stop_before_run)
+            if guard_stopped:
                 reason = getattr(self.watch, "reason", "") or translator("log_board_changed")
                 self._ui(self._log, f"  {reason}")
                 # Save the exact frame the guard rejected. Without this, a real
@@ -785,7 +891,15 @@ class SolverApp:
                             self._ui(self._log, f"  {translator('log_guard_frame_saved')}: {path}")
                     except Exception:
                         pass
-            self._ui(self._finish, translator("status_stopped"))
+                # In continuous mode a guard abort usually IS the happy path:
+                # the completion screen replaced the board mid-fill. "guard"
+                # lets the loop continue to the next puzzle instead of ending
+                # the whole sitting.
+                # 連續模式下，守衛中止通常「就是」正常流程：填答中途完成
+                # 畫面把棋盤換掉了。回傳 "guard" 讓迴圈繼續等下一題，
+                # 而不是結束整輪。
+                return "guard", translator("status_stopped")
+            return "stop", translator("status_stopped")
         except Exception as exc:
             # pyautogui's FAILSAFE (slam the mouse into a corner to abort) is a
             # DOCUMENTED escape hatch, not a bug - but it raises, and used to
@@ -805,11 +919,14 @@ class SolverApp:
             if type(exc).__name__ == "FailSafeException":
                 action_log.log("ERROR", "pyautogui FAILSAFE triggered - emergency stop")
                 self._ui(self._log, translator("log_failsafe"))
-                self._ui(self._finish, translator("status_stopped"))
-            else:
-                action_log.log("ERROR", traceback.format_exc())
-                self._ui(self._log, traceback.format_exc())
-                self._ui(self._finish, translator("status_error"))
+                return "stop", translator("status_stopped")
+            # An unknown exception ends the whole run, continuous or not -
+            # looping on after an unexplained failure would repeat it blindly.
+            # 不明的例外會結束整個執行，連續模式也一樣——在無法解釋的失敗
+            # 之後繼續迴圈，只是盲目地重複它。
+            action_log.log("ERROR", traceback.format_exc())
+            self._ui(self._log, traceback.format_exc())
+            return "stop", translator("status_error")
 
     def _verify_and_retry(self, driver, max_rounds: int = 3):
         """Re-capture, compare, and re-click only what is still wrong.

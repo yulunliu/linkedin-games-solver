@@ -25,7 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from linkedin_games_solver.core import action_log  # noqa: E402
 action_log.LOG_DIR = Path(tempfile.mkdtemp(prefix="lgs_board_wait_test_"))
 
-from linkedin_games_solver.automation import from_file_image, wait_for_board  # noqa: E402
+from linkedin_games_solver.automation import (  # noqa: E402
+    from_file_image,
+    wait_for_board,
+    wait_for_board_gone,
+)
 from linkedin_games_solver.automation.board_wait import _board_present  # noqa: E402
 from linkedin_games_solver.core import read_image  # noqa: E402
 
@@ -115,6 +119,70 @@ def test_board_already_on_screen_fires_after_the_stability_window():
     print("  board already on screen fires after the stability window OK")
 
 
+def test_a_border_without_grid_lines_is_not_a_board():
+    """
+    The exact frame that broke a real Patches run (session log 2026-08-06
+    19:47): the entrance animation had drawn the OUTER border but not the
+    interior grid lines. The old bbox-only check fired on it, and
+    solve_image() burned ~9s failing every attempt with "grid size not
+    detected". A border with no interior must NOT count as present.
+    真實 Patches 執行失敗的那一幀（執行記錄 2026-08-06 19:47）：進場動畫
+    畫出了「外框」、內部格線還沒畫完。舊的只看外框檢查在那一幀就觸發，
+    solve_image() 白跑了約 9 秒、每次都失敗在「無法偵測棋盤格數」。
+    只有外框、沒有內部的畫面「不能」算棋盤存在。
+    """
+    import cv2
+    border_only = np.full((700, 640, 3), 250, dtype=np.uint8)
+    cv2.rectangle(border_only, (100, 100), (540, 540), (60, 60, 60), 3)
+    assert _board_present(border_only) is False, \
+        "a bare border counts as a board - the mid-animation bug is back / 光一個外框就被算成棋盤，動畫中誤觸發的問題回來了"
+    print("  a border without grid lines is not a board OK")
+
+
+def test_wait_for_gone_returns_once_the_board_leaves():
+    """Continuous mode's between-rounds step: the finished board must leave
+    the screen before the next detection arms, or the round that just ended
+    would re-trigger on its own board.
+    連續模式兩輪之間的步驟：剛結束的棋盤要先離開畫面，下一輪偵測才能
+    重新武裝，否則會對著自己剛處理完的棋盤重新觸發。"""
+    board = _board_frame()
+    grab, state = _scripted_capture([board, board, _BLANK])
+    assert wait_for_board_gone(grab, poll_interval=0.001) is True
+    # 2 board frames + STABLE_POLLS(2) absences = 4 grabs.
+    # 2 張棋盤 + 連續 2 次消失 = 4 次擷取。
+    assert state["i"] == 4, f"expected 4 grabs, got {state['i']}"
+    print("  wait-for-gone returns once the board leaves OK")
+
+
+def test_a_single_flicker_does_not_end_the_gone_wait():
+    """A completion animation can hide the board for one poll mid-transition;
+    one absence followed by the board again must reset the count.
+    完成動畫的過場可能讓棋盤只消失一次輪詢；消失一次之後又出現，
+    必須把計數歸零。"""
+    board = _board_frame()
+    grab, state = _scripted_capture([board, _BLANK, board, _BLANK, _BLANK])
+    assert wait_for_board_gone(grab, poll_interval=0.001) is True
+    assert state["i"] == 5, f"expected 5 grabs, got {state['i']}"
+    print("  a single flicker does not end the gone-wait OK")
+
+
+def test_stop_while_waiting_for_gone_returns_false():
+    """Stop pressed while waiting for the board to leave must exit promptly.
+    在等棋盤離開時按下停止，必須立刻結束。"""
+    board = _board_frame()
+    grab, state = _scripted_capture([board])
+    calls = {"n": 0}
+
+    def stop_after_two():
+        calls["n"] += 1
+        return calls["n"] <= 2
+
+    assert wait_for_board_gone(grab, should_continue=stop_after_two,
+                               poll_interval=0.001) is False
+    assert state["i"] == 2, f"kept polling after the stop: {state['i']}"
+    print("  stop while waiting for gone returns False OK")
+
+
 def test_stop_while_waiting_returns_none():
     """The waiting phase can be the LONGEST phase (the user may wander off) and
     Stop is its only exit - see the iconify comment in ui/app.py for why the
@@ -142,5 +210,9 @@ if __name__ == "__main__":
     test_returns_the_capture_once_the_board_appears()
     test_a_single_transient_board_frame_does_not_trigger()
     test_board_already_on_screen_fires_after_the_stability_window()
+    test_a_border_without_grid_lines_is_not_a_board()
+    test_wait_for_gone_returns_once_the_board_leaves()
+    test_a_single_flicker_does_not_end_the_gone_wait()
+    test_stop_while_waiting_for_gone_returns_false()
     test_stop_while_waiting_returns_none()
     print("\nAll passed / 全部通過")

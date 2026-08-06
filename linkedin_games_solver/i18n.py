@@ -68,15 +68,25 @@ _TEXTS: dict[str, dict[str, str]] = {
         "en": "Watching the screen - open the puzzle now...",
         "zh": "偵測畫面中——現在去開啟題目...",
     },
+    "status_waiting_next": {
+        "en": "Round finished - open the next puzzle, or press Stop...",
+        "zh": "本輪結束——請開啟下一題，或按停止...",
+    },
     # ---- Log messages 訊息 ----
     "log_file": {"en": "Session log file", "zh": "本次執行的記錄檔"},
     "log_waiting_hint": {
-        "en": "Watching the capture region. Switch to the puzzle page - filling "
-              "starts the moment the board appears. Press Stop to cancel.",
-        "zh": "正在監看擷取範圍。請切換到題目頁面——棋盤一出現就會立刻開始"
-              "填答。按「停止」可取消。",
+        "en": "Continuous mode: every puzzle that appears in the capture region "
+              "gets solved and filled automatically, one after another, until "
+              "you press Stop. Open the first puzzle now.",
+        "zh": "連續模式：擷取範圍內每出現一題就會自動求解並填答，一題接一題，"
+              "直到你按「停止」為止。現在請開啟第一題。",
     },
     "log_board_appeared": {"en": "Puzzle appeared after", "zh": "題目出現，等待了"},
+    "log_round": {"en": "Round {n}", "zh": "第 {n} 輪"},
+    "log_solve_retry": {
+        "en": "Recognition failed - retrying on a fresh capture",
+        "zh": "辨識失敗——重新擷取畫面再試一次",
+    },
     "log_puzzle_type": {"en": "Puzzle type", "zh": "謎題類型"},
     "log_plan": {"en": "=== Fill plan ===", "zh": "=== 填答計畫 ==="},
     "log_elapsed": {"en": "Elapsed", "zh": "耗時"},

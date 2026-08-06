@@ -10,7 +10,7 @@ Automation layer: capture the screen, map coordinates, drive the mouse, verify.
   verify        check and re-click             檢查與補點
 """
 
-from .board_wait import wait_for_board
+from .board_wait import wait_for_board, wait_for_board_gone
 from .capture import ScreenShot, capture_region, capture_screen, default_region, from_file_image
 from .input_driver import Aborted, InputDriver, focus_window_at, wait_for_mouse_release
 from .mapper import BoardMapper
@@ -19,7 +19,7 @@ from .verify import VerifyReport, build_retry_plan, verify
 
 __all__ = [
     "ScreenShot", "capture_region", "capture_screen", "default_region", "from_file_image",
-    "wait_for_board",
+    "wait_for_board", "wait_for_board_gone",
     "InputDriver", "Aborted", "focus_window_at", "wait_for_mouse_release",
     "BoardMapper", "PlayPlan", "build_plan",
     "VerifyReport", "verify", "build_retry_plan",
