@@ -83,6 +83,7 @@ def wait_for_mouse_release(timeout: float = 2.0) -> float:
     僅限 Windows；其他平台退回一段固定的短等待。
     """
     started = time.perf_counter()
+    was_down = False
     try:
         import ctypes
 
@@ -93,12 +94,24 @@ def wait_for_mouse_release(timeout: float = 2.0) -> float:
             # 最高位為 1 代表該鍵目前是被按住的。
             if not (user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000):
                 break
+            was_down = True
             time.sleep(0.02)
     except Exception:
         time.sleep(0.3)
-    # Give the OS a moment to finish dispatching that click.
-    # 放開後給作業系統一點時間把那次點擊事件處理完。
-    time.sleep(0.12)
+        was_down = True
+    # Give the OS a moment to finish dispatching that click - but only when
+    # there WAS a click to dispatch. In wait-first continuous mode the button
+    # was released seconds ago (the user's press started the wait, not the
+    # fill), so the very first poll already reads "up" and the 0.12s grace
+    # is pure waste - measured as part of a consistent 0.42-0.45s gap between
+    # "solve done" and the first action in every real run of 2026-08-05/06.
+    # 放開後給作業系統一點時間把那次點擊事件處理完——但只有「真的有一次
+    # 點擊要處理」時才需要。在先等題目的連續模式裡，按鍵是好幾秒前就放開
+    # 的（使用者按按鈕啟動的是「等待」、不是「填答」），第一次輪詢讀到的
+    # 就已經是放開狀態，0.12 秒的緩衝是純浪費——這正是 2026-08-05/06
+    # 每一輪真實記錄裡「求解完成」到「第一個動作」之間固定 0.42~0.45 秒
+    # 的其中一段。
+    time.sleep(0.12 if was_down else 0.02)
     return time.perf_counter() - started
 
 

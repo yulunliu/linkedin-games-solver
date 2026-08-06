@@ -16,11 +16,12 @@ from .input_driver import Aborted, InputDriver, focus_window_at, wait_for_mouse_
 from .mapper import BoardMapper
 from .players import PlayPlan, build_plan
 from .verify import VerifyReport, build_retry_plan, verify
+from .verify import supports as verify_supports
 
 __all__ = [
     "ScreenShot", "capture_region", "capture_screen", "default_region", "from_file_image",
     "wait_for_board", "wait_for_board_gone",
     "InputDriver", "Aborted", "focus_window_at", "wait_for_mouse_release",
     "BoardMapper", "PlayPlan", "build_plan",
-    "VerifyReport", "verify", "build_retry_plan",
+    "VerifyReport", "verify", "verify_supports", "build_retry_plan",
 ]

@@ -73,50 +73,49 @@ def test_the_blank_frame_really_has_no_board():
 
 def test_returns_the_capture_once_the_board_appears():
     """The core promise: blank screen, blank screen, ... board -> that capture
-    comes back, and it is the BOARD frame, not one of the blanks.
+    comes back, and it is the BOARD frame, not one of the blanks. Detection
+    commits on the FIRST full-grid sighting (STABLE_POLLS=1) - see the
+    constant's HISTORY note for why one sighting is enough now.
     核心承諾：空畫面、空畫面、……棋盤 -> 回傳那次擷取，而且是「棋盤」那一幀，
-    不是空白的那幾幀。"""
+    不是空白的那幾幀。偵測在「第一次」看到完整棋盤時就拍板
+    （STABLE_POLLS=1）——為什麼一次就夠，見常數的沿革註解。"""
     board = _board_frame()
     grab, state = _scripted_capture([_BLANK, _BLANK, _BLANK, board])
     shot = wait_for_board(grab, poll_interval=0.001)
     assert shot is not None
     assert _board_present(shot.image), "returned a frame with no board on it / 回傳了一張沒有棋盤的影格"
-    # 3 blanks + STABLE_POLLS(2) board sightings = 5 grabs.
-    # 3 張空白 + 連續 2 次看到棋盤 = 5 次擷取。
-    assert state["i"] == 5, f"expected 5 grabs, got {state['i']} / 預期擷取 5 次"
+    # 3 blanks + 1 full-grid sighting = 4 grabs.
+    # 3 張空白 + 1 次完整棋盤 = 4 次擷取。
+    assert state["i"] == 4, f"expected 4 grabs, got {state['i']} / 預期擷取 4 次"
     print("  returns the capture once the board appears OK")
 
 
-def test_a_single_transient_board_frame_does_not_trigger():
-    """WHY STABLE_POLLS exists: one poll can catch a half-rendered transition
-    frame that happens to look board-shaped. A single sighting followed by a
-    miss must reset the count and keep waiting for a STABLE pair.
-    STABLE_POLLS 存在的理由：某次輪詢可能剛好拍到畫面切換中、看起來像棋盤
-    形狀的半成品影格。看到一次之後又斷掉，必須把計數歸零、繼續等到
-    「連續」兩次才算數。"""
+def test_the_stability_window_mechanism_still_works_when_asked_for():
+    """The consecutive-count machinery must remain correct for any caller
+    that configures stable_polls > 1: a single sighting followed by a miss
+    resets the count.
+    連續計數的機制對任何設定 stable_polls > 1 的呼叫端仍然要正確：
+    看到一次之後斷掉，計數必須歸零。"""
     board = _board_frame()
     grab, state = _scripted_capture([_BLANK, board, _BLANK, _BLANK, board, board])
-    shot = wait_for_board(grab, poll_interval=0.001)
+    shot = wait_for_board(grab, poll_interval=0.001, stable_polls=2)
     assert shot is not None
-    # The transient sighting at frame 2 must NOT have been enough - detection
-    # commits only at frame 6, the second of the stable pair.
-    # 第 2 幀那次曇花一現不能算數——要到第 6 幀、穩定連續的第二次才拍板。
     assert state["i"] == 6, f"expected 6 grabs, got {state['i']} / 預期擷取 6 次"
-    print("  a single transient board frame does not trigger OK")
+    print("  the stability-window mechanism still works when asked for OK")
 
 
-def test_board_already_on_screen_fires_after_the_stability_window():
+def test_board_already_on_screen_fires_on_the_first_poll():
     """Pressing the button with the puzzle ALREADY open must still work - the
-    old workflow is a special case of the new one, costing only the stability
-    window (2 polls), never a timeout or a hang.
+    old workflow is a special case of the new one, committing on the very
+    first poll.
     題目「已經開著」才按按鈕也必須能動——舊的操作流程是新流程的特例，
-    代價只有穩定窗（2 次輪詢），絕不是逾時或卡住。"""
+    第一次輪詢就拍板。"""
     board = _board_frame()
     grab, state = _scripted_capture([board])
     shot = wait_for_board(grab, poll_interval=0.001)
     assert shot is not None
-    assert state["i"] == 2, f"expected exactly the stability window (2 grabs), got {state['i']}"
-    print("  board already on screen fires after the stability window OK")
+    assert state["i"] == 1, f"expected 1 grab, got {state['i']}"
+    print("  board already on screen fires on the first poll OK")
 
 
 def test_a_border_without_grid_lines_is_not_a_board():
@@ -208,8 +207,8 @@ if __name__ == "__main__":
     print("Board wait tests / 等待棋盤測試")
     test_the_blank_frame_really_has_no_board()
     test_returns_the_capture_once_the_board_appears()
-    test_a_single_transient_board_frame_does_not_trigger()
-    test_board_already_on_screen_fires_after_the_stability_window()
+    test_the_stability_window_mechanism_still_works_when_asked_for()
+    test_board_already_on_screen_fires_on_the_first_poll()
     test_a_border_without_grid_lines_is_not_a_board()
     test_wait_for_gone_returns_once_the_board_leaves()
     test_a_single_flicker_does_not_end_the_gone_wait()

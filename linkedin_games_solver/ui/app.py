@@ -40,6 +40,7 @@ from ..automation import (
     focus_window_at,
     from_file_image,
     verify,
+    verify_supports,
     wait_for_board,
     wait_for_board_gone,
     wait_for_mouse_release,
@@ -93,6 +94,25 @@ MAX_SOLVE_ATTEMPTS = 3
 #: 多給頁面一點時間把畫面畫完。在昂貴的失敗之後，動畫早就結束了，
 #: 這半秒的影響可以忽略。
 SOLVE_RETRY_DELAY = 0.5
+
+#: Seconds to wait for the page to finish redrawing before the verify pass
+#: recaptures the screen, per speed tier.
+#: 驗證步驟重新擷取畫面之前，等網頁重畫完成的秒數，依速度檔各自設定。
+#:
+#: The original fixed 0.9s was chosen for the default speed. At the faster
+#: tiers the page has already demonstrated it keeps up with much tighter
+#: input timing, so the settle can shrink with the tier - UNVALIDATED like
+#: the tiers themselves; the failure sign is a verify round reporting wrong
+#: cells that a later round finds correct (the capture ran mid-redraw).
+#: Queens is the one to watch: a mid-redraw frame could make it "clear" a
+#: crown that was actually fine.
+#: 原本固定的 0.9 秒是為預設速度選的。在較快的檔位，網頁已經證明跟得上
+#: 更緊湊的輸入節奏，所以這個緩衝可以跟著檔位縮短——跟檔位本身一樣屬於
+#: 未驗證；失敗徵兆是某一輪驗證回報有格子錯了、下一輪又發現是對的
+#: （代表擷取撞上重畫中）。要特別盯 Queens：重畫中的畫面可能讓它把
+#: 其實沒問題的皇冠「清掉」。
+VERIFY_DELAYS = {"fastest": 0.5, "faster": 0.6, "fast": 0.8,
+                 "normal": 0.9, "slow": 0.9, "slowest": 0.9}
 
 #: Speed label -> InputDriver constructor arguments.
 #: 速度選項 -> InputDriver 的建構參數。
@@ -625,6 +645,7 @@ class SolverApp:
         index = self.type_combo.current()
         puzzle_key = None if index <= 0 else DISPLAY_ORDER[index - 1]
         speed_key = SPEED_KEYS[max(0, self.speed_combo.current())]
+        self._verify_delay = VERIFY_DELAYS[speed_key]
         driver_kwargs = dict(dry_run=self.dry_run_var.get(), **SPEED_PROFILES[speed_key])
         self.driver = InputDriver(**driver_kwargs)
         self.driver.reset()
@@ -931,10 +952,23 @@ class SolverApp:
     def _verify_and_retry(self, driver, max_rounds: int = 3):
         """Re-capture, compare, and re-click only what is still wrong.
         重新擷取、比對，只補還沒填對的格子。"""
+        # Ask BEFORE the redraw sleep and the capture whether this puzzle can
+        # be verified at all - see verify.supports for the measured waste
+        # this skips (~0.95s per Zip/Patches round doing nothing).
+        # 在「等重畫」與「擷取」之前先問這款謎題到底能不能驗證——這裡跳過
+        # 的實測浪費（Zip/Patches 每輪白花約 0.95 秒）見 verify.supports。
+        if not verify_supports(self.result.puzzle_key):
+            action_log.log("VERIFY", f"{self.result.puzzle_key}: not supported, "
+                            f"skipped without the redraw wait")
+            self._ui(self._log, f"[{translator('log_check_round')} 1] "
+                                f"{self.result.puzzle_key}: cannot verify / 無法驗證，直接略過")
+            return
         previous_wrong = None
         for attempt in range(1, max_rounds + 1):
             action_log.log("VERIFY", f"GUI check round {attempt}/{max_rounds} starting")
-            time.sleep(0.9)  # let the page finish redrawing 等網頁畫面更新完
+            # let the page finish redrawing; tier-dependent, see VERIFY_DELAYS
+            # 等網頁畫面更新完；依速度檔而定，見 VERIFY_DELAYS
+            time.sleep(getattr(self, "_verify_delay", 0.9))
             fresh = capture_screen() if self.settings.get("fullscreen") else capture_region(*self._region())
             report = verify(fresh.image, self.result)
             self._ui(self._log, f"[{translator('log_check_round')} {attempt}] {report.summary()}")

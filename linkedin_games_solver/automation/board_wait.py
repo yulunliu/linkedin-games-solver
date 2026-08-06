@@ -74,32 +74,41 @@ from .capture import ScreenShot
 #: 0.15 是使用者在「偵測延遲」與「等待期 CPU 成本」之間選定的平衡點。
 POLL_INTERVAL = 0.15
 
-#: Consecutive successful detections required before committing.
-#: 連續幾次偵測成功才算數，才會真的採信。
+#: Consecutive successful detections required before committing to a board.
+#: 連續幾次偵測成功才算數、才會真的採信棋盤出現了。
 #:
-#: WHY THIS STAYS AT 2 為什麼維持 2 不拿掉:
-#: a page transition can show a half-rendered frame for one poll that
-#: happens to look board-shaped (a loading skeleton, the board drawn but
-#: its icons/digits not yet) before the page settles. Requiring 2 in a
-#: row - reset to 0 on any miss, the same consecutive-count shape as
-#: BoardWatch.failure_tolerance - costs exactly one extra POLL_INTERVAL
-#: (0.15s) once the real board appears. Removing it was considered and
-#: rejected on measured numbers: a premature solve_image() on a
-#: half-rendered frame does not just "fail fast" - every module's
-#: uniqueness guard rejects the incomplete board, so the FULL crop x scale
-#: ladder plus the fallback-type sweep runs to exhaustion, measured at up
-#: to ~9.2s on content that never resolves. Risking ~9s to save 0.15s is
-#: the wrong side of that trade a hundred times over.
-#: 為什麼維持 2 不拿掉：頁面切換時，可能有一次輪詢剛好拍到畫到一半、
-#: 看起來像棋盤形狀的影格（載入中的骨架畫面，或棋盤畫出來了但裡面的
-#: 圖示/數字還沒畫）。要求連續 2 次——中間斷一次就歸零，跟
-#: BoardWatch.failure_tolerance 同一種連續計數邏輯——在真正的棋盤出現後
-#: 只多花「一個」POLL_INTERVAL（0.15 秒）。「拿掉它」評估過、用量測數字
-#: 否決：對半成品影格提早跑一次 solve_image() 不是「很快失敗」而已——
-#: 每個謎題模組的唯一性守門都會拒絕不完整的盤面，於是完整的裁切 x 縮放
-#: 階梯加上備援類型全掃會跑到耗盡為止，對永遠解不出來的內容實測要花到
-#: 約 9.2 秒。為了省 0.15 秒去賭 9 秒，這個交換怎麼算都是虧的。
-STABLE_POLLS = 2
+#: HISTORY 沿革: this was 2, guarding against half-rendered transition
+#: frames. Two later changes made the second confirmation redundant and it
+#: went back to 1: (a) presence now requires the FULL grid to locate
+#: (build_grid incl. detect_grid_size - see _board_present), so the exact
+#: frame class that burned a real run (border drawn, interior not) can no
+#: longer pass at all; (b) if a frame passes the grid check but its
+#: icons/labels are still fading in, the solve fails cheaply against a
+#: readable grid and the caller's fresh-capture retry (ui/app.py
+#: MAX_SOLVE_ATTEMPTS) recovers it. With both nets in place the extra
+#: 0.15s poll bought nothing.
+#: 沿革：原本是 2，防的是切換中的半成品影格。後來兩個改動讓第二次確認
+#: 變成多餘的，於是改回 1：(a) 存在判定現在要求「完整棋盤」定位得到
+#: （build_grid 含 detect_grid_size——見 _board_present），所以真的燒掉
+#: 一輪的那類影格（外框畫了、內部沒畫）根本過不了關；(b) 就算某一幀
+#: 過了格線檢查、圖示／標籤還在淡入，對著讀得到的格線求解會便宜地失敗，
+#: 呼叫端的新擷取重試（ui/app.py 的 MAX_SOLVE_ATTEMPTS）會把它救回來。
+#: 兩張網都在之後，多等的那 0.15 秒買不到任何東西。
+STABLE_POLLS = 1
+
+#: Consecutive MISSES required before declaring the board gone - kept at 2,
+#: NOT lowered alongside STABLE_POLLS, because the failure modes differ: a
+#: completion animation can hide the board for a single poll mid-transition,
+#: and a premature "gone" verdict makes continuous mode immediately re-detect
+#: the SAME still-present board as a "new puzzle" and re-solve it. Detection
+#: committing early is caught by the solve-retry net; gone-detection has no
+#: such net, so it keeps the stability window.
+#: 連續幾次「看不到」才判定棋盤消失——維持 2，「不」跟著 STABLE_POLLS 一起
+#: 降，因為失敗情境不同：完成動畫的過場可能讓棋盤只消失一次輪詢，而過早
+#: 判定「消失了」會讓連續模式立刻把「還在原地的同一個棋盤」當成新題目
+#: 重新偵測、重新求解。偵測太早拍板有求解重試那張網接著；消失判定沒有
+#: 這種網，所以它保留穩定窗。
+GONE_STABLE_POLLS = 2
 
 
 def _board_present(image) -> bool:
@@ -179,7 +188,7 @@ def wait_for_board_gone(
     capture_fn: Callable[[], ScreenShot],
     should_continue: Callable[[], bool] | None = None,
     poll_interval: float = POLL_INTERVAL,
-    stable_polls: int = STABLE_POLLS,
+    stable_polls: int = GONE_STABLE_POLLS,
 ) -> bool:
     """Poll until NO board is detected stable_polls times in a row. True when
     the board is gone, False if cancelled first.
