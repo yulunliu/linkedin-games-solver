@@ -626,6 +626,69 @@ def test_guard_survives_a_real_mid_drag_patches_capture():
     print("  guard survives a real mid-drag Patches capture OK")
 
 
+def test_guard_survives_two_full_width_rows_of_a_real_patches_fill():
+    """The false abort a user actually hit on 2026-08-06, reproduced from a
+    screen recording and a diagnostic frame the guard itself saved.
+    2026-08-06 使用者實際碰到的誤判中止，從螢幕錄影跟守衛自己存下的
+    診斷畫面重現。
+
+    A real 7x7 puzzle solved into just 6 rectangles, 4 of them full-width
+    rows - unlike every other Patches fixture in this file (10-14 rects,
+    none full-width). With only 2 of those 6 rows filled, detect_grid_size
+    (with the mask_saturated fallback) failed 3 checks in a row and the old
+    tolerance of 2 aborted a plan that was still correctly in progress; the
+    user went on to solve the same board by hand with no problem. See
+    PATCHES_FAILURE_TOLERANCE's own comment for the full measurement,
+    including that even the PRISTINE frame (0 filled) failed to locate on
+    1 of 20 near-identical re-captures - this puzzle's margin was thin
+    before anything was drawn at all.
+    一個真實的 7x7 題目解出來只有 6 塊矩形，其中 4 塊是貫穿全寬的整列——
+    跟這個檔案裡其他每一張 Patches 測試圖都不一樣（10~14 塊，沒有任何一塊
+    貫穿全寬）。那 6 塊裡只填了 2 塊，`detect_grid_size`（含遮色備援）就
+    連續 3 次檢查失敗，舊的容忍值 2 把一個其實還在正常進行的計畫中止了；
+    使用者後來手動接著解完，完全沒問題。完整量測依據見
+    `PATCHES_FAILURE_TOLERANCE` 自己的註解，包含連「完全空白」的畫面，
+    對 20 次幾乎相同的重新擷取都有 1 次定位失敗——這道題目的容錯空間，
+    在還沒開始畫任何東西之前就已經很薄。
+    """
+    from linkedin_games_solver.automation.board_watch import (
+        BoardWatch,
+        PATCHES_FAILURE_TOLERANCE,
+        locate_board,
+    )
+
+    pristine = read_image(FIXTURES / "pristine_patches_browser.png")
+    filled = read_image(FIXTURES / "patches_two_full_rows_filled.png")
+    assert pristine is not None and filled is not None, "missing fixture / 缺少測試圖"
+
+    # The bug in one line: the REAL failing frame, checked directly.
+    # 一行重現這個 bug：直接對真實失敗的那張畫面檢查。
+    assert locate_board(filled, 7) is None, (
+        "this fixture started locating - either detect_grid_size or the mask "
+        "changed; re-measure PATCHES_FAILURE_TOLERANCE before assuming this "
+        "is fixed / 這張圖開始定位得到了——detect_grid_size 或遮色邏輯有變動；"
+        "重新量測 PATCHES_FAILURE_TOLERANCE 之前先不要假設這已經修好"
+    )
+
+    # End to end: a real Patches plan (arm on the pristine frame, then every
+    # check sees the same persistently-failing frame) must survive exactly
+    # the number of checks this real puzzle needed (6), not fewer.
+    # 端到端：一次真實的拼塊計畫（在空白畫面上武裝，之後每次檢查都看到
+    # 同一張持續失敗的畫面）必須撐過這道真實題目需要的次數（6），不能更少。
+    n_checks = 6
+    watch = BoardWatch(mapper=_mapper(7), n=7, grab=lambda *a: filled, locate=locate_board,
+                       failure_tolerance=PATCHES_FAILURE_TOLERANCE, min_interval=0.0)
+    assert watch.arm(pristine), "arm() must succeed on the pristine frame / arm() 在空白畫面上必須成功"
+    for i in range(n_checks):
+        assert watch.still_there(), (
+            f"guard aborted at check {i + 1}/{n_checks} - PATCHES_FAILURE_TOLERANCE "
+            f"no longer covers this real puzzle's full plan / "
+            f"守衛在第 {i + 1}/{n_checks} 次檢查就中止——PATCHES_FAILURE_TOLERANCE "
+            f"已經不夠讓這道真實題目跑完整條計畫"
+        )
+    print("  guard survives two full-width rows of a real Patches fill OK")
+
+
 def test_guard_still_fails_late_in_the_same_capture():
     """Known remaining gap: masking does not reach late-stage fill. Not fixed;
     documented so a future change is judged against a real number.
@@ -795,6 +858,7 @@ if __name__ == "__main__":
     test_rate_limit_bounds_the_cost_without_hiding_a_change()
     test_a_drag_is_never_interrupted_by_the_guard()
     test_guard_survives_a_real_mid_drag_patches_capture()
+    test_guard_survives_two_full_width_rows_of_a_real_patches_fill()
     test_guard_still_fails_late_in_the_same_capture()
     test_patches_tolerates_persistent_failure_up_to_the_measured_limit()
     print("\nAll passed / 全部通過")

@@ -196,7 +196,39 @@ def _size_is_ours(found: int, ours: int) -> bool:
 #: ui/app.py 專門套用在拼塊上的 failure_tolerance 值。量測依據跟理由都寫在
 #: BoardWatch.failure_tolerance 自己身上——這裡只是那個數字，跟它設定的
 #: class 放在一起，不要藏在 UI 層裡面。
-PATCHES_FAILURE_TOLERANCE = 2
+#:
+#: RAISED 2 -> 6 on 2026-08-06, from a real aborted run 從一次真實中止的執行
+#: 提高：
+#: A real 7x7 puzzle (session log + screen recording, 2026-08-06) solved
+#: into just 6 rectangles, FOUR of them full-width rows - unlike every
+#: existing Patches fixture (10-14 rects, none full-width; see
+#: tests/test_board_guard.py). Reproduced directly against the real
+#: captured frames: with only 2 of those 6 rows filled, detect_grid_size
+#: (with the mask_saturated fallback) failed 3 checks in a row and the
+#: guard aborted a plan that was still correctly in progress - the user
+#: went on to solve the same board by hand with no problem. Worse: even
+#: the PRISTINE frame (0 filled) failed to locate on 1 of 20 near-identical
+#: re-captures (tiny per-pixel noise only) - this puzzle's margin is thin
+#: even before anything is drawn. 6 covers this exact puzzle's full plan
+#: even in the worst case where NO check after the first ever recovers.
+#: This is deliberately NOT unlimited: a genuinely replaced board is still
+#: caught once persistent failure exceeds 6, and every fixture surveyed
+#: (10-14 rects, no full-width rows) is far less likely to lose enough
+#: grid-line visibility to need anywhere near this many in a row.
+#: 一個真實的 7x7 題目（執行記錄 + 螢幕錄影，2026-08-06）解出來只有
+#: 6 塊矩形，其中 4 塊是貫穿全寬的整列——這跟現有的每一張 Patches 測試圖
+#: 都不一樣（10~14 塊，沒有任何一塊貫穿全寬；見 test_board_guard.py）。
+#: 直接對著真實擷取的畫面重現：那 6 塊裡只填了 2 塊，`detect_grid_size`
+#: （含遮色備援）就連續 3 次檢查失敗，守衛把一個其實還在正常進行的計畫
+#: 中止了——使用者後來手動接著解完，完全沒問題。更糟的是：連「完全空白」
+#: 的畫面，對 20 次幾乎相同的重新擷取（只有極微小的像素雜訊），都有 1 次
+#: 定位失敗——這道題目的容錯空間，在還沒開始畫任何東西之前就已經很薄。
+#: 6 這個數字，讓「這道題目」完整跑完整條計畫，就算「除了第一次以外的
+#: 每一次檢查都失敗」這種最壞情況也撐得住。刻意不設成無限制：真的被換掉
+#: 的棋盤，只要持續失敗超過 6 次還是抓得到；而調查過的每一張既有測試圖
+#: （10~14 塊、沒有貫穿全寬的）都遠不容易在連續格線可見度上輸到需要
+#: 撐這麼多次。
+PATCHES_FAILURE_TOLERANCE = 6
 
 
 @dataclass
