@@ -152,6 +152,48 @@ def test_live_patches_with_blank_labels():
     print("  live patches with blank labels OK")
 
 
+def test_live_browser_mini_sudoku_reads_every_given():
+    """
+    Bug this guards: a real session (2026-08-08 log + screen recording) showed
+    digit "3" scoring only 0.876-0.898 against the digit templates on this
+    board - short of MIN_SCORE (0.90) - while every OTHER digit on the same
+    board scored 0.94-0.99. classify_glyph correctly refused to guess
+    (that is the safety mechanism working as designed), so the puzzle read as
+    under-constrained and every solve attempt correctly - but uselessly -
+    failed with "solution not unique". Not a logic bug: this board's own
+    rendering of "3" (LinkedIn's in-BROWSER Mini Sudoku widget) simply was not
+    close enough to the templates, which had come only from a phone-app
+    screenshot. Fixed by adding this board's own digits as a second
+    calibration source (tools/calibrate_digits.py's BROWSER_SUDOKU_GIVENS) -
+    not by loosening MIN_SCORE, which would have let a genuinely ambiguous
+    glyph through on every OTHER board too.
+    這個測試守住的問題：一次真實執行（2026-08-08 執行記錄 + 螢幕錄影）
+    顯示，這個棋盤上的數字「3」對數字範本只拿到 0.876~0.898 分——不到
+    MIN_SCORE（0.90）——而同一個棋盤上其他每個數字都拿到 0.94~0.99 分。
+    classify_glyph 正確地拒絕用猜的（這正是安全機制設計上該有的行為），
+    於是題目被讀成條件不足，每一次求解嘗試都正確地——但沒有用地——失敗在
+    「解不唯一」。這不是邏輯錯誤：這個棋盤自己畫的「3」（LinkedIn 瀏覽器內建
+    的 Mini Sudoku 元件），純粹跟範本不夠像，而範本原本只來自一張手機 App
+    截圖。修法是把這個棋盤自己的數字加進第二個校準來源
+    （tools/calibrate_digits.py 的 BROWSER_SUDOKU_GIVENS）——不是放寬
+    MIN_SCORE，那樣會讓其他每一個棋盤上真正模稜兩可的字形也一起被放行。
+    """
+    image = _load("live_mini_sudoku_browser.png")
+    result = solve_image(image)
+    assert result.ok, result.error
+    assert result.puzzle_key == "sudoku"
+
+    givens = result.data["givens"]
+    expected = {
+        (0, 0): 1, (0, 2): 2, (0, 5): 3,
+        (2, 0): 2, (2, 2): 4,
+        (3, 3): 4, (3, 5): 5,
+        (5, 0): 3, (5, 3): 5, (5, 5): 1,
+    }
+    assert givens == expected, f"givens mismatch / 給定數字不符: {givens}"
+    print("  live browser Mini Sudoku reads every given OK")
+
+
 def test_wrong_type_does_not_fake_success():
     """Forcing the wrong type must fail loudly, not invent an answer.
     指定錯誤的類型必須明確失敗，不能編一個答案出來。"""
@@ -442,6 +484,7 @@ if __name__ == "__main__":
     test_live_queens_boards()
     test_live_tango_matches_screen()
     test_live_patches_with_blank_labels()
+    test_live_browser_mini_sudoku_reads_every_given()
     test_wrong_type_does_not_fake_success()
     test_zoom_hint_is_not_appended_to_a_comfortably_large_borderless_board()
     test_initial_recognition_survives_a_partially_filled_patches_board()

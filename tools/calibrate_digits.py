@@ -83,6 +83,38 @@ SUDOKU_GIVENS = {
     (5, 4): 3, (5, 5): 5,
 }
 
+#: A second, independent Sudoku source - the IN-BROWSER Mini Sudoku widget,
+#: not the phone-app screenshot SUDOKU_GIVENS above comes from.
+#: 第二個獨立的數獨來源——瀏覽器內建的 Mini Sudoku 元件，不是上面
+#: SUDOKU_GIVENS 那張手機截圖的來源。
+#:
+#: WHY THIS SECOND SOURCE EXISTS 為什麼需要第二個來源:
+#: real play (2026-08-08 session log + screen recording) showed digit "3"
+#: scoring only 0.876-0.898 against APP_TEMPLATES on this board - short of
+#: MIN_SCORE (0.90) - while every other digit on the SAME board scored
+#: 0.94-0.99. classify_glyph correctly refused to guess (best_score <
+#: MIN_SCORE), so the puzzle read as under-constrained and every solve
+#: attempt correctly failed with "solution not unique". Not a logic bug -
+#: the browser widget's own rendering of "3" simply was not close enough to
+#: the phone-app "3" template above. Confirmed by direct reproduction:
+#: python -c calls into core.digits.classify_glyph on this exact fixture's
+#: (0,5) and (5,0) cells reproduced the exact scores from the session log.
+#: 為什麼需要第二個來源：真實遊玩（2026-08-08 執行記錄 + 螢幕錄影）顯示，
+#: 這個棋盤上的數字「3」對 APP_TEMPLATES 只拿到 0.876~0.898 分——不到
+#: MIN_SCORE（0.90）——而同一個棋盤上其他每個數字都拿到 0.94~0.99 分。
+#: classify_glyph 正確地拒絕用猜的（best_score < MIN_SCORE），於是題目被讀成
+#: 條件不足，每一次求解嘗試都正確地失敗在「解不唯一」。這不是邏輯錯誤——
+#: 純粹是瀏覽器元件自己畫的「3」，跟上面手機 App 的「3」範本不夠像。
+#: 已直接重現確認：對這張測試圖的 (0,5) 與 (5,0) 格呼叫
+#: core.digits.classify_glyph，重現出跟執行記錄裡一模一樣的分數。
+BROWSER_SUDOKU_GIVENS = {
+    (0, 0): 1, (0, 2): 2, (0, 5): 3,
+    (2, 0): 2, (2, 2): 4,
+    (3, 3): 4, (3, 5): 5,
+    (5, 0): 3, (5, 3): 5, (5, 5): 1,
+}
+BROWSER_SUDOKU_IMAGE = "live_mini_sudoku_browser.png"
+
 #: Patches labels: (row, col) -> number on the badge. Patches 標籤上的數字。
 PATCHES_LABELS = {
     (0, 1): 4, (0, 5): 6, (1, 2): 6, (1, 6): 9,
@@ -97,22 +129,37 @@ PATCHES_IMAGE = "S__104316936_0.jpg"
 # --------------------------------------------------------------------------
 # Collectors 收集器
 # --------------------------------------------------------------------------
+#: Every Sudoku image this tool harvests digits from, paired with its own
+#: ground truth. A list, not a single image, precisely because one source
+#: rendering a digit acceptably does not mean every source does - see
+#: BROWSER_SUDOKU_GIVENS's own comment for the real case that proved it.
+#: 這支工具會取樣數字的每一張數獨圖片，各自配對自己的正確答案表。用清單
+#: 而不是單一張圖，正是因為「某一個來源把某個數字畫得夠像」不代表
+#: 每個來源都會——真實發生過的案例見 BROWSER_SUDOKU_GIVENS 自己的註解。
+SUDOKU_SOURCES = [
+    (SUDOKU_IMAGE, SUDOKU_GIVENS),
+    (BROWSER_SUDOKU_IMAGE, BROWSER_SUDOKU_GIVENS),
+]
+
+
 def from_sudoku_cells() -> dict[int, list[np.ndarray]]:
-    """Digits printed inside the Sudoku grid. 數獨格子裡印的數字。"""
+    """Digits printed inside the Sudoku grid, across every known source.
+    數獨格子裡印的數字，涵蓋每一個已知的來源。"""
     out: dict[int, list[np.ndarray]] = {}
-    image = read_image(FIXTURES / SUDOKU_IMAGE)
-    if image is None:
-        return out
-    grid = build_grid(image)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    for (r, c), digit in SUDOKU_GIVENS.items():
-        x, y, w, h = grid.cell_boxes[r][c]
-        # Inset well inside the cell so grid lines are not read as strokes.
-        # 往格子內縮很多，避免把格線讀成筆畫。
-        sub = gray[y + int(h * 0.15) : y + int(h * 0.85), x + int(w * 0.15) : x + int(w * 0.85)]
-        glyph = normalize_glyph(sub < 128)
-        if glyph is not None:
-            out.setdefault(digit, []).append(glyph)
+    for image_name, givens in SUDOKU_SOURCES:
+        image = read_image(FIXTURES / image_name)
+        if image is None:
+            continue
+        grid = build_grid(image)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        for (r, c), digit in givens.items():
+            x, y, w, h = grid.cell_boxes[r][c]
+            # Inset well inside the cell so grid lines are not read as strokes.
+            # 往格子內縮很多，避免把格線讀成筆畫。
+            sub = gray[y + int(h * 0.15) : y + int(h * 0.85), x + int(w * 0.15) : x + int(w * 0.85)]
+            glyph = normalize_glyph(sub < 128)
+            if glyph is not None:
+                out.setdefault(digit, []).append(glyph)
     return out
 
 
