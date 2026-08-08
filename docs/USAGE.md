@@ -42,9 +42,9 @@ Windows only.
 |---|---|
 | **Board** | The screen rectangle to capture (X / Y / W / H). **Reset** restores the default; **Test** shows what would be captured |
 | **Puzzle** | Leave on *Auto-detect* unless it guesses wrong |
-| **Speed** | Fastest / Faster / Fast / Normal / Slow / Slowest. Start at Normal; if the page cannot keep up, go slower. Measured five-game fill totals: Normal 37s, Fast 21s, Faster 15s, Fastest 8s - but Faster and Fastest are experimental: dropped clicks are self-repaired by the verify pass, a Zip drag that outruns the page is not |
+| **Speed** | Fastest / Faster / Fast / Normal / Slow / Slowest. Start at Normal; if the page cannot keep up, go slower. Measured five-game fill totals: Normal 37s, Fast 21s, Faster 20s, Fastest 18s - Fastest and Faster are pulled close to Fast on purpose (an earlier, far more aggressive Fastest caused real dropped input and was pulled back) but remain less tested; dropped clicks are self-repaired by the verify pass, a Zip drag that outruns the page is not |
 | **Preview** | Tick this and it prints the plan without touching the mouse |
-| **Hide** | Minimise the app window while it plays |
+| **Hide** | Minimise the app window while it plays. Left unticked, the window stays visible but is automatically kept clear of the capture region - it can no longer sit on top of the board and block part of it from ever being captured (2026-08-08: this is exactly what broke Mini Sudoku recognition for a whole session) |
 | **Verify** | After filling, re-read the board and fix any cells that did not take |
 | **Solve & Fill** | Do it |
 | **Solve only** | Work out the answer and show it, but do not touch the mouse |

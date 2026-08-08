@@ -125,26 +125,47 @@ VERIFY_DELAYS = {"fastest": 0.5, "faster": 0.6, "fast": 0.8,
 #: 各延遲的「基準值」（而且 same_spot_gap 本來就不隨倍率縮放），
 #: 所以每一檔改成一整組建構參數，而不是一個數字。
 #:
-#: MEASURED 量測依據 (all five real fixtures, stubbed mouse, real sleeps -
-#: five-game fill total 五題填答合計):
-#:     normal 2.0                                37.1s
-#:     fast   1.0                                21.3s
-#:     faster  (fast/fastest averages 兩者平均)  14.8s  <- see below 見下
-#:     fastest (candidate floor 候選下限)         8.4s
-#: "fastest" is the UNVALIDATED floor: settle 0.05 / click gap 0.02 /
-#: same-spot 0.05 / drag step 0.004. Risks if the page cannot keep up:
-#: dropped clicks (covered by verify-and-retry) and skipped Zip path cells
-#: (NOT covered - a drag cannot be retried mid-stroke). "faster" is the
-#: midpoint of fast and fastest, value by value, as a safer step stone.
-#: 「超急快」是尚未驗證的下限：緩衝 0.05／點後 0.02／同格連點 0.05／
-#: 拖曳步 0.004。網頁跟不上時的風險：漏點（有驗證補點兜底）與 Zip 路徑
-#: 跳格（沒有兜底——拖曳中途無法補救）。「極快」是快與超急快逐項取
-#: 平均，作為比較安全的中繼檔。
+#: PULLED BACK 2026-08-08 拉回：the original "fastest" (settle 0.05 / click
+#: gap 0.02 / same-spot 0.05 / drag step 0.004) was a candidate FLOOR, always
+#: labelled unvalidated - real play confirmed the page cannot reliably keep
+#: up at that pace ("滑鼠會跟不上"). Both fast tiers are now re-derived
+#: from "fast" (the one tier that HAS run a full real sitting without this
+#: complaint) by repeated averaging, so both sit much closer to it:
+#:     new fastest = average(old faster, fast), value by value
+#:     new faster  = average(new fastest, fast), value by value
+#: This keeps the same four-value shape (settle / click gap / same-spot /
+#: drag step) and the same ordering (fastest < faster < fast), just with a
+#: far smaller gap from the tier that is known to work. Still unvalidated -
+#: only "fast" itself has a real sitting behind it - but the floor no
+#: longer assumes the page can keep up with near-zero delays.
+#: 2026-08-08 拉回：原本的「超急快」（緩衝 0.05／點後 0.02／同格連點
+#: 0.05／拖曳步 0.004）是候選下限，一直標著未驗證——真實遊玩證實網頁在
+#: 那個節奏下真的跟不上（使用者回報「滑鼠會跟不上」）。現在把兩個快檔
+#: 都改成從「快」（唯一真的跑過一整輪、沒被抱怨過的檔位）反覆取平均
+#: 算出來，兩者都拉近很多：
+#:     新超急快 = 平均(舊極快, 快)，逐項計算
+#:     新極快   = 平均(新超急快, 快)，逐項計算
+#: 維持一樣的四個參數（緩衝／點後間隔／同格連點／拖曳步）跟一樣的順序
+#: （超急快 < 極快 < 快），只是離「已知能動」的檔位近了很多。仍然未經
+#: 驗證——只有「快」自己真的跑過一整輪——但下限已經不再假設網頁能跟上
+#: 趨近於零的延遲。
+#:
+#: RE-MEASURED after pulling back 拉回之後重新量測 (all five real fixtures,
+#: stubbed mouse, real sleeps - five-game fill total 五題填答合計):
+#:     normal   37.1s
+#:     fast     21.3s
+#:     faster   19.6s
+#:     fastest  18.0s
+#: The gap between the three fast tiers is now small on purpose - the point
+#: was never squeezing out more seconds, it was never producing a tier the
+#: page cannot follow.
+#: 三個快檔之間的差距現在刻意變小——重點從來不是再擠出幾秒鐘，
+#: 是不要再生出一個網頁跟不上的檔位。
 SPEED_PROFILES = {
-    "fastest": dict(slowdown=1.0, settle_after_move=0.05, click_interval=0.02,
-                    same_spot_gap=0.05, drag_step_delay=0.004),
-    "faster": dict(slowdown=1.0, settle_after_move=0.085, click_interval=0.04,
-                   same_spot_gap=0.10, drag_step_delay=0.006),
+    "fastest": dict(slowdown=1.0, settle_after_move=0.1025, click_interval=0.05,
+                    same_spot_gap=0.125, drag_step_delay=0.007),
+    "faster": dict(slowdown=1.0, settle_after_move=0.1113, click_interval=0.055,
+                   same_spot_gap=0.1375, drag_step_delay=0.0075),
     "fast": dict(slowdown=1.0),
     "normal": dict(slowdown=2.0),
     "slow": dict(slowdown=3.5),
@@ -560,6 +581,81 @@ class SolverApp:
                 self.root.deiconify()
                 self.root.update()
 
+    def _keep_window_clear_of_capture(self):
+        """Tk-thread only. Make sure this app's own window cannot land
+        inside whatever screen region is about to be captured.
+        只能在 Tk 執行緒呼叫。確保這個程式自己的視窗不會落在即將被擷取的
+        螢幕範圍裡面。
+
+        WHY THIS EXISTS 為什麼需要這個:
+        A real session (2026-08-08) showed the app window sitting directly
+        on top of a Mini Sudoku board's first column, for the rest of that
+        session - confirmed by matching a saved diagnostic capture against
+        the screen recording (92.9% correlation at the matching frame). The
+        obscured column's given digits were never seen, the puzzle read as
+        under-constrained, and every attempt correctly - but uselessly -
+        failed with "solution not unique". The window hiding used to run
+        ONCE, right before continuous mode's first wait began; the taskbar
+        entry a minimised window keeps exists specifically so it CAN be
+        restored (to reach Stop) - and once restored, nothing put it back
+        out of the way for the rest of that multi-puzzle session.
+        為什麼需要這個：一次真實執行（2026-08-08）顯示，這個程式自己的
+        視窗整段時間都疊在 Mini Sudoku 棋盤的第一欄上——已經用存下的
+        診斷畫面比對螢幕錄影確認過（在吻合的那一幀相關係數 92.9%）。
+        被擋住的那一欄，原本印的數字從來沒被看到，題目就被讀成條件
+        不足，之後每一次嘗試都「正確但沒用」地失敗在「解不唯一」。
+        隱藏視窗以前只在連續模式第一次等待開始之前執行一次；最小化的
+        視窗留著工作列入口，就是故意讓它「能」被還原（好去按停止）——
+        一旦被還原，接下來整個多題的執行過程中，都沒有任何東西把它
+        挪開過。
+
+        Fullscreen capture has no safe position to move to - the capture IS
+        the whole monitor - so it is hidden regardless of the hide-window
+        setting. Otherwise: hide-window on -> iconify, exactly as before.
+        Hide-window off -> the user wants to see it (2026-08-08's session
+        was rapid manual speed-tier switching between rounds, which needs
+        the window reachable), so it stays VISIBLE but gets moved beside
+        the capture rectangle instead of forced to iconify.
+        全螢幕擷取沒有安全的位置可以躲——擷取範圍就是整個螢幕——所以
+        不管「隱藏視窗」有沒有勾都會強制隱藏。其他情況：勾了隱藏視窗
+        跟以前一樣直接最小化。沒勾——2026-08-08 那次執行是在多輪之間
+        快速手動切換速度檔，需要隨時碰得到視窗——所以維持「看得到」，
+        但會被挪到擷取矩形旁邊，而不是強制最小化。
+        """
+        if self.settings.get("fullscreen"):
+            if not self._minimized_for_wait:
+                self.root.iconify()
+                self._minimized_for_wait = True
+            return
+        if self.hide_var.get():
+            if not self._minimized_for_wait:
+                self.root.iconify()
+                self._minimized_for_wait = True
+            return
+        try:
+            left, top, w, h = self._region()
+        except Exception:
+            return
+        self.root.update_idletasks()
+        ww = self.root.winfo_width() or 400
+        wh = self.root.winfo_height() or 470
+        wx, wy = self.root.winfo_x(), self.root.winfo_y()
+        overlaps = not (wx + ww <= left or wx >= left + w
+                        or wy + wh <= top or wy >= top + h)
+        if not overlaps:
+            return
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        if left + w + ww <= screen_w:
+            new_x, new_y = left + w + 10, top
+        elif top + h + wh <= screen_h:
+            new_x, new_y = left, top + h + 10
+        else:
+            new_x, new_y = 0, 0
+        self.root.geometry(f"+{new_x}+{new_y}")
+        action_log.log("WARN", f"app window overlapped the capture region "
+                        f"({left},{top},{w},{h}) - moved to ({new_x},{new_y})")
+
     # ------------------------------------------------------------ main flow
     def _run(self, fill_answers: bool):
         if self.busy:
@@ -606,18 +702,15 @@ class SolverApp:
             shot = None
             self.status_label.config(text=translator("status_waiting_board"))
             self._log(translator("log_waiting_hint"))
-            # iconify, NOT withdraw: a withdrawn window disappears from the
-            # taskbar too, and during the waiting phase the Stop button is the
-            # ONLY way to abort (no mouse actions happen, so pyautogui's
-            # corner fail-safe is never consulted). Minimised keeps a taskbar
-            # entry the user can restore to press Stop.
-            # 用 iconify 而不是 withdraw：withdraw 會連工作列都消失，而等待
-            # 期間「停止」按鈕是唯一的中止方式（這段期間不會有任何滑鼠動作，
-            # pyautogui 甩角落的緊急煞車根本不會被檢查到）。最小化會在
-            # 工作列留一格，使用者可以點開來按停止。
-            if self.hide_var.get():
-                self.root.iconify()
-                self._minimized_for_wait = True
+            # See _keep_window_clear_of_capture's own docstring for why this
+            # is not just a one-time iconify() any more - re-asserted at the
+            # start of every round in the continuous loop below, not only
+            # here before round 1.
+            # 為什麼這裡不再只是一次性的 iconify()，見
+            # _keep_window_clear_of_capture 自己的文件字串——下面連續模式
+            # 迴圈的每一輪開始都會重新確認一次，不是只有這裡、只在第一輪
+            # 之前做一次。
+            self._keep_window_clear_of_capture()
         else:
             self.status_label.config(text=translator("status_capturing"))
             self.root.update_idletasks()
@@ -702,6 +795,14 @@ class SolverApp:
             def alive():
                 return not self._stop_before_run and not self.driver.stop_requested
 
+            # Re-assert before EVERY round, not just round 1 - the taskbar
+            # entry a hidden window keeps exists precisely so it CAN be
+            # restored (to reach Stop), and this is what puts it back out of
+            # the capture's way before the next puzzle is polled for.
+            # 每一輪都重新確認，不是只有第一輪——隱藏的視窗留著工作列入口，
+            # 就是故意讓它「能」被還原（好去按停止），這一步就是負責在
+            # 下一題開始輪詢之前，把它挪回不會擋到擷取的地方。
+            self._ui_wait(self._keep_window_clear_of_capture)
             self._ui(self.status_label.config, {"text": translator("status_waiting_board")})
             t0 = time.perf_counter()
             shot = wait_for_board(capture_fn, should_continue=alive)
@@ -1039,6 +1140,36 @@ class SolverApp:
             self.root.after(0, lambda: func(*args))
         except (RuntimeError, tk.TclError):
             pass
+
+    def _ui_wait(self, func, timeout: float = 1.0):
+        """Like _ui(), but blocks the calling (worker) thread until func has
+        actually RUN on the Tk thread, or timeout elapses.
+        跟 _ui() 類似，但會擋住呼叫端（工作）執行緒，直到 func 真的在
+        Tk 執行緒上跑完，或逾時。
+
+        _ui() alone only guarantees the update is queued, not that it has
+        happened yet - fine for a log line, wrong for
+        _keep_window_clear_of_capture: the very next line starts polling
+        the screen, and the window has to have actually moved (or iconified)
+        by then, not merely been asked to.
+        單獨用 _ui() 只保證更新「已經排進佇列」，不保證它已經發生——
+        對記錄一行文字沒差，但對 _keep_window_clear_of_capture 不行：
+        下一行馬上就要開始輪詢螢幕，視窗必須「已經」被移開（或最小化），
+        不能只是「已經被要求」移開。
+        """
+        done = threading.Event()
+
+        def _wrapped():
+            try:
+                func()
+            finally:
+                done.set()
+
+        try:
+            self.root.after(0, _wrapped)
+        except (RuntimeError, tk.TclError):
+            return
+        done.wait(timeout)
 
     def _log(self, *lines):
         for line in lines:

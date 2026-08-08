@@ -575,6 +575,110 @@ def test_stop_interrupts_an_in_progress_solve():
         print(f"  stop interrupts an in-progress solve OK ({out.strip().splitlines()[-2]})")
 
 
+def test_the_window_cannot_sit_inside_the_capture_region():
+    """
+    Bug this guards: a real session (2026-08-08) showed the app's own
+    window sitting directly on top of a Mini Sudoku board's first column,
+    for the rest of that session - confirmed by matching a saved diagnostic
+    capture against the screen recording (92.9% correlation at the matching
+    frame). The obscured column's given digits were never seen, the puzzle
+    read as under-constrained, and every solve attempt correctly - but
+    uselessly - failed with "solution not unique". The old hide-window
+    logic ran once, before continuous mode's first wait; the taskbar entry
+    a minimised window keeps exists specifically so it CAN be restored (to
+    reach Stop) - and once restored, nothing put it back for the rest of
+    that multi-puzzle session.
+    這個測試守住的問題：一次真實執行（2026-08-08）顯示，程式自己的視窗
+    整段時間都疊在 Mini Sudoku 棋盤的第一欄上——已經用存下的診斷畫面
+    比對螢幕錄影確認過（在吻合的那一幀相關係數 92.9%）。被擋住的那一欄，
+    原本印的數字從來沒被看到，題目就被讀成條件不足，之後每一次嘗試都
+    「正確但沒用」地失敗在「解不唯一」。舊的隱藏視窗邏輯只在連續模式
+    第一次等待之前執行一次；最小化視窗留著的工作列入口，就是故意讓它
+    「能」被還原（好去按停止）——一旦被還原，接下來整個多題的過程中都
+    沒有東西把它挪開過。
+
+    Three configurations, one call each: fullscreen forces iconify no
+    matter what; hide-window on iconifies; hide-window off keeps the
+    window VISIBLE (2026-08-08's session needed it reachable to switch
+    speed tiers between rounds) but moves it clear of the capture rect.
+    三種設定各呼叫一次：全螢幕不管怎樣都強制最小化；勾了隱藏視窗就
+    最小化；沒勾隱藏視窗會維持視窗「看得到」（2026-08-08 那次執行需要
+    在兩輪之間切換速度檔，視窗要碰得到），但會被移到擷取矩形外面。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "app = app_module.SolverApp(root)\n"
+        "region = (200, 200, 640, 700)\n"
+        "app.x_var.set(str(region[0])); app.y_var.set(str(region[1]))\n"
+        "app.w_var.set(str(region[2])); app.h_var.set(str(region[3]))\n"
+        "app.settings['fullscreen'] = False\n"
+        ""
+        "# 1) hide-window off, window placed squarely inside the region -\n"
+        "# must stay visible (not iconic) but move clear of it.\n"
+        "app.hide_var.set(False)\n"
+        "root.geometry('400x470+250+250')\n"
+        "root.update_idletasks()\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update_idletasks()\n"
+        "wx, wy = root.winfo_x(), root.winfo_y()\n"
+        "ww, wh = root.winfo_width(), root.winfo_height()\n"
+        "rl, rt, rw, rh = region\n"
+        "overlaps = not (wx + ww <= rl or wx >= rl + rw or wy + wh <= rt or wy >= rt + rh)\n"
+        "assert root.state() != 'iconic', 'hide-window off must not iconify / 沒勾隱藏視窗卻被最小化了'\n"
+        "assert not overlaps, f'window still overlaps the capture region after being moved / 移動後仍然重疊: ({wx},{wy},{ww},{wh}) vs {region}'\n"
+        "print('MOVED_CLEAR_OK')\n"
+        ""
+        "# 2) hide-window on -> iconify, same as before.\n"
+        "root.deiconify(); root.geometry('400x470+250+250'); app._minimized_for_wait = False\n"
+        "root.update_idletasks()\n"
+        "app.hide_var.set(True)\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update()\n"
+        "assert root.state() == 'iconic', 'hide-window on must iconify / 勾了隱藏視窗却沒最小化'\n"
+        "print('ICONIFY_ON_HIDE_OK')\n"
+        ""
+        "# 3) fullscreen -> iconify regardless of hide-window.\n"
+        "root.deiconify(); app._minimized_for_wait = False\n"
+        "root.update_idletasks()\n"
+        "app.hide_var.set(False)\n"
+        "app.settings['fullscreen'] = True\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update()\n"
+        "assert root.state() == 'iconic', 'fullscreen must iconify even with hide-window off / 全螢幕模式即使沒勾隱藏視窗也應該最小化'\n"
+        "print('ICONIFY_ON_FULLSCREEN_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "the app window can still land inside the capture region / 程式視窗仍然可能落在擷取範圍裡:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  the window cannot sit inside the capture region OK (skipped - no display)")
+    else:
+        assert "MOVED_CLEAR_OK" in out and "ICONIFY_ON_HIDE_OK" in out and "ICONIFY_ON_FULLSCREEN_OK" in out, \
+            "one of the three configurations failed / 三種設定裡有一種沒通過:\n" + out
+        print("  the window cannot sit inside the capture region OK")
+
+
 if __name__ == "__main__":
     print("Automation tests / 自動化測試")
     test_queens_resumes_half_done_board()
@@ -590,4 +694,5 @@ if __name__ == "__main__":
     test_dry_run_touches_no_mouse_module()
     test_image_mode_needs_no_screen_packages()
     test_stop_interrupts_an_in_progress_solve()
+    test_the_window_cannot_sit_inside_the_capture_region()
     print("\nAll passed / 全部通過")
