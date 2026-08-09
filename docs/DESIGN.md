@@ -298,6 +298,99 @@ There is a related constant for clicking the same cell twice:
 SAME_SPOT_CLICK_GAP = 0.15    # pause between same-cell clicks; see the constant's comment
 ```
 
+### Patches: when "can the board still be located" stops being answerable
+
+*(`speed-optimization` branch, not yet merged to `main`.)*
+
+The mid-plan guard's structural check (above) has one puzzle it cannot serve
+well: Patches. Its own drawn answer covers the board in solid colour, and
+that colour erases the interior grid lines `detect_grid_size` depends on -
+not intermittently, but for good, because filling only ever adds coverage.
+A real 8x8 fill (2026-08-09) demonstrated exactly how bad this gets:
+`detect_grid_size` failed 7 checks in a row on a board that had not moved at
+all, confirmed against the screen recording - well past the tolerance a
+2026-08-06 incident had already raised to absorb a smaller version of the
+same problem.
+
+The insight that broke the deadlock: the guard does not actually need to
+*re-derive* the grid to know the board is still there. It already knows,
+from the plan itself, exactly which cells it painted and which it did not.
+So instead of asking "can I still find a grid", it asks a narrower question
+it can actually answer: **does the board's outer border still exist, and
+does the part we have not painted yet still look like it did when we
+started?**
+
+The border half is nearly free. `find_board_bbox` looks for the board's
+*outer* contour, which our own fills never touch — they are drawn strictly
+inside cells. Measured directly on the failing 8x8 frame and on every
+heavily-filled fixture already in the test suite, the border locates
+reliably in every case where the interior grid-line check does not.
+
+The content half is where the first attempt went wrong, and it is worth
+telling honestly. The first version scored how much of the reference
+frame's un-painted structure (grid remnants, label digits — anything darker
+than the background, outside our own saturated fills) still read dark in
+the current frame, and used that score to make two decisions: a high score
+meant "still ours, keep going"; a low score meant "not ours, abort now" —
+faster than the existing tolerance counter. An independent adversarial
+review, briefed only on the diff and asked to refute it, found two ways
+this was actually worse than doing nothing:
+
+- A uniform gray frame in a narrow brightness band scored a **perfect
+  1.0** and disabled the guard permanently — the metric never required the
+  *current* frame to have any contrast of its own, only that it was darker
+  than the reference's background, which any flat enough gray satisfies at
+  every pixel simultaneously.
+- Replayed against the real 2026-08-06 incident's own fixture — the one
+  `PATCHES_FAILURE_TOLERANCE=6` exists to cover — the immediate-abort
+  verdict killed that *correct* fill on the very first check. That pair has
+  a genuine ~1% scale drift between the two captures, small enough that a
+  human would call it the same board, but enough to drag the raw score
+  under the threshold.
+
+Both findings point at the same design mistake: giving the new check the
+power to make the guard *stricter* introduces exactly the kind of
+confident-but-wrong judgement the whole project exists to avoid. The fix
+was not a better number, it was a smaller contract. The check now can only
+ever **affirm** ("the content still matches — reset the failure counter")
+or **decline** ("could not confirm — fall through to the tolerance counting
+that already existed, untouched"). It never aborts anything itself:
+
+```python
+if use_content_check and reference_content_matches(reference, image):
+    consecutive_failures = 0     # affirmed - extend the plan's life
+    return True
+# declined, or the check is not enabled here: everything below is
+# byte-for-byte the same code that ran before this feature existed.
+consecutive_failures += 1
+if consecutive_failures <= failure_tolerance:
+    return True
+...
+```
+
+Under that contract, every scenario is provably no worse than the
+pre-change guard: the worst the new code can do is decline, which *is* the
+old path. Affirmation itself still has to clear two independent, measured
+gates — a structural-match floor (0.90, against a *naturally rendered*
+worst-case impostor of 0.76) and a contrast-retention floor (0.85, because a
+white scrim of opacity `a` compresses the masked content's contrast by
+exactly `1 - a`, a relationship confirmed on real screen captures rather
+than assumed) — so a uniform gray frame, a scrim, or a different Patches
+board sharing the same grid pitch all decline rather than affirm. Re-review
+after the rewrite found the contract held, with one honestly-documented
+residual: a partial *dark*, desaturated occluder is, in principle,
+indistinguishable from one of our own dark fills, because both are read the
+same way. Bounded by the plan's own length, and disclosed in the code
+rather than swept past.
+
+The broader lesson generalises past this one guard: **a safety check earns
+the right to say "stop" separately from the right to say "continue".**
+Letting the same signal do both, on the reasoning that it was measured
+carefully, is still trading a known, bounded blind spot for an unmeasured
+one — and the only way that trade got caught here was by handing the design
+to reviewers whose only job was to break it, before it ever touched the
+puzzle a real user was still trying to finish.
+
 ### Resuming a half-filled board
 
 If the user has already placed some crowns, or the automation was interrupted,

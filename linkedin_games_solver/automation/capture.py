@@ -79,6 +79,30 @@ def primary_monitor() -> dict:
     return monitors[0]
 
 
+def primary_monitor_size() -> tuple[int, int] | None:
+    """Current primary monitor's (width, height), or None if it cannot be read.
+    目前主螢幕的 (寬, 高)；讀不到時回傳 None。
+
+    Used to notice when the screen this app is running on has changed size
+    since the capture region was last calibrated - see ui/app.py's
+    resolution-change warning. Kept separate from primary_monitor() (which
+    returns mss's raw monitor dict) because callers here only ever need the
+    two numbers, not the dict shape mss happens to use - and because a
+    caller that only wants "did the screen change" should not need to know
+    mss exists at all.
+    用來察覺「這個程式現在所在的螢幕，跟上次校準擷取範圍時比起來尺寸變了」——
+    見 ui/app.py 的解析度改變警告。跟 primary_monitor()（回傳 mss 原始的
+    monitor dict）分開，是因為這裡的呼叫端只需要兩個數字，不需要 mss
+    剛好用的那種 dict 形狀——而且只是想知道「螢幕是不是變了」的呼叫端，
+    不應該連 mss 存在都要知道。
+    """
+    try:
+        monitor = primary_monitor()
+    except Exception:
+        return None
+    return monitor["width"], monitor["height"]
+
+
 #: Fallback origin used when mss cannot even be imported (see default_region).
 #: Not centred on anything real - it exists only so the app can start; the
 #: region controls remain fully editable once it does.

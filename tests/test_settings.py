@@ -91,8 +91,36 @@ def test_load_drops_a_malformed_region_instead_of_passing_it_on():
     print("  load() drops a malformed region instead of passing it on OK")
 
 
+def test_region_monitor_size_round_trips_and_defaults_to_none():
+    """
+    region_monitor_size (added for the resolution-change warning in
+    ui/app.py) must behave exactly like every other settings key: absent
+    until saved, then round-trips through save()/load() unchanged.
+    region_monitor_size（為了 ui/app.py 的解析度改變警告新增的）行為必須
+    跟其他每一個設定值一樣：存過之前是預設值，存過之後 save()/load()
+    要能原封不動地讀回來。
+    """
+    original_path = settings_store.SETTINGS_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        settings_store.SETTINGS_PATH = Path(tmp) / "settings.json"
+        try:
+            fresh = settings_store.load()
+            assert fresh["region_monitor_size"] is None, \
+                f"should default to None / 預設應為 None: {fresh['region_monitor_size']!r}"
+
+            fresh["region_monitor_size"] = [1920, 1080]
+            settings_store.save(fresh)
+            reloaded = settings_store.load()
+            assert reloaded["region_monitor_size"] == [1920, 1080], \
+                f"did not round-trip / 讀回來的值不對: {reloaded['region_monitor_size']!r}"
+        finally:
+            settings_store.SETTINGS_PATH = original_path
+    print("  region_monitor_size round-trips and defaults to None OK")
+
+
 if __name__ == "__main__":
     print("Settings tests / 設定檔測試")
     test_valid_region()
     test_load_drops_a_malformed_region_instead_of_passing_it_on()
+    test_region_monitor_size_round_trips_and_defaults_to_none()
     print("\nAll passed / 全部通過")

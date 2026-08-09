@@ -51,6 +51,13 @@ Windows only.
 | **Stop** | Abort immediately |
 | **Save** | Save the captured image — useful when reporting a recognition problem |
 
+**If you switch monitors, change resolution, or change Windows display
+scaling**, the saved **Board** rectangle can go stale — it is a fixed
+position on screen, calibrated once. The app now remembers the screen size
+from when the region was last actually calibrated and warns (without
+blocking) when it no longer matches. If you see this warning and solving
+starts failing, press **Reset** or **Test** to recalibrate.
+
 ### Mode: Image file
 
 Solves a screenshot and draws the answer on it. Never touches the mouse. Works
@@ -93,10 +100,16 @@ press **Stop**.
 Pressing the button with the puzzle already on screen also works - it detects
 the board within a second and starts right away. If recognition fails on a
 round (say the page's entrance animation had not settled), it automatically
-retries on a fresh capture up to three times; if it still fails it waits on
-that puzzle - play it by hand and open the next one, and the loop carries
-on. Press **Stop** at any time while waiting (restore the window from the
-taskbar first if it was minimised).
+retries on a fresh capture up to three times.
+
+**If it still fails after all three attempts, it does not fail silently.**
+The window comes back into view, a system alert sound plays, the status line
+turns red, and continuous mode stops there instead of waiting unattended for
+a puzzle that will never be filled. If every retry hit the exact same error,
+the message says so explicitly - that means retrying again by hand is
+unlikely to help either, and it is worth checking the capture region (press
+**Test**) before starting again. Play the puzzle by hand, then press
+**Solve & Fill** again for the next one.
 
 ### While it is running
 

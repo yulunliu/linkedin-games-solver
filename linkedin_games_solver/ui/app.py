@@ -39,6 +39,7 @@ from ..automation import (
     default_region,
     focus_window_at,
     from_file_image,
+    primary_monitor_size,
     verify,
     verify_supports,
     wait_for_board,
@@ -55,6 +56,7 @@ from ..puzzles import (
     puzzle_name,
     render_overlay,
     solve_image,
+    sudoku,
 )
 from . import settings as settings_store
 
@@ -191,6 +193,7 @@ class SolverApp:
         self._stop_before_run = False
         self._worker_thread: threading.Thread | None = None
         self._minimized_for_wait = False
+        self._last_failure_persistent = False
         self.image_path: Path | None = None
         self.tk_photo = None
         self.busy = False
@@ -390,6 +393,31 @@ class SolverApp:
         parsed = self._parsed_region()
         if parsed is not None:
             update["region"] = list(parsed)
+            # Only re-stamp the screen size when the region VALUE itself
+            # actually changed just now (Reset, Test, or an edited field) -
+            # not on every call, since _save_settings also runs on every
+            # Start press, language change, etc. with the region UNCHANGED.
+            # WHY THIS MATTERS 為什麼這樣做很重要: if the stamp were
+            # refreshed unconditionally, then the very first run after the
+            # screen actually changed would correctly warn (see
+            # _warn_if_resolution_changed) - but this same call would then
+            # overwrite the stamp to the NEW screen size even though the
+            # region's x/y/w/h were never actually recalibrated for it. The
+            # warning would silently never fire again on later runs, even
+            # though the capture rectangle is still wrong. Only stamping on
+            # an actual value change keeps the warning firing on every run
+            # until the user really does something about it.
+            # 只有在這一次「範圍本身真的變了」才重新記錄螢幕尺寸——不是
+            # 每次呼叫都記，因為 _save_settings 在按開始、切語言…等情況下
+            # 也會被呼叫，但範圍根本沒變。為什麼這很重要：如果每次都無條件
+            # 重新記錄，螢幕真的換了之後第一次執行會正確跳出警告（見
+            # _warn_if_resolution_changed），但這同一次呼叫接著就會把記錄
+            # 蓋成「新」螢幕尺寸——即使擷取範圍的 x/y/寬/高 根本沒有真的
+            # 針對新螢幕重新校準過。這樣警告在之後每次執行都會安靜地不再
+            # 出現，即使擷取範圍其實還是錯的。只在數值真的改變時才記錄，
+            # 才能讓警告在使用者真的處理之前，每次執行都繼續出現。
+            if list(parsed) != list(self.settings.get("region") or []):
+                self.settings["region_monitor_size"] = list(primary_monitor_size() or []) or None
         self.settings.update(update)
         settings_store.save(self.settings)
 
@@ -415,6 +443,54 @@ class SolverApp:
         因為擷取總得試一個範圍。絕不用來決定要存什麼；要存的邏輯在
         _parsed_region。"""
         return self._parsed_region() or default_region()
+
+    def _warn_if_resolution_changed(self):
+        """Log a warning (never blocking) if the primary monitor's size no
+        longer matches what it was when the capture region was last
+        calibrated.
+        如果目前主螢幕的尺寸，跟上次校準擷取範圍時不一樣，記錄一個警告
+        （絕不會擋住執行）。
+
+        WHY THIS EXISTS 為什麼需要這個: the capture region is a fixed
+        rectangle of absolute screen pixels, chosen once (Reset / Test / a
+        manual edit) and then reused forever - nothing previously checked
+        whether the screen it was chosen on is still the screen actually in
+        use. Switching monitors, changing resolution, or changing Windows
+        display scaling all silently invalidate it: the app keeps grabbing
+        the same pixel rectangle, which may now contain the wrong part of
+        the page (or the desktop), and the only symptom is a generic "board
+        not found" with no hint why.
+        為什麼需要這個：擷取範圍是一個固定的螢幕絕對像素矩形，只在某一刻
+        被決定過（按預設／測範圍／手動改），之後就一直沿用——先前沒有任何
+        地方會檢查「當初選這個範圍時的螢幕，跟現在用的還是不是同一個」。
+        換螢幕、換解析度、改 Windows 顯示縮放比例，都會讓它悄悄失效：
+        程式還是繼續抓同一塊像素矩形，裡面現在可能是頁面的錯誤部分（或
+        桌面），唯一的症狀就是一句通用的「找不到棋盤」，完全看不出原因。
+
+        WHY NOT BLOCKING 為什麼不擋住執行: the region might still happen to
+        be correct (unlikely but not impossible), and fullscreen mode does
+        not depend on it at all. Refusing to run would be a worse failure
+        mode than today's "board not found" - this just tells the user WHY
+        before they have to guess, it does not stop them from trying.
+        為什麼不擋住執行：範圍還是有可能剛好還是對的（機率低但不是不可能），
+        而全螢幕模式完全不依賴這件事。直接拒絕執行，會是比現在「找不到
+        棋盤」更糟的失敗方式——這裡只是先告訴使用者「為什麼」，不需要自己
+        用猜的，不會因此不讓他們嘗試。
+        """
+        saved = self.settings.get("region_monitor_size")
+        if not (isinstance(saved, (list, tuple)) and len(saved) == 2):
+            return
+        try:
+            saved_size = (int(saved[0]), int(saved[1]))
+        except (TypeError, ValueError):
+            return
+        current_size = primary_monitor_size()
+        if current_size is not None and current_size != saved_size:
+            action_log.log("WARN", f"primary monitor size changed since the capture region "
+                            f"was last calibrated: was {saved_size}, now {current_size}")
+            self._log(translator("log_resolution_changed",
+                                 old=f"{saved_size[0]}x{saved_size[1]}",
+                                 new=f"{current_size[0]}x{current_size[1]}"))
 
     # ----------------------------------------------------------- callbacks
     def _on_language_changed(self, _event=None):
@@ -656,6 +732,52 @@ class SolverApp:
         action_log.log("WARN", f"app window overlapped the capture region "
                         f"({left},{top},{w},{h}) - moved to ({new_x},{new_y})")
 
+    def _alert_solve_failure(self):
+        """Tk-thread only. Make a solve failure that has already exhausted
+        its retries impossible to miss, even if the window is minimised or
+        the user's attention is nowhere near the capture region.
+        只能在 Tk 執行緒呼叫。讓一次已經用盡重試次數的辨識失敗不可能被
+        忽略，就算視窗當時被最小化、或使用者的注意力根本不在擷取範圍那邊。
+
+        WHY THIS EXISTS 為什麼需要這個: continuous mode used to leave a
+        failed round completely silent - the status text changed, but with
+        "hide window" checked that text is not on screen at all, and the
+        loop would go on to wait_for_board_gone() for a board that (since
+        the user has not navigated away from the failed puzzle) structurally
+        never disappears - silently stuck, with no way to notice short of
+        checking the log file. By the time _round() reports "failed" here,
+        MAX_SOLVE_ATTEMPTS fresh-capture retries have already been
+        exhausted, so this is a confirmed failure, not a single-frame
+        fluke - there is no reason to wait for a second one before saying so.
+        為什麼需要這個：連續模式以前對一輪失敗完全沒有反應——狀態文字換了，
+        但勾了「隱藏視窗」時那段文字根本不在畫面上，迴圈接著會去等棋盤
+        消失，而使用者根本沒有切走那個失敗的題目，棋盤在結構上永遠不會
+        消失——安靜地卡住，使用者除了去看記錄檔沒有任何辦法發現。走到
+        這裡代表 MAX_SOLVE_ATTEMPTS 次「重新擷取再試」已經用盡，是已經
+        確認過的失敗，不是單一影格的偶發問題——沒有理由要等第二次才說。
+        """
+        if self._minimized_for_wait:
+            self._minimized_for_wait = False
+            self.root.deiconify()
+        self.root.lift()
+        # Best-effort only, same spirit as every other Windows-only call in
+        # this file (focus_window_at, wait_for_mouse_release) - a machine or
+        # audio setup where this fails must never break the alert's other,
+        # more important half (the window coming back into view).
+        # 盡力而為，跟這個檔案裡其他每個 Windows-only 呼叫一樣（
+        # focus_window_at、wait_for_mouse_release）——這裡失敗絕不能連累
+        # 提醒機制另一半更重要的部分（把視窗還原到看得到的地方）。
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONHAND)
+        except Exception:
+            pass
+        self.status_label.config(text=translator("status_solve_failed_stopped"), foreground="#c00")
+        self._log("")
+        self._log(translator("log_solve_failed_alert", n=MAX_SOLVE_ATTEMPTS))
+        if self._last_failure_persistent:
+            self._log(translator("log_persistent_failure_hint", n=MAX_SOLVE_ATTEMPTS))
+
     # ------------------------------------------------------------ main flow
     def _run(self, fill_answers: bool):
         if self.busy:
@@ -669,7 +791,16 @@ class SolverApp:
         self.busy = True
         self._stop_before_run = False
         self._clear_log()
+        # Reset from whatever a previous run's repeated-failure alert left
+        # behind (see _alert_solve_failure) - starting a new run is the
+        # user acting on that alert, so it should not still be red.
+        # 重設掉上一輪「連續失敗提醒」可能留下的樣式（見
+        # _alert_solve_failure）——使用者按下開始，就代表已經在處理那個
+        # 提醒了，不該還維持紅色。
+        self.status_label.config(foreground="#0a6")
         self._log(f"{translator('log_file')}: {action_log.path()}")
+        if self.mode_var.get() != "image" and not self.settings.get("fullscreen"):
+            self._warn_if_resolution_changed()
         self.start_btn.config(state="disabled")
         self.solve_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -813,6 +944,19 @@ class SolverApp:
             if outcome == "stop":
                 self._ui(self._finish, text)
                 return
+            if outcome == "failed":
+                # Alert and stop rather than looping on to wait_for_board_gone()
+                # for a board that - since nothing here made the user navigate
+                # away from it - structurally never disappears on its own. See
+                # _alert_solve_failure's own docstring for the full reasoning.
+                # 提醒並停止，而不是繼續迴圈去等棋盤消失——因為這裡沒有任何
+                # 動作讓使用者切離那個失敗的題目，棋盤在結構上不會自己消失。
+                # 完整理由見 _alert_solve_failure 自己的文件字串。
+                action_log.log("WARN", "continuous mode: solve failed after all retries "
+                                "- alerting and stopping")
+                self._ui_wait(self._alert_solve_failure)
+                self._ui(self._finish, translator("status_solve_failed_stopped"))
+                return
             if self.driver.dry_run:
                 # A continuous PREVIEW would wait forever for a board that
                 # nothing ever fills in - preview runs one round and stops.
@@ -847,11 +991,23 @@ class SolverApp:
             # MAX_SOLVE_ATTEMPTS for the real failure this recovers from.
             # 辨識失敗時用「新擷取」的畫面重試——這救的是哪個真實失敗，
             # 見 MAX_SOLVE_ATTEMPTS。
+            # Collects the first line of every FAILED attempt's error, across
+            # fresh captures - used below to tell a transient failure (an
+            # animation still settling, where a fresh frame plausibly differs)
+            # apart from a persistent one (the exact same reading every time,
+            # which a fresh capture of otherwise-static content cannot fix).
+            # 收集每一次「失敗」嘗試的錯誤訊息第一行——每次都是新擷取的畫面。
+            # 下面用它來分辨「暫時性失敗」（動畫還沒播完，新的一幀有機會不同）
+            # 跟「持續性失敗」（每次都讀到完全一樣的結果，對著沒有變化的靜態
+            # 內容重新擷取解決不了這種問題）。
+            attempt_errors: list[str] = []
             for attempt in range(1, MAX_SOLVE_ATTEMPTS + 1):
                 result = solve_image(
                     shot.image, puzzle_key=puzzle_key,
                     should_continue=lambda: not self.driver.stop_requested
                                             and not self._stop_before_run)
+                if not result.ok and result.error != CANCELLED:
+                    attempt_errors.append(str(result.error).splitlines()[0])
                 if result.ok or result.error == CANCELLED or capture_fn is None \
                         or attempt == MAX_SOLVE_ATTEMPTS:
                     break
@@ -867,6 +1023,17 @@ class SolverApp:
             timings["solve"] = time.perf_counter() - t0
             self._ui(self._show_timings, timings, started)
             self.result = result
+            # Only meaningful with >= 2 genuinely fresh attempts (single-shot
+            # solve-only / image mode never retries at all - capture_fn is
+            # None there, see the break condition above - so this stays False
+            # for them by construction).
+            # 只有在真的有 >= 2 次「新擷取」的嘗試時才有意義（只求解／圖片
+            # 模式從不重試——capture_fn 在那裡是 None，見上面的 break 條件——
+            # 所以這兩種模式下這裡結構上一定是 False）。
+            self._last_failure_persistent = (
+                not result.ok and result.error != CANCELLED
+                and len(attempt_errors) >= 2 and len(set(attempt_errors)) == 1
+            )
 
             name = puzzle_name(result.puzzle_key, translator.language)
             self._ui(self._log, f"{translator('log_puzzle_type')}: {name}")
@@ -879,6 +1046,18 @@ class SolverApp:
                 reason = result.error or translator("status_failed")
                 self._ui(self._log, "")
                 self._ui(self._log, reason)
+                if self._last_failure_persistent:
+                    # All MAX_SOLVE_ATTEMPTS fresh captures gave the exact
+                    # same reading - see attempt_errors above. Worth saying
+                    # explicitly, so the user is not left assuming "try
+                    # again" is the fix when it already was tried, silently,
+                    # 3 times.
+                    # MAX_SOLVE_ATTEMPTS 次新擷取全部讀到一模一樣的結果——
+                    # 見上面的 attempt_errors。值得明講出來，不然使用者會
+                    # 以為「再試一次」有機會解決，但其實已經在背後默默試過
+                    # 3 次了。
+                    self._ui(self._log, translator("log_persistent_failure_hint",
+                                                    n=MAX_SOLVE_ATTEMPTS))
                 self._ui(self._log, "")
                 self._ui(self._log, translator("log_fail_hint"))
                 return "failed", f"{translator('status_failed')}: {reason.splitlines()[0]}"
@@ -1050,6 +1229,79 @@ class SolverApp:
             self._ui(self._log, traceback.format_exc())
             return "stop", translator("status_error")
 
+    def _harvest_calibration_candidates(self, image, report):
+        """Save real evidence for cells we filled ourselves that the
+        recogniser could not confidently read back - candidates for
+        tools/calibrate_digits.py, never fed to it automatically.
+        把我們自己填進去、但辨識器讀不回來的格子存成真實證據——留給
+        tools/calibrate_digits.py 用的候選資料，絕不自動餵給它。
+
+        ONLY Sudoku, and ONLY got=None mismatches 只限數獨、只限 got=None
+        --------------------------------------------------------------
+        A mismatch has three shapes, and only one is safe to harvest from:
+          - got == want: not a mismatch at all, never reaches here
+          - got is a WRONG digit (read confidently, just not what we filled):
+            the ground truth here is suspect - it could be a genuine misread,
+            but it could just as easily mean the click never registered and
+            some OTHER digit is really on screen. Harvesting this would risk
+            labelling a glyph with the WRONG answer, which is worse than not
+            harvesting at all.
+          - got is None (nothing read with enough confidence): we filled
+            this cell ourselves - `want` is exactly the digit our own solver
+            chose and the driver clicked/typed, not something read off the
+            screen. That is the same standard of ground truth
+            tools/calibrate_digits.py's hand-verified tables already use.
+        一個不符合的格子有三種可能，只有一種能安全拿來收集：
+          - got == want：根本不算不符合，不會走到這裡
+          - got 是個「讀對了但錯的」數字：這裡的真值本身可疑——可能真的是
+            誤讀，但也同樣可能是點擊根本沒生效、畫面上其實是另一個數字。
+            拿這種資料去標記字形，有可能標成錯的答案，比完全不收集更糟。
+          - got 是 None（沒有任何讀法有足夠信心）：這格是我們自己填的——
+            `want` 就是我們自己的求解器選中、driver 親自點擊/打字打上去的
+            那個數字，不是從螢幕上讀出來的。這跟 tools/calibrate_digits.py
+            人工核對過的真值表，是同一個等級的可信度。
+
+        Only the FIRST verify round of a puzzle, never a retry round -
+        build_retry_plan re-clicks a got=None cell with the SAME digit, so a
+        retry round very likely reproduces the identical unreadable glyph on
+        an already-saved board; harvesting every round would just pile up
+        near-duplicate files for one real occurrence.
+        只在一次填答的「第一輪」驗證做，不是補點之後的輪次——
+        build_retry_plan 對 got=None 的格子是用同一個數字重新點一次，
+        補點輪很可能重現同一個已經存過的、讀不出來的字形；每輪都收集
+        只會為同一次真實情況疊出一堆幾乎重複的檔案。
+
+        Never fed into digit_templates.py by this function or by anything it
+        calls - only tools/calibrate_digits.py does that, and only when a
+        human deliberately runs it after looking at what got saved here. See
+        this project's core rule: no threshold or template changes without
+        looking at real evidence first.
+        這個函式跟它呼叫的任何東西都絕不會直接寫進 digit_templates.py——
+        只有 tools/calibrate_digits.py 會做這件事，而且只在有人看過這裡
+        存下的東西之後、刻意手動執行它才會發生。見本專案的核心規則：
+        沒有先看過真實證據，不能改動任何門檻或範本。
+        """
+        if report.board_changed or self.result is None or self.result.puzzle_key != sudoku.KEY:
+            return
+        unread = [(r, c, want) for (r, c, got, want) in report.mismatches if got is None]
+        if not unread:
+            return
+        try:
+            folder = settings_store.calibration_candidates_dir()
+            path = folder / f"sudoku_unread_{int(time.time() * 1000)}.png"
+            if not write_image(str(path), image):
+                return
+        except Exception:
+            # Best-effort only - a failed diagnostic save must never break
+            # the verify/retry flow that is already in progress.
+            # 盡力而為——診斷用的存檔失敗絕不能弄壞正在進行中的驗證/補點流程。
+            return
+        cells = ", ".join(f"({r},{c})={want}" for r, c, want in unread)
+        action_log.log("CALIBRATE", f"saved a digit-calibration candidate: cell(s) we "
+                        f"filled ourselves but could not read back confidently "
+                        f"({cells}) -> {path}")
+        self._ui(self._log, f"  {translator('log_calibration_candidate_saved', n=len(unread))}")
+
     def _verify_and_retry(self, driver, max_rounds: int = 3):
         """Re-capture, compare, and re-click only what is still wrong.
         重新擷取、比對，只補還沒填對的格子。"""
@@ -1073,6 +1325,13 @@ class SolverApp:
             fresh = capture_screen() if self.settings.get("fullscreen") else capture_region(*self._region())
             report = verify(fresh.image, self.result)
             self._ui(self._log, f"[{translator('log_check_round')} {attempt}] {report.summary()}")
+            if attempt == 1:
+                # Only the FIRST round - see _harvest_calibration_candidates's
+                # own docstring for why a retry round is the wrong place to
+                # look for this.
+                # 只在「第一輪」做——為什麼補點之後的輪次不適合看這件事，
+                # 見 _harvest_calibration_candidates 自己的文件字串。
+                self._harvest_calibration_candidates(fresh.image, report)
 
             if report.board_changed:
                 self._ui(self._log, translator("log_board_changed"))

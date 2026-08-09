@@ -55,12 +55,62 @@ def captures_dir() -> Path:
             continue
     return Path.home()
 
+
+#: Subfolder for auto-harvested digit-calibration candidates - see
+#: ui/app.py's _harvest_calibration_candidates.
+#: 自動收集的數字校準候選資料子資料夾——見 ui/app.py 的
+#: _harvest_calibration_candidates。
+CALIBRATION_CANDIDATES_DIRNAME = "calibration_candidates"
+
+
+def calibration_candidates_dir() -> Path:
+    """Where auto-harvested digit-calibration candidates are saved.
+    自動收集的數字校準候選資料要存到哪裡。
+
+    A SEPARATE folder from captures_dir(), not a subfolder of it. WHY 為什麼:
+    captures_dir() is what the "Save" button offers the user, and what a
+    person browses when reporting a bug - it must only ever contain images a
+    human chose to keep. These candidates are written automatically, without
+    the user asking, specifically to be reviewed later before anything is
+    fed into tools/calibrate_digits.py (see that module and this project's
+    core rule: no threshold or template change without a human looking at
+    real evidence first). Mixing the two would make an automatic write look
+    like something the user saved on purpose.
+    是跟 captures_dir() 分開的資料夾，不是它底下的子資料夾。為什麼：
+    captures_dir() 是「存圖」按鈕提供的位置，也是使用者回報問題時會去看的
+    地方——裡面應該只有人「主動選擇留下」的圖片。這些候選資料是程式自動、
+    在使用者沒有要求的情況下寫入的，目的是留給之後人工檢視，再決定要不要
+    餵進 tools/calibrate_digits.py（見該模組與本專案的核心規則：沒有人先看過
+    真實證據，不能改動任何門檻或範本）。混在一起會讓自動寫入的東西看起來
+    像是使用者自己存的。
+    """
+    base = captures_dir()
+    candidate = base / CALIBRATION_CANDIDATES_DIRNAME
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+    except OSError:
+        return base
+
+
 DEFAULTS = {
     "region": None,        # None = compute from the current monitor 由目前螢幕算出
     "fullscreen": False,
     "speed": "normal",
     "language": "zh",
     "mode": "screen",      # "screen" or "image" 螢幕或圖片模式
+    #: [width, height] of the primary monitor at the moment `region` was last
+    #: actually recalibrated (Reset, Test, or an edited X/Y/W/H value) - None
+    #: until then. Lets ui/app.py notice "the region was set up for a
+    #: different-sized screen" instead of silently capturing the wrong spot.
+    #: See ui/app.py's _warn_if_resolution_changed / _save_settings for how
+    #: this is read and (deliberately not on every save) written.
+    #: 上次「真的」重新校準 region 那一刻（按預設、按測範圍、或手動改過
+    #: X/Y/寬/高）的主螢幕 [寬, 高]；在那之前是 None。讓 ui/app.py 能察覺
+    #: 「這個範圍是照另一個尺寸的螢幕設定的」，而不是默默抓錯地方。
+    #: 怎麼讀、（刻意不是每次存檔都）怎麼寫，見 ui/app.py 的
+    #: _warn_if_resolution_changed／_save_settings。
+    "region_monitor_size": None,
 }
 
 

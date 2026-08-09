@@ -160,6 +160,30 @@ the measured evidence.
   not fixed: `PatchesPlayer` now runs its last two rectangles with the
   mid-plan check off — a small, bounded, and documented reopening of the risk
   the guard exists to close, not a silent one.
+  **Superseded on the `speed-optimization` branch (not yet merged to
+  `main`):** a real 8x8 Patches fill (2026-08-09) showed this gap is bigger
+  than "the last two rectangles" — 7 consecutive structural-check failures,
+  well past the position-based mitigation above. Fixed properly this time
+  with a reference-content check rather than another position-based
+  carve-out: when the structural check fails, the parts of the board NOT
+  covered by our own fills are compared against the frame the plan was armed
+  on. The naive first version of this repeated the exact "random noise reads
+  as our board" mistake described above and was caught by an independent
+  adversarial review before shipping — see the
+  [`[Unreleased]` CHANGELOG entry](../CHANGELOG.md) for the full story,
+  including why the fix had to be re-designed around an affirm-or-decline
+  contract that can only make the guard's judgement more lenient toward a
+  board proven to still be ours, never less strict toward one that is not.
+  **在 `speed-optimization` 分支上已經取代（尚未合併回 `main`）：** 一次
+  真實的 8x8 拼塊填答（2026-08-09）顯示這個缺口比「最後兩塊矩形」大得多
+  ——結構性檢查連續失敗 7 次，遠超過上面那個位置判斷法能撐住的範圍。
+  這次改用參考內容比對真正修好，不是再做一個位置判斷的特例：結構性檢查
+  失敗時，把棋盤上「沒被我們填色蓋住」的部分拿去跟計畫武裝當下的畫面
+  比對。這個做法的第一版天真地重演了上面那個「雜訊被讀成我們的棋盤」的
+  錯誤，在上線前被一次獨立的對抗性審查抓到——完整過程見
+  [`[尚未發布]` 的 CHANGELOG 條目](../CHANGELOG.md)，包含為什麼修法最後
+  要改成「只能認證、不能判死」的契約——這種契約只可能讓保護對「證實還是
+  我們的棋盤」更寬容，絕不會讓它對「證實不是」變得更不嚴格。
 
 ---
 
@@ -193,7 +217,30 @@ UI for anything else.
   primary display; there is no search across displays.
 - **Windows display scaling is unhandled.** At 125 % or 150 % DPI scaling, `mss`
   and `pyautogui` can disagree about what a "pixel" is, so the capture is right
-  and the clicks land slightly off.
+  and the clicks land slightly off. Still true on `speed-optimization` as of
+  2026-08-09 - the item just below only detects that the *screen* changed, not
+  a DPI-scaling mismatch on an otherwise unchanged screen. Not yet investigated
+  on real hardware.
+  `speed-optimization` 分支到 2026-08-09 為止依然如此——下面那一項只能
+  偵測「螢幕本身變了」，偵測不到「螢幕沒變、但 DPI 縮放不一致」這種情況。
+  還沒有在真實有縮放設定的硬體上驗證過。
+
+**Partial progress, `speed-optimization` branch (not yet merged to `main`):**
+the region is now stamped with the primary monitor's size at the moment it
+was last actually recalibrated, and a mismatch against the current monitor
+size is now surfaced as a non-blocking warning before a run starts, instead
+of silently capturing whatever happens to be at the stale coordinates. This
+does not find the board on a new screen automatically (item 1 in Planned,
+below, is still the real fix) - it only makes the *symptom* of a stale
+region ("board not found", no obvious reason) traceable to its actual cause.
+See the [`[Unreleased]` CHANGELOG entry](../CHANGELOG.md).
+**部分進展，`speed-optimization` 分支（尚未合併回 `main`）：** 擷取範圍
+現在會記住「上次真的被重新校準」那一刻的主螢幕尺寸，跟目前螢幕尺寸不
+一樣時，執行前會跳出不擋執行的警告，而不是安靜地繼續抓那組可能早就
+失效的座標。這不是自動在新螢幕上找到棋盤（下面「計畫」的第 1 項才是
+真正的修法）——它只是讓「擷取範圍失效」這個症狀（「找不到棋盤」、
+看不出原因）能被追溯到真正的原因。見
+[`[尚未發布]` 的 CHANGELOG 條目](../CHANGELOG.md)。
 
 ### Planned
 

@@ -679,6 +679,354 @@ def test_the_window_cannot_sit_inside_the_capture_region():
         print("  the window cannot sit inside the capture region OK")
 
 
+def test_region_monitor_size_only_restamps_when_the_region_actually_changes():
+    """
+    Guards the resolution-change warning's ONE correctness requirement (see
+    ui/app.py's _save_settings comment): the recorded screen size must only
+    move when the region VALUE itself was just recalibrated, never merely
+    because _save_settings() ran (Start press, language change, ...) with
+    the region untouched - otherwise the warning would fire once and then
+    go silent forever even though the region is still wrong for the new
+    screen.
+    這個測試守住解析度改變警告唯一的正確性要求（見 ui/app.py
+    _save_settings 的註解）：記錄的螢幕尺寸只能在範圍「數值本身」剛被
+    重新校準時才移動，絕不能只因為 _save_settings() 被呼叫過（按開始、
+    切語言……）就跟著動，否則警告只會出現一次、之後永遠安靜下去，
+    即使範圍其實還是對不上新螢幕。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "app = app_module.SolverApp(root)\n"
+        "app_module.primary_monitor_size = lambda: (1920, 1080)\n"
+        ""
+        "# First save with a region: nothing was stored before, so this counts\n"
+        "# as a real calibration - must stamp the (faked) current size.\n"
+        "app.x_var.set('100'); app.y_var.set('100'); app.w_var.set('640'); app.h_var.set('700')\n"
+        "app._save_settings()\n"
+        "assert app.settings['region_monitor_size'] == [1920, 1080], app.settings['region_monitor_size']\n"
+        "print('FIRST_STAMP_OK')\n"
+        ""
+        "# Screen size 'changes' but the region fields are untouched (this is\n"
+        "# exactly what pressing Start does) - must NOT restamp.\n"
+        "app_module.primary_monitor_size = lambda: (2560, 1440)\n"
+        "app._save_settings()\n"
+        "assert app.settings['region_monitor_size'] == [1920, 1080], (\n"
+        "    'restamped even though the region value did not change / '\n"
+        "    '範圍數值沒變卻被重新記錄了: ' + repr(app.settings['region_monitor_size']))\n"
+        "print('NO_RESTAMP_ON_UNCHANGED_REGION_OK')\n"
+        ""
+        "# Now the region VALUE actually changes (a real recalibration) -\n"
+        "# must restamp with whatever the current (faked) size is NOW.\n"
+        "app.w_var.set('650')\n"
+        "app._save_settings()\n"
+        "assert app.settings['region_monitor_size'] == [2560, 1440], app.settings['region_monitor_size']\n"
+        "print('RESTAMP_ON_CHANGED_REGION_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "region_monitor_size stamping logic is wrong / region_monitor_size 的記錄邏輯不對:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  region_monitor_size only restamps when the region actually changes OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "FIRST_STAMP_OK", "NO_RESTAMP_ON_UNCHANGED_REGION_OK", "RESTAMP_ON_CHANGED_REGION_OK",
+        )), out
+        print("  region_monitor_size only restamps when the region actually changes OK")
+
+
+def test_resolution_change_warning_fires_only_when_sizes_differ():
+    """
+    _warn_if_resolution_changed must log its hint when the current screen
+    size disagrees with what was recorded at calibration time, and must
+    stay quiet when they match - a warning on every run regardless of
+    whether anything changed would just be noise the user learns to ignore.
+    _warn_if_resolution_changed 在目前螢幕尺寸跟校準時記錄的不一樣時，
+    必須把提示寫進記錄；兩者相符時必須保持安靜——如果不管有沒有變都跳
+    警告，使用者很快就會學會忽略它，等於沒有這個功能。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "app = app_module.SolverApp(root)\n"
+        "app.settings['region_monitor_size'] = [1920, 1080]\n"
+        ""
+        "# Same size as recorded -> quiet.\n"
+        "app_module.primary_monitor_size = lambda: (1920, 1080)\n"
+        "app._clear_log()\n"
+        "app._warn_if_resolution_changed()\n"
+        "assert app.log_text.get('1.0', 'end').strip() == '', (\n"
+        "    'warned even though the size matches / 尺寸相符卻還是警告了: ' + app.log_text.get('1.0', 'end'))\n"
+        "print('QUIET_WHEN_UNCHANGED_OK')\n"
+        ""
+        "# Different size -> warns, with both the old and new size in the message.\n"
+        "app_module.primary_monitor_size = lambda: (2560, 1440)\n"
+        "app._clear_log()\n"
+        "app._warn_if_resolution_changed()\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "expected = translator('log_resolution_changed', old='1920x1080', new='2560x1440')\n"
+        "assert expected in log, 'expected: %r, got: %r' % (expected, log)\n"
+        "print('WARNS_WHEN_CHANGED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "resolution-change warning is broken / 解析度改變警告有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  resolution change warning fires only when sizes differ OK (skipped - no display)")
+    else:
+        assert "QUIET_WHEN_UNCHANGED_OK" in out and "WARNS_WHEN_CHANGED_OK" in out, out
+        print("  resolution change warning fires only when sizes differ OK")
+
+
+def test_continuous_mode_alerts_and_stops_after_a_failed_round():
+    """
+    Bug this guards: continuous mode used to leave a failed round completely
+    silent - the status text changed but, with the window minimised (hide-window
+    or wait-first both iconify it), nothing on screen showed it, and the loop
+    would go on to wait for a board that structurally never disappears (the
+    user never navigated away from the failed puzzle). This proves the fix
+    end to end: a puzzle forced through the WRONG solver (guaranteed to fail
+    all MAX_SOLVE_ATTEMPTS retries, same technique test_recognition.py's
+    "wrong type does not fake success" uses) makes the window come back into
+    view, the status turn into the alert text, and the worker return instead
+    of looping on.
+    這個測試守住的問題：連續模式以前對一輪失敗完全沒有反應——狀態文字換了，
+    但視窗被最小化時（隱藏視窗或先等題目模式都會讓它最小化）畫面上完全
+    看不到，迴圈接著會去等一個結構上不會消失的棋盤（使用者根本沒有切離
+    那個失敗的題目）。這個測試從頭到尾驗證修正：把一張圖強制用「錯的」
+    求解器去解（保證會讓 MAX_SOLVE_ATTEMPTS 全部重試失敗，跟
+    test_recognition.py「wrong type does not fake success」用的是同一招），
+    視窗要被還原、狀態要變成提醒文字、工作執行緒要直接返回而不是繼續迴圈。
+
+    Also covers the persistent-vs-transient distinction added alongside this
+    alert: since capture_fn keeps returning the IDENTICAL image on every
+    retry, all MAX_SOLVE_ATTEMPTS attempts must produce the exact same error,
+    so self._last_failure_persistent must end up True and the extra hint
+    must appear in the log.
+    也一併涵蓋跟這個提醒一起加上的「持續性 vs 暫時性」判斷：因為 capture_fn
+    每次重試都回傳「一模一樣」的圖，MAX_SOLVE_ATTEMPTS 次嘗試必然得到完全
+    相同的錯誤，所以 self._last_failure_persistent 最後必須是 True，
+    而且記錄裡要出現那段額外的提示文字。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver, from_file_image\n"
+        "from linkedin_games_solver.core import read_image\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "app = app_module.SolverApp(root)\n"
+        "# _ui/_ui_wait exist to hop onto the Tk thread from the WORKER thread;\n"
+        "# this test calls _worker() directly on the main (Tk-owning) thread, so\n"
+        "# the normal root.after()-based versions would deadlock waiting for an\n"
+        "# event loop nothing is pumping. Made synchronous for this reason only -\n"
+        "# the cross-thread handoff itself is covered elsewhere\n"
+        "# (test_stop_mid_drag_from_another_thread_still_releases_the_mouse).\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "board = read_image(r'" + str(FIXTURES / 'live_queens_3.png') + "')\n"
+        "def grab():\n"
+        "    return from_file_image(board)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.hide_var.set(True)\n"
+        "app.settings['fullscreen'] = False\n"
+        "root.geometry('400x470+100+100')\n"
+        "root.update_idletasks()\n"
+        ""
+        "# Forcing a real Queens fixture through Tango's solver is guaranteed to\n"
+        "# fail (structural guards, not a threshold call) - see\n"
+        "# test_recognition.py's 'wrong type does not fake success'.\n"
+        "app._worker(None, 'tango', True, capture_fn=grab, driver_kwargs=dict(dry_run=True))\n"
+        ""
+        "assert root.state() != 'iconic', 'window was not restored after the alert / 提醒後視窗沒有被還原'\n"
+        "print('WINDOW_RESTORED_OK')\n"
+        "assert app.status_label.cget('text') == translator('status_solve_failed_stopped'), app.status_label.cget('text')\n"
+        "print('STATUS_TEXT_OK')\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert translator('log_solve_failed_alert', n=app_module.MAX_SOLVE_ATTEMPTS) in log, log\n"
+        "print('LOG_MESSAGE_OK')\n"
+        "assert app._last_failure_persistent is True, (\n"
+        "    'identical errors on every retry were not recognised as persistent / '\n"
+        "    '每次重試都得到一樣的錯誤，卻沒有被判定成持續性失敗')\n"
+        "assert translator('log_persistent_failure_hint', n=app_module.MAX_SOLVE_ATTEMPTS) in log, log\n"
+        "print('PERSISTENT_HINT_OK')\n"
+        "assert str(app.start_btn.cget('state')) == 'normal', 'worker did not reach _finish() / 工作執行緒沒有走到 _finish()'\n"
+        "print('FINISHED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "repeated-failure alert is broken / 連續失敗提醒有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  continuous mode alerts and stops after a failed round OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "WINDOW_RESTORED_OK", "STATUS_TEXT_OK", "LOG_MESSAGE_OK",
+            "PERSISTENT_HINT_OK", "FINISHED_OK",
+        )), out
+        print("  continuous mode alerts and stops after a failed round OK")
+
+
+def test_harvest_calibration_candidates_only_saves_safe_ground_truth():
+    """
+    Guards _harvest_calibration_candidates' whole reason for existing: it
+    must save a cell we filled ourselves that could not be read back
+    confidently (got=None - genuine ground truth, since `want` is what OUR
+    OWN solver chose and the driver clicked/typed), and must refuse the
+    three unsafe cases - a CONFIDENTLY wrong reading (ground truth is
+    suspect - could be a real misread or a dropped click), a changed board,
+    and any puzzle other than Sudoku (the only one verify() reads back cell
+    by cell).
+    守住 _harvest_calibration_candidates 存在的全部理由：它必須存下一個
+    我們自己填的、讀不回來的格子（got=None——真值可信，因為 `want` 是
+    「我們自己的」求解器選中、driver 親自點擊/打字打上去的），並且必須
+    拒絕三種不安全的情況——讀對了但錯的數字（真值本身可疑，可能真的
+    誤讀、也可能是點擊沒生效）、盤面已改變、以及數獨以外的任何題目
+    （verify() 只有數獨會逐格讀回）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import VerifyReport\n"
+        "from linkedin_games_solver.puzzles import sudoku, queens\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np, types\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "image = np.zeros((10, 10, 3), dtype='uint8')\n"
+        "candidates_dir = captures_root / 'calibration_candidates'\n"
+        ""
+        "# Case 1: got=None - we filled it, OCR could not confirm -> harvested.\n"
+        "app.result = types.SimpleNamespace(puzzle_key=sudoku.KEY)\n"
+        "report = VerifyReport(supported=True, ok=False, mismatches=[(0, 0, None, 5)])\n"
+        "app._clear_log()\n"
+        "app._harvest_calibration_candidates(image, report)\n"
+        "saved = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved) == 1, 'expected exactly one saved candidate / 應該存下剛好一個候選: %r' % saved\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert translator('log_calibration_candidate_saved', n=1) in log, log\n"
+        "print('UNREAD_CELL_HARVESTED_OK')\n"
+        ""
+        "# Case 2: got is a WRONG digit (read confidently, just not what we\n"
+        "# filled) -> must NOT be harvested, the ground truth itself is suspect.\n"
+        "report2 = VerifyReport(supported=True, ok=False, mismatches=[(1, 1, 3, 5)])\n"
+        "app._harvest_calibration_candidates(image, report2)\n"
+        "saved2 = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved2) == 1, 'a confidently-wrong digit was harvested / 讀對但錯的數字被收集了: %r' % saved2\n"
+        "print('WRONG_DIGIT_NOT_HARVESTED_OK')\n"
+        ""
+        "# Case 3: board_changed -> must NOT be harvested.\n"
+        "report3 = VerifyReport(supported=True, ok=False, board_changed=True, mismatches=[(2, 2, None, 5)])\n"
+        "app._harvest_calibration_candidates(image, report3)\n"
+        "saved3 = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved3) == 1, 'harvested from a changed board / 從已改變的盤面收集了: %r' % saved3\n"
+        "print('BOARD_CHANGED_NOT_HARVESTED_OK')\n"
+        ""
+        "# Case 4: not Sudoku -> must NOT be harvested (verify() only reads\n"
+        "# individual cells back for Sudoku).\n"
+        "app.result = types.SimpleNamespace(puzzle_key=queens.KEY)\n"
+        "report4 = VerifyReport(supported=True, ok=False, mismatches=[(3, 3, None, 5)])\n"
+        "app._harvest_calibration_candidates(image, report4)\n"
+        "saved4 = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved4) == 1, 'harvested from a non-Sudoku puzzle / 從非數獨題目收集了: %r' % saved4\n"
+        "print('NON_SUDOKU_NOT_HARVESTED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "calibration-candidate harvesting is broken / 校準候選資料收集有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  harvest calibration candidates only saves safe ground truth OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "UNREAD_CELL_HARVESTED_OK", "WRONG_DIGIT_NOT_HARVESTED_OK",
+            "BOARD_CHANGED_NOT_HARVESTED_OK", "NON_SUDOKU_NOT_HARVESTED_OK",
+        )), out
+        print("  harvest calibration candidates only saves safe ground truth OK")
+
+
 if __name__ == "__main__":
     print("Automation tests / 自動化測試")
     test_queens_resumes_half_done_board()
@@ -695,4 +1043,8 @@ if __name__ == "__main__":
     test_image_mode_needs_no_screen_packages()
     test_stop_interrupts_an_in_progress_solve()
     test_the_window_cannot_sit_inside_the_capture_region()
+    test_region_monitor_size_only_restamps_when_the_region_actually_changes()
+    test_resolution_change_warning_fires_only_when_sizes_differ()
+    test_continuous_mode_alerts_and_stops_after_a_failed_round()
+    test_harvest_calibration_candidates_only_saves_safe_ground_truth()
     print("\nAll passed / 全部通過")

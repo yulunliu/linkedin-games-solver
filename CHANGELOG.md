@@ -3,6 +3,203 @@
 Notable changes. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 重要變更紀錄。格式大致依照 Keep a Changelog。
 
+## [Unreleased] — `speed-optimization` branch, not yet merged to `main`
+## [尚未發布] —— `speed-optimization` 分支，尚未合併回 `main`
+
+**Not a numbered release.** This branch exists to work on solve speed and
+reliability without touching the stable, daily-verified `main` branch. Every
+item below is real-world-tested on this branch but has not yet gone through
+`main`'s merge process. Two multi-day rounds of real play surfaced the fixes
+below; three items were caught and reworked by an independent adversarial
+review before shipping (see the Patches guard entry).
+**不是編號版本。** 這個分支專門用來做解題速度與穩定性的改動，不動到穩定、
+每天都用真實遊玩驗證過的 `main` 分支。以下每一項都在這個分支上做過真實
+遊玩測試，但還沒走過 `main` 的合併流程。兩輪跨日的真實遊玩找出了下面
+這些修正；其中三項在上線前被獨立的對抗性審查抓到問題並重做過
+（見 Patches 保護那一條）。
+
+### Fixed — Patches false-aborting mid-fill, again 拼塊填答中途又誤判中止
+
+- **A real 8x8 Patches fill was wrongly aborted after only 4 of 16 rectangles,
+  reproduced identically twice on the same board.** `detect_grid_size`
+  (the guard's structural re-check) failed 7 consecutive times once enough of
+  the top rows were covered by the puzzle's own fill colour, exceeding
+  `PATCHES_FAILURE_TOLERANCE=6` - a stricter, more easily triggered version of
+  the exact false abort 1.2.0's masking fallback and 6-check tolerance were
+  built to bound. Confirmed against the screen recording that the board never
+  moved; the guard's own structural check had simply run out of information to
+  work with, because our own fills permanently erase the interior grid lines
+  it depends on.
+  **一次真實的 8x8 拼塊填答，只畫完 16 塊裡的 4 塊就被誤判中止，在同一個
+  棋盤上完全相同地重現了兩次。** `detect_grid_size`（保護自己的結構性重新
+  檢查）在頂端幾列被自己的填色蓋住足夠面積之後，連續失敗 7 次，超過
+  `PATCHES_FAILURE_TOLERANCE=6`——這是 1.2.0 的遮色備援與 6 次容忍原本要
+  界定住的那個誤判，一個更嚴重、更容易觸發的版本。對照螢幕錄影確認棋盤
+  完全沒有移動過；保護自己的結構性檢查只是沒有資訊可用了，因為我們自己的
+  填色會永久抹掉它依賴的內部格線。
+
+- **Fixed with a reference-content check, not a bigger tolerance number.**
+  When the structural locator fails, `board_watch.py` (Patches only) now
+  compares the parts of the board NOT covered by our own fills against the
+  frame the plan was armed on - affirming the board is still ours without
+  needing to re-derive its grid at all. Real measurement first: `find_board_bbox`
+  (the board's outer contour) survives on every heavily-filled real fixture
+  tested, including today's exact failure frame, even though the interior
+  grid-line check does not - because our fills are drawn inside cells, never
+  over the board's own outer edge.
+  **修法是參考內容比對，不是把容忍次數調更大。** 結構性定位器失敗時，
+  `board_watch.py`（僅拼塊）現在會把「沒被我們自己填色蓋住」的部分，
+  拿去跟計畫武裝當下的畫面比對——不需要重新推算格線，就能確認棋盤還是
+  我們的。先做了真實量測：`find_board_bbox`（棋盤的外框輪廓）在每一張
+  測過的、填得很滿的真實測試圖上都還找得到，包含今天這次失敗當下的畫面，
+  即使內部格線檢查完全失敗——因為我們的填色永遠畫在格子「裡面」，
+  不會蓋到棋盤自己的外框。
+
+- **The first design was wrong, and an independent adversarial review caught
+  it before it shipped.** That version scored a 0-1 confidence and let the
+  content check ABORT immediately on a mismatch (faster than the 6-check
+  tolerance for a genuine replacement). Four independent reviewers, briefed
+  only on the diff and told to refute it, found: (a) a uniform gray frame in
+  a narrow brightness band scored a perfect 1.0 and disabled the guard
+  permanently; (b) worse, replayed against the REAL 2026-08-06 incident
+  fixture (the one `PATCHES_FAILURE_TOLERANCE=6` exists for), the immediate-
+  abort verdict killed that correct fill on the very first check, because
+  that pair has a real ~1% scale drift between captures that a small
+  translation search cannot compensate. Rebuilt around a different contract:
+  the check can only ever AFFIRM ("content matches, keep going") or DECLINE
+  ("could not confirm, fall through to the untouched original tolerance
+  path") - it never aborts anything itself. Under that contract every
+  scenario is provably no worse than the pre-change guard, because the worst
+  the new code can do is decline, which is the old path unchanged. Re-review
+  after the rewrite found no further safety issue; two of its hardening
+  suggestions (treat an unexpected exception inside the check as a decline,
+  not a crash; document the measured boundary of the affirmation gate) were
+  folded in.
+  **第一版設計是錯的，在上線前被一次獨立的對抗性審查抓到。** 那一版會給
+  0~1 的信心分數，並且讓內容比對在不吻合時「立刻中止」（比真的替換情境
+  原本 6 次的容忍還快）。四位只看得到程式差異、被要求去推翻它的獨立
+  審查者發現：(a) 落在特定亮度區間的整片灰階畫面拿滿分 1.0，把保護永久
+  關掉；(b) 更糟的是，重播 2026-08-06 那次真實事件的測試圖（正是
+  `PATCHES_FAILURE_TOLERANCE=6` 存在的理由）時，立即中止判決在「第一次」
+  檢查就把那次正確的填答錯殺了，因為那組畫面兩次擷取之間有約 1% 的真實
+  縮放漂移，小範圍的平移搜尋補償不了。改成另一種契約重做：這個檢查
+  只可能「認證」（內容吻合，繼續）或「拒絕認證」（無法確認，落回原封
+  不動的舊容忍路徑）——它自己絕不中止任何事。在這個契約下，每一種情境
+  都可證明不比修改前的保護差，因為新程式碼最壞的結果就是拒絕認證，
+  而那正是舊路徑本身。重做後的複審沒有再找到安全問題；審查提出的兩個
+  強化建議（比對內部出現預期外的例外時視同拒絕認證、不當機；把認證關卡
+  實測到的邊界記進文件）都已採納。
+
+- **Real-world confirmed the same day.** Re-run against the exact puzzle that
+  failed that morning: the guard's structural check failed the same way, but
+  the content check affirmed the board 11 times in a row where it used to
+  need (and eventually exceed) the tolerance counter, and the fill completed
+  - visually confirmed against the LinkedIn puzzle list showing Patches as
+  solved, and one of the 16 checks along the way genuinely could not be
+  affirmed and correctly fell through to (and was covered by) the original
+  tolerance mechanism, evidence the two layers work together as designed.
+  **當天就用真實情境確認過。** 拿當天早上失敗的那道題目重跑一次：保護的
+  結構性檢查一樣照舊失敗，但內容比對連續 11 次認證棋盤沒問題（這些以前
+  都要靠、而且最終會超過容忍計數），填答順利完成——對照 LinkedIn 的
+  謎題清單顯示 Patches 已完成，過程中確實有一次真的無法被認證，正確地
+  落回（並且被撐住）原本的容忍機制，證明兩層機制真的照設計搭配運作。
+
+### Added — repeated-failure alert 新增：連續失敗提醒
+
+- **Continuous mode used to fail silently.** If recognition exhausted its
+  retries, the status text changed but - with the window minimised, which
+  continuous mode does by default - nothing on screen showed it, and the loop
+  would proceed to wait for a board that structurally never disappears (since
+  nothing made the user navigate away from the failed puzzle), silently
+  wasting the rest of the sitting. Continuous mode now restores the window,
+  plays a system alert sound, turns the status line red, and stops the
+  session on the very first fully-retried failure (three fresh-capture
+  attempts already exhausted, not a single-frame fluke) rather than spinning
+  unattended.
+  **連續模式以前失敗時完全無聲無息。** 如果辨識用盡重試次數，狀態文字會
+  換，但視窗預設是縮到最小的，畫面上什麼都看不到，迴圈接著會去等一個
+  結構上不會消失的棋盤（沒有任何動作讓使用者切離那個失敗的題目），整輪
+  剩下的時間就這樣安靜地浪費掉。連續模式現在會在第一次「完整重試過仍然
+  失敗」（已經耗盡三次新擷取嘗試，不是單張影格的偶發問題）時，還原視窗、
+  播放系統提示音、把狀態列變成紅色，並且停止整個連續模式，而不是繼續
+  無人看管地空轉。
+- **The failure message now says whether retrying would have helped.** If all
+  retry attempts (each on a fresh screen capture) produced the exact same
+  error, that is evidence of a persistent problem rather than a rendering-
+  timing fluke, and the log/alert now says so explicitly instead of leaving
+  the user to assume "try again" is the fix when it was already tried three
+  times, silently.
+  **失敗訊息現在會說明「再試一次」有沒有意義。** 如果每一次重試（各自用
+  新擷取的畫面）都得到完全一樣的錯誤，這就是持續性問題而不是渲染時機
+  偶發問題的證據，現在記錄檔／提醒訊息會明講出來，而不是讓使用者以為
+  「再試一次」有機會解決，但其實背後已經默默試過三次了。
+
+### Added — screen-resolution-change warning 新增：螢幕解析度改變警告
+
+- **A saved capture region silently went stale if the screen changed.** The
+  region is a fixed rectangle of absolute screen pixels, calibrated once and
+  reused forever; switching monitors, changing resolution, or changing
+  Windows display scaling all invalidate it with no signal beyond a generic
+  "board not found". The app now remembers the primary monitor's size at the
+  moment the region was last actually recalibrated (not on every save - that
+  would silently re-baseline the warning against a region that was never
+  re-verified for the new screen) and warns, without blocking, when the
+  current size disagrees.
+  **螢幕換了之後，存起來的擷取範圍會悄悄失效。** 擷取範圍是一個固定的
+  絕對螢幕像素矩形，只在校準當下決定一次、之後一直沿用；換螢幕、換
+  解析度、改 Windows 顯示縮放比例都會讓它失效，而且除了一句籠統的
+  「找不到棋盤」之外沒有任何提示。程式現在會記住擷取範圍「上次真的被
+  重新校準」那一刻的主螢幕尺寸（不是每次存檔都記——那樣會讓警告悄悄
+  用一個「其實從來沒有針對新螢幕重新驗證過」的範圍當基準），目前尺寸
+  對不上時會提醒（不會擋住執行）。
+
+### Added — Sudoku digit-calibration candidate harvesting 新增：數獨數字校準候選收集
+
+- **A cell we filled ourselves, but could not read back confidently, is now
+  saved as a future calibration candidate.** After a fill, Sudoku's verify
+  pass already re-reads every cell; when a target cell reads as unreadable
+  (not misread - genuinely unreadable) the digit it should hold is exactly
+  what our own solver chose and the driver clicked/typed, which is the same
+  standard of ground truth `tools/calibrate_digits.py`'s hand-verified tables
+  already use. Saved to a separate `calibration_candidates/` folder, never
+  the user's own `img/` captures folder, and never fed into the digit
+  templates automatically - only a human deliberately running the
+  calibration tool after looking at what was saved can do that, per this
+  project's core rule against changing a threshold or template without
+  looking at real evidence first. Explicitly does NOT harvest the puzzle's
+  own printed givens (read by OCR, so a misread given's "ground truth" would
+  be circular) or a cell read as a confidently WRONG digit (that ground
+  truth is itself suspect - it could be a genuine misread or a dropped
+  click).
+  **一個我們自己填的、但讀不回來的格子，現在會被存成未來校準的候選資料。**
+  填答之後，數獨的檢查補點步驟本來就會重讀每一格；當某個目標格讀不出來
+  時（不是讀錯——是真的讀不出來），它應該要是的數字，就是我們自己的
+  求解器選中、driver 親自點擊/打字打上去的那個，跟 `tools/calibrate_digits.py`
+  人工核對過的真值表是同一個等級的可信度。存進獨立的
+  `calibration_candidates/` 資料夾，不是使用者自己的 `img/` 存圖資料夾，
+  也絕不會自動餵進數字範本——只有人工看過存下的東西、刻意手動執行校準
+  工具才會生效，遵守這個專案「沒看過真實證據不能改動門檻或範本」的核心
+  規則。刻意不收集題目原本印的提示數字（那是 OCR 讀出來的，一個讀錯的
+  提示，其「真值」會是循環論證）、也不收集讀成「確信但錯誤」數字的格子
+  （那個真值本身可疑——可能是真的誤讀，也可能是點擊沒生效）。
+
+### Testing 測試
+
+Test suites: 10 → 11 (`test_board_wait.py` added earlier this branch).
+`test_board_guard.py` grew from 21 to 26 cases, five of them pinning the
+adversarial review's counter-examples down as permanent regression tests
+(a uniform-gray frame at any brightness, a different same-size Patches board
+- the strongest attack found, a scrim/dim over the failing frame, and the
+real 2026-08-06 incident replayed under the shipped production configuration).
+All suites pass, `pyflakes` clean, both executables rebuilt and smoke-tested
+after every round.
+測試檔：10 → 11（`test_board_wait.py` 是這個分支較早新增的）。
+`test_board_guard.py` 從 21 個案例增加到 26 個，其中 5 個把對抗性審查的
+反例釘成永久回歸測試（任何亮度的整片灰畫面、另一塊同尺寸拼塊棋盤——
+量到最強的攻擊、蓋在失敗畫面上的遮罩/調暗、以及在正式上線設定下重播的
+2026-08-06 真實事件）。全部測試組都通過，`pyflakes` 乾淨，每一輪都重新
+打包過兩個執行檔並煙霧測試過。
+
 ## [1.3.0] — 2026-08-05
 
 **Upgrade from 1.2.0.** Two rounds of work. First, a rigorous audit-and-fix

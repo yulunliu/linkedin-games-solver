@@ -155,6 +155,67 @@ def test_safe_without_system_fonts():
     print(f"  without system fonts: {correct} correct, {unreadable} unreadable, 0 wrong OK")
 
 
+def test_zip_and_patches_fixtures_are_unaffected_by_shared_template_changes():
+    """
+    core/digits.py's MIN_SCORE/MIN_MARGIN/MIN_RELATIVE_MARGIN and the
+    template set (APP_TEMPLATES + FALLBACK_TEMPLATES) are GLOBAL - every
+    caller (Sudoku's read_givens, Zip's dot numbers, Patches' area labels)
+    shares the exact same templates and the exact same thresholds. Whenever
+    tools/calibrate_digits.py is re-run to fix ONE puzzle's misread digit
+    (e.g. the Mini Sudoku "3" fixed on 2026-08-08 by adding a browser-sourced
+    template), Zip and Patches use the SAME new template set on their very
+    next solve - nothing in the codebase distinguishes "a template added
+    because of Sudoku" from "a template added because of Zip".
+    core/digits.py 的 MIN_SCORE/MIN_MARGIN/MIN_RELATIVE_MARGIN 跟範本集合
+    （APP_TEMPLATES + FALLBACK_TEMPLATES）是全域的——每個呼叫端（Sudoku 的
+    read_givens、Zip 的圓點編號、Patches 的區域標籤）共用完全同一份範本、
+    完全同一組門檻。每次重跑 tools/calibrate_digits.py 修好某一題誤讀的
+    數字（例如 2026-08-08 補了瀏覽器來源的範本修好 Mini Sudoku 的「3」），
+    Zip 跟 Patches 下一次求解就會用到同一套新範本——程式裡沒有任何地方
+    區分「這個範本是因為 Sudoku 才加的」還是「因為 Zip 才加的」。
+
+    Adding a template can only RAISE (never lower) the best score for a
+    digit that genuinely matches it - see classify_glyph's own docstring for
+    why - so a regression here cannot come from a worse match. What CAN
+    regress it is a narrower MARGIN against a newly-added confusable
+    template (classify_glyph rejects when the runner-up gets too close).
+    This test exists to catch exactly that: it pins the values already
+    independently hand-verified in test_zip_dots.py (S__104316937_0.jpg,
+    consecutive dot numbering) and test_recognition.py (live_patches.png,
+    14 labels, numbered ones [2,2,2,4,4,4,4]) so a future recalibration
+    that changes either result is caught HERE with an explanation of why,
+    instead of turning up as an unexplained solve failure during real play.
+    新增範本只會讓「真的符合該數字」的最高分變高（絕不會變低）——原因見
+    classify_glyph 自己的文件字串——所以這裡的退步不可能來自比對變差。
+    真正可能造成退步的，是跟新增的、容易混淆的範本之間差距（margin）變窄
+    （classify_glyph 在第二名分數貼太近時會拒絕判定）。這個測試存在的目的
+    就是抓住這件事：把 test_zip_dots.py（S__104316937_0.jpg，圓點編號連續）
+    與 test_recognition.py（live_patches.png，14 個標籤，有編號的是
+    [2,2,2,4,4,4,4]）裡已經獨立人工驗證過的數值原封不動地釘在這裡——
+    未來任何一次重新校準只要動到這兩個結果，會在「這裡」被抓到並附上
+    原因，而不是在真實遊玩時變成一個看不出原因的求解失敗。
+    """
+    from linkedin_games_solver.core import read_image
+    from linkedin_games_solver.puzzles import solve_image
+
+    fixtures = Path(__file__).parent / "fixtures"
+
+    zip_result = solve_image(read_image(fixtures / "S__104316937_0.jpg"))
+    assert zip_result.ok, f"Zip fixture regressed / Zip 測試圖退步了: {zip_result.error}"
+    zip_values = sorted(zip_result.data["dots"].values())
+    assert zip_values == list(range(1, len(zip_values) + 1)), \
+        f"Zip dot numbers changed / Zip 圓點編號變了: {zip_values}"
+
+    patches_result = solve_image(read_image(fixtures / "live_patches.png"))
+    assert patches_result.ok, f"Patches fixture regressed / Patches 測試圖退步了: {patches_result.error}"
+    numbered = sorted(lb.value for lb in patches_result.data["labels"] if lb.value is not None)
+    assert numbered == [2, 2, 2, 4, 4, 4, 4], \
+        f"Patches label numbers changed / Patches 標籤數字變了: {numbered}"
+    blanks = sum(1 for lb in patches_result.data["labels"] if lb.value is None)
+    assert blanks == 7, f"Patches blank-label count changed / 空白標籤數量變了: {blanks}"
+    print("  Zip and Patches fixtures are unaffected by shared template changes OK")
+
+
 def test_ambiguous_glyph_is_rejected_not_guessed():
     """A glyph equally close to two digits must return None, not a coin flip.
     與兩個數字同樣接近的字形必須回傳 None，而不是擲硬幣。"""
@@ -174,5 +235,6 @@ if __name__ == "__main__":
     test_app_glyphs_are_read_correctly()
     test_foreign_fonts_are_never_silently_misread()
     test_safe_without_system_fonts()
+    test_zip_and_patches_fixtures_are_unaffected_by_shared_template_changes()
     test_ambiguous_glyph_is_rejected_not_guessed()
     print("\nAll passed / 全部通過")

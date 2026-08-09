@@ -11,7 +11,14 @@ Automation layer: capture the screen, map coordinates, drive the mouse, verify.
 """
 
 from .board_wait import wait_for_board, wait_for_board_gone
-from .capture import ScreenShot, capture_region, capture_screen, default_region, from_file_image
+from .capture import (
+    ScreenShot,
+    capture_region,
+    capture_screen,
+    default_region,
+    from_file_image,
+    primary_monitor_size,
+)
 from .input_driver import Aborted, InputDriver, focus_window_at, wait_for_mouse_release
 from .mapper import BoardMapper
 from .players import PlayPlan, build_plan
@@ -20,6 +27,7 @@ from .verify import supports as verify_supports
 
 __all__ = [
     "ScreenShot", "capture_region", "capture_screen", "default_region", "from_file_image",
+    "primary_monitor_size",
     "wait_for_board", "wait_for_board_gone",
     "InputDriver", "Aborted", "focus_window_at", "wait_for_mouse_release",
     "BoardMapper", "PlayPlan", "build_plan",
