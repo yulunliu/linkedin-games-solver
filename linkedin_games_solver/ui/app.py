@@ -1046,6 +1046,31 @@ class SolverApp:
                 reason = result.error or translator("status_failed")
                 self._ui(self._log, "")
                 self._ui(self._log, reason)
+                # Save the last attempted capture so a failure that cannot be
+                # reproduced live still leaves real pixels to diagnose against -
+                # the same idea as the guard's boardwatch_stop save, applied to
+                # a full recognition failure instead of a mid-fill abort.
+                # WHY THIS EXISTS: a 2026-08-10 Patches failure ("28 label(s)
+                # unreadable ... tiling is ambiguous", every crop/scale tried)
+                # could not be root-caused afterwards because nothing had kept
+                # the actual bytes the recogniser saw - a hand screenshot taken
+                # around the same time solved cleanly, so it was not the same
+                # capture. Saving here closes that gap for next time.
+                # 存下最後一次嘗試用的擷取畫面，讓「事後重現不出來」的失敗
+                # 還是留得下真實像素可以追——跟守衛的 boardwatch_stop 存檔
+                # 同一個想法，套用在「整個辨識都失敗」而不是「填答中途中止」。
+                # 為什麼需要這個：2026-08-10 有一次 Patches 失敗（「28 個標籤
+                # 讀不出來…切法不唯一」，裁切／縮放試遍都一樣）事後完全查不出
+                # 根因，因為沒有任何東西留住辨識器當時實際看到的那些位元組——
+                # 差不多同時間手動截的圖卻能乾淨解出來，代表根本不是同一張
+                # 擷取畫面。這裡存檔就是為了補上這個缺口，下一次失敗時用得上。
+                try:
+                    fail_path = (settings_store.captures_dir()
+                                 / f"solve_failed_{result.puzzle_key}_{int(time.time() * 1000)}.png")
+                    if write_image(str(fail_path), shot.image):
+                        self._ui(self._log, f"  {translator('log_solve_failed_frame_saved')}: {fail_path}")
+                except Exception:
+                    pass
                 if self._last_failure_persistent:
                     # All MAX_SOLVE_ATTEMPTS fresh captures gave the exact
                     # same reading - see attempt_errors above. Worth saying

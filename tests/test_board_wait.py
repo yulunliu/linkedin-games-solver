@@ -30,7 +30,10 @@ from linkedin_games_solver.automation import (  # noqa: E402
     wait_for_board,
     wait_for_board_gone,
 )
-from linkedin_games_solver.automation.board_wait import _board_present  # noqa: E402
+from linkedin_games_solver.automation.board_wait import (  # noqa: E402
+    _board_present,
+    _board_present_at,
+)
 from linkedin_games_solver.core import read_image  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -138,6 +141,54 @@ def test_a_border_without_grid_lines_is_not_a_board():
     print("  a border without grid lines is not a board OK")
 
 
+def test_a_faint_bordered_board_is_found_via_the_retry_scale():
+    """
+    Bug this guards: a real 2026-08-10 session waited 68s (log) with the
+    actual Patches board on screen the whole time (confirmed against the
+    session recording) and never once detected it. Root cause, found by
+    saving the exact bytes BoardWatch's own capture path produces (the
+    "測範圍" button) instead of trusting a screen recording of the same
+    region: this board's outer border is too faint for find_board_bbox's
+    fixed-size Canny+dilate kernels to close into one contour at 1x - the
+    largest contour found is the number badges (~57x57px each), nowhere near
+    the 15%-of-frame area threshold. At 1.75x the same border becomes thick
+    enough in absolute pixels. This is the SAME class of failure
+    _locate_board's own docstring already names ("pre-scaling if its faint
+    border is missed at 1x") - it had just never been ported into this
+    module's cheap check, which only ever tried 1x.
+    這個測試守住的問題：一次真實的 2026-08-10 執行 log 顯示等了 68 秒，而
+    Patches 棋盤整段時間其實都在畫面上（對照螢幕錄影確認過），卻一次都沒
+    偵測到。根因是存下 BoardWatch 自己擷取路徑真正產生的位元組（用面板的
+    「測範圍」按鈕），而不是信任同一範圍的螢幕錄影後才抓到的：這個棋盤的
+    外框太淡，find_board_bbox 固定尺寸的 Canny+dilate 核在 1 倍下接不成一圈
+    輪廓——找到的最大輪廓是數字標籤（每個約 57x57 像素），離「畫面 15%」
+    的面積門檻還差很遠。放大到 1.75 倍，同一圈外框在絕對像素上就夠粗了。
+    這跟 _locate_board 自己文件字串早就取過名字的問題是同一類（「淡色邊框
+    在原尺寸抓不到時先放大再找」）——只是一直沒有搬進這個模組的便宜檢查，
+    它以前只試過 1 倍。
+    """
+    faint = read_image(str(FIXTURES / "patches_faint_border_20260810.png"))
+    assert faint is not None, "missing fixture / 找不到測試圖"
+    assert _board_present_at(faint) is False, (
+        "the faint-bordered capture now locates at 1x alone - this test's "
+        "premise (BORDER_RETRY_SCALE is actually needed) no longer holds, "
+        "re-check against a fresh real capture / "
+        "這張淡邊框擷取現在只用 1 倍就定位得到了——這個測試的前提"
+        "（BORDER_RETRY_SCALE 真的有需要）不再成立，請對照新的真實擷取重新確認"
+    )
+    assert _board_present(faint) is True, (
+        "the retry-scale fallback did not recover the faint-bordered board / "
+        "重試放大倍率沒有救回這個淡邊框棋盤"
+    )
+    # End to end through wait_for_board() too, not just the unit-level check.
+    # 也透過 wait_for_board() 整個流程驗證一次，不只是單元層級的檢查。
+    grab, state = _scripted_capture([_BLANK, _BLANK, faint])
+    shot = wait_for_board(grab, poll_interval=0.001)
+    assert shot is not None, "wait_for_board never returned on the faint-bordered board / wait_for_board 對這個淡邊框棋盤從沒回傳過"
+    assert state["i"] == 3, f"expected 3 grabs, got {state['i']}"
+    print("  a faint-bordered board is found via the retry scale OK")
+
+
 def test_wait_for_gone_returns_once_the_board_leaves():
     """Continuous mode's between-rounds step: the finished board must leave
     the screen before the next detection arms, or the round that just ended
@@ -210,6 +261,7 @@ if __name__ == "__main__":
     test_the_stability_window_mechanism_still_works_when_asked_for()
     test_board_already_on_screen_fires_on_the_first_poll()
     test_a_border_without_grid_lines_is_not_a_board()
+    test_a_faint_bordered_board_is_found_via_the_retry_scale()
     test_wait_for_gone_returns_once_the_board_leaves()
     test_a_single_flicker_does_not_end_the_gone_wait()
     test_stop_while_waiting_for_gone_returns_false()

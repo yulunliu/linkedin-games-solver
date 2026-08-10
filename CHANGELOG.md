@@ -18,6 +18,124 @@ review before shipping (see the Patches guard entry).
 這些修正；其中三項在上線前被獨立的對抗性審查抓到問題並重做過
 （見 Patches 保護那一條）。
 
+### Fixed — Patches never detected while waiting, however long the wait 拼塊等待再久都偵測不到
+
+- **`wait_for_board()`'s cheap presence check only ever tried 1x scale, and
+  some Patches boards' own outer border is too faint for that to ever find at
+  native resolution - no amount of waiting fixes it.** Diagnosed from a real
+  2026-08-10 session: the log showed 68s of continuous polling (353 polls)
+  with zero detections while a screen recording of the same region confirmed
+  the real Patches board was genuinely on screen, unattended, the whole time.
+  Root-caused by saving the EXACT bytes `BoardWatch`'s own capture path
+  produces (the "測範圍"/Test-region button) rather than trusting a screen
+  recording of the same region - the two are not the same capture, and only
+  the real one showed the bug: `find_board_bbox` at 1x found nothing
+  board-sized at all (largest contour 7,980px² against the 15%-of-frame
+  67,200px² threshold - the fixed-size Canny+dilate kernels were only
+  catching the individual number badges, not the board's own faint outer
+  line), while the identical bytes at 1.75x locate cleanly. This is the exact
+  same class of failure `puzzles/__init__.py`'s `_locate_board` already
+  named in its own docstring ("pre-scaling if its faint border is missed at
+  1x") - it had simply never been ported into this module's separate cheap
+  check. Fixed by retrying at `BORDER_RETRY_SCALE = 1.75` (same value as
+  `_PRESCALE_STEPS[1]`) whenever the 1x check finds nothing. Cost, measured
+  on the real failing capture: 1x alone averages 30.0ms when nothing is
+  present; the added retry brings the worst case to 150.9ms - still under
+  `POLL_INTERVAL`'s own budget, and never paid once a board (at either
+  scale) is actually present. New regression test
+  (`test_a_faint_bordered_board_is_found_via_the_retry_scale`) pins the real
+  failing capture (`tests/fixtures/patches_faint_border_20260810.png`) end
+  to end through `wait_for_board()`.
+  **`wait_for_board()` 的便宜存在檢查一直只試 1 倍縮放，而某些拼塊棋盤自己
+  的外框在原始擷取解析度下太淡，不管等多久都找不到——這不是時間問題。**
+  從一次真實 2026-08-10 的執行診斷出來：log 顯示連續輪詢 68 秒（353 次）
+  完全沒偵測到，而同一範圍的螢幕錄影確認 Patches 棋盤整段時間確實都在
+  畫面上、沒人動過它。真正找到根因的方法，是存下 `BoardWatch` 自己擷取
+  路徑真正產生的位元組（面板上的「測範圍」按鈕），而不是信任同一範圍的
+  螢幕錄影——兩者不是同一次擷取，只有真正的那次才顯示出問題：
+  `find_board_bbox` 在 1 倍下完全找不到任何棋盤大小的東西（最大輪廓只有
+  7,980 平方像素，門檻是畫面 15%＝67,200——固定尺寸的 Canny+dilate 核只抓
+  到一顆顆數字標籤，抓不到棋盤本身那圈很淡的外框線），而同一份位元組在
+  1.75 倍下乾淨定位成功。這跟 `puzzles/__init__.py` 的 `_locate_board`
+  自己文件字串早就取過名字的問題是同一類（「淡色邊框在原尺寸抓不到時
+  先放大再找」）——只是一直沒有搬進這個模組獨立的便宜檢查裡。修法：
+  1 倍檢查找不到時，用 `BORDER_RETRY_SCALE = 1.75`（跟 `_PRESCALE_STEPS[1]`
+  同一個值）重試一次。成本，對著真實的失敗擷取實測：只用 1 倍在畫面上
+  什麼都沒有時平均 30.0 毫秒；加上這次重試後最壞情況變成 150.9 毫秒——
+  仍在 `POLL_INTERVAL` 自己的預算內，而且只要任一倍率真的找到棋盤就不會
+  付這筆成本。新增回歸測試
+  （`test_a_faint_bordered_board_is_found_via_the_retry_scale`）把這張真實
+  失敗擷取（`tests/fixtures/patches_faint_border_20260810.png`）整個穿過
+  `wait_for_board()` 釘住。
+
+### Fixed — Mini Sudoku misdetected as Tango, costing 6-9s per occurrence 迷你數獨被誤判成 Tango，每次白燒 6~9 秒
+
+- **`detect_type`'s `NO_COLOR_RATIO` (0.006) gave a genuine Mini Sudoku board
+  only a 1.6x safety margin before falling into the Tango branch.** Measured
+  on the only live Sudoku fixture on file (`live_mini_sudoku_browser.png`):
+  coloured-pixel ratio 0.00366 (sub-box shading), and that colour is itself
+  88.7% orange/blue - over `TANGO_HUE_RATIO`'s 0.75 cutoff - so crossing the
+  ratio threshold sent it straight into "tango" with no further check.
+  Confirmed against two real 2026-08-10 production runs
+  (`run_20260810_181407_416.log`, `run_20260810_185005_381.log`): the same
+  Sudoku board detected as tango, burned the full tango ladder (~16
+  crop/scale attempts, all "multiple solutions" or "board not found") plus a
+  queens attempt, and only resolved correctly ~6-9s later via the
+  fallback-type sweep - while the real board sat on screen the whole time.
+  Raised to 0.01: ~2.7x margin above the measured sudoku value, ~2.6x margin
+  below the smallest correctly-located non-sudoku fixture (0.02559). This
+  only changes which type is tried FIRST - every puzzle module still
+  requires its own unique-solution/sanity guard, so a wrong guess still
+  fails cleanly rather than inventing an answer; this is a speed fix, not a
+  loosened correctness gate. New regression test
+  (`test_mini_sudoku_survives_extra_colour_noise`) synthetically reproduces
+  the capture-variance class of failure and confirms it survives under the
+  new threshold.
+  **`detect_type` 的 `NO_COLOR_RATIO`（0.006）只給真的 Mini Sudoku 盤面
+  1.6 倍安全邊界，一跨過就會掉進 Tango 分支。** 對目前唯一的真實瀏覽器
+  Sudoku 測試圖（`live_mini_sudoku_browser.png`）實測：彩色像素比例
+  0.00366（子九宮格底色），而這個顏色本身有 88.7% 落在橘／藍色相——
+  超過 `TANGO_HUE_RATIO` 的 0.75 門檻——所以比例一旦跨過門檻就會直接被當成
+  「tango」，不會再做任何檢查。對照兩筆真實 2026-08-10 執行記錄
+  （`run_20260810_181407_416.log`、`run_20260810_185005_381.log`）確認：
+  同一個 Sudoku 盤面被判成 tango，燒完整條 tango 階梯（約 16 種裁切／縮放
+  組合，全部「找到多組解」或「偵測不到棋盤」）加一次 queens 嘗試，要等
+  備援類型全掃過、約 6~9 秒後才靠備援機制解對——而真正的棋盤其實整段
+  時間都在畫面上。提高到 0.01：量到的 sudoku 數值上方有約 2.7 倍邊界，
+  下方離「正確定位到棋盤」的最小非 sudoku 測試圖值（0.02559）還有約
+  2.6 倍邊界。這裡只改變「先試哪個類型」——每個謎題模組仍然各自要求
+  解唯一／合理性守門，猜錯一樣會乾淨地失敗而不是編答案；這是速度修正，
+  不是放寬正確性門檻。新增的回歸測試
+  （`test_mini_sudoku_survives_extra_colour_noise`）合成重現了這種
+  「擷取誤差」等級的失敗，並確認在新門檻下能撐過去。
+
+### Added — save the capture a solve fully failed on, for later diagnosis 求解完全失敗時存下當時的擷取畫面供事後排查
+
+- **A 2026-08-10 Patches failure ("28 label(s) unreadable ... tiling is
+  ambiguous", every crop/scale in the ladder) could not be root-caused
+  afterwards, because nothing had kept the actual bytes the recogniser saw** -
+  a hand screenshot taken around the same time solved cleanly through the
+  full pipeline, proving it was not the same capture. A solve that exhausts
+  every `MAX_SOLVE_ATTEMPTS` retry now saves the LAST attempted capture (the
+  exact image the failing `result` came from) to `captures_dir()` as
+  `solve_failed_<puzzle>_<epoch_ms>.png` and logs where it went - the same
+  idea as the existing guard `boardwatch_stop_*.png` save, applied to a full
+  recognition failure instead of a mid-fill abort. A diagnostic save can
+  never break the failure-handling path itself, so it is wrapped the same
+  way the guard's save is (best-effort, swallows its own exceptions). New
+  test: `test_solve_failed_frame_is_saved_for_diagnosis`.
+  **2026-08-10 有一次 Patches 失敗（「28 個標籤讀不出來…切法不唯一」，
+  階梯裡每個裁切／縮放都試過）事後完全查不出根因，因為沒有任何東西留住
+  辨識器當時實際看到的位元組**——差不多同時間手動截的圖卻能透過完整流程
+  乾淨解出來，證明根本不是同一張擷取畫面。現在只要求解把
+  `MAX_SOLVE_ATTEMPTS` 次重試都用盡，就會把「最後一次嘗試」用的擷取畫面
+  （也就是那次失敗 `result` 實際來自的那張圖）存進 `captures_dir()`，
+  檔名是 `solve_failed_<puzzle>_<epoch_ms>.png`，並在記錄裡寫出存去哪裡——
+  跟既有守衛的 `boardwatch_stop_*.png` 存檔同一個想法，套用在「整個辨識
+  都失敗」而不是「填答中途中止」。診斷用的存檔絕不能弄壞失敗處理流程
+  本身，所以包法跟守衛的存檔一樣（盡力而為、自己吞掉例外）。
+  新增測試：`test_solve_failed_frame_is_saved_for_diagnosis`。
+
 ### Fixed — Patches false-aborting mid-fill, again 拼塊填答中途又誤判中止
 
 - **A real 8x8 Patches fill was wrongly aborted after only 4 of 16 rectangles,

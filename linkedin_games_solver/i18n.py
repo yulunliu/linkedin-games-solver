@@ -110,6 +110,10 @@ _TEXTS: dict[str, dict[str, str]] = {
         "en": "  Saved the frame that triggered the stop",
         "zh": "  已存下觸發停止的那一張畫面",
     },
+    "log_solve_failed_frame_saved": {
+        "en": "  Saved the capture recognition failed on, for later diagnosis",
+        "zh": "  已存下辨識失敗當時的擷取畫面，供事後排查",
+    },
     "log_failsafe": {
         "en": "  Stopped: the mouse hit a screen corner (pyautogui's fail-safe).",
         "zh": "  已停止：滑鼠碰到了螢幕角落（pyautogui 的安全逃生機制）。",

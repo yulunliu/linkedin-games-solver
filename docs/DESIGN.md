@@ -391,6 +391,63 @@ one — and the only way that trade got caught here was by handing the design
 to reviewers whose only job was to break it, before it ever touched the
 puzzle a real user was still trying to finish.
 
+### Waiting for a board that could never have been found
+
+*(`speed-optimization` branch, not yet merged to `main`.)*
+
+A 2026-08-10 session logged 68 seconds of continuous polling - 353 checks,
+roughly one every 190ms, exactly on schedule - that never once detected a
+board. A screen recording of the same region, played back afterwards,
+showed the real Patches puzzle sitting there, untouched, for well over ten
+of those seconds. Not a timing coincidence, not a slow poll: the polling
+loop was working exactly as designed, checking exactly as often as
+designed, against content that its own detector could never have accepted,
+no matter how many more times it checked.
+
+The habit that found this was choosing to trust neither the log's silence
+nor the recording's picture on their own, and instead going one level lower
+than either: saving the *exact bytes* the waiting loop's own capture path
+produced (the panel's "Test region" button already existed for this, it
+had just never been reached for while the loop was silently failing) and
+feeding those, not a screen recording of the same area, into the same
+detector by hand. The two were not interchangeable. The recording located
+the board at native resolution without trouble; the app's own capture,
+of what should have been the identical screen at the identical moment,
+did not. `find_board_bbox`'s largest contour on the real capture was
+7,980px² - the individual number badges, nothing more - against the
+15%-of-frame area a board-sized contour needs. The board's own outer
+border was too faint, in absolute pixels at native capture size, for a
+fixed-radius Canny-and-dilate pass to ever close it into one shape.
+
+The part worth sitting with is that this exact failure mode already had a
+name, written down, in a completely different function. `_locate_board` -
+the locator `solve_image()` itself uses once it has committed to actually
+solving - carries a docstring that opens with "pre-scaling if its faint
+border is missed at 1x," backed by a three-step prescale ladder built for
+precisely this. The *cheap* pre-check that decides when to even start
+solving was written separately, later, for a different reason (reaction
+time, not correctness - see "The page could not keep up" for why it exists
+at all), and it re-derived the same "is a board here" question from
+scratch rather than reusing the answer the slower path had already worked
+out. It re-derived it *incompletely*: one scale, not three. Nothing in
+that gap was ever exercised by a fixture, because every fixture collected
+up to that point happened to have a border that survives at 1x - Patches
+included, most of the time. The one that did not simply never got tested,
+because nobody had gone looking for one until a real session produced it
+and a real capture, not a proxy for one, was saved and inspected.
+
+The fix adds back exactly one of `_locate_board`'s three steps - a retry
+at 1.75x when the native-scale check finds nothing - measured at 150.9ms
+worst case against 30.0ms before, still comfortably inside the poll
+budget, and paid only while genuinely nothing is on screen yet. The
+broader lesson is less about scale factors and more about where trust
+should sit: a screen recording of "the same" region is a recording of what
+a human would see there, not of what the program's own capture path
+actually receives, and the two can quietly diverge. When a detector's
+behaviour cannot be explained by its own code, the next step is not a
+recording of the screen - it is whatever the detector itself was actually
+given.
+
 ### Resuming a half-filled board
 
 If the user has already placed some crowns, or the automation was interrupted,

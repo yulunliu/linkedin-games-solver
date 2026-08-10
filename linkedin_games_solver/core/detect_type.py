@@ -47,7 +47,41 @@ QUEENS_FILLED_CELL_RATIO = 0.8
 ZIP_DARK_RATIO = 0.05
 #: Below this coloured ratio the board has no colour content at all -> Sudoku.
 #: 彩色像素比例低於此值代表盤面沒有彩色內容 -> Sudoku。
-NO_COLOR_RATIO = 0.006
+#:
+#: MEASURED 量測依據: the only live Mini Sudoku fixture on file
+#: (live_mini_sudoku_browser.png) measures 0.00366 - and if its ratio ever
+#: crossed the OLD 0.006 threshold, it would have fallen straight into the
+#: Tango branch, because its own colour content (the sub-box shading) is
+#: 88.7% orange/blue - comfortably over TANGO_HUE_RATIO. That is not a
+#: hypothetical: two real 2026-08-10 production runs (run_20260810_181407 and
+#: run_20260810_185005) show detect_type guessing "tango" for a board that
+#: only resolved as sudoku several seconds later via the fallback sweep,
+#: costing ~6-9s per occurrence while the real board sat on screen the whole
+#: time. 0.006 gave the fixture only a 1.6x margin - thin enough that
+#: ordinary capture variance (zoom, DPI scaling, anti-aliasing) could tip it
+#: over. Raised to 0.01: ~2.7x margin above the measured sudoku value, and
+#: still a ~2.6x margin below the smallest CORRECTLY-located non-sudoku
+#: fixture (S__104316931.jpg, tango, 0.02559) - see
+#: test_puzzle_type_detection and test_mini_sudoku_survives_extra_colour_noise.
+#: This only changes which type is TRIED FIRST; every module still requires
+#: its own unique-solution / sanity guard, so a wrong guess still fails
+#: cleanly rather than inventing an answer - raising this is a speed fix,
+#: not a loosened correctness gate.
+#: 實測依據：目前唯一的真實瀏覽器 Mini Sudoku 測試圖
+#: （live_mini_sudoku_browser.png）量到 0.00366——而它自己的彩色內容
+#: （子九宮格底色）有 88.7% 落在橘／藍色相，一旦超過舊門檻 0.006 就會直接
+#: 掉進 Tango 分支。這不是空想：兩筆 2026-08-10 的真實執行記錄
+#: （run_20260810_181407 與 run_20260810_185005）都顯示 detect_type 把
+#: Sudoku 猜成 tango，要等備援全掃過一輪、好幾秒後才靠備援機制解成
+#: sudoku——每次白燒 6~9 秒，而真正的棋盤其實整段時間都在畫面上。
+#: 0.006 只給這張測試圖 1.6 倍安全邊界——薄到一般擷取誤差（縮放、DPI、
+#: 反鋸齒）就可能跨過去。提高到 0.01 後：量到的 sudoku 數值上方有約 2.7 倍
+#: 邊界，下方離「正確定位到棋盤」的非 sudoku 測試圖裡最小值
+#: （S__104316931.jpg，tango，0.02559）還有約 2.6 倍邊界——見
+#: test_puzzle_type_detection 與 test_mini_sudoku_survives_extra_colour_noise。
+#: 這裡只影響「先試哪個類型」，每個模組仍然各自要求解唯一／合理性守門，
+#: 猜錯一樣會乾淨地失敗而不是編答案——這是速度修正，不是放寬正確性門檻。
+NO_COLOR_RATIO = 0.01
 #: Fraction of coloured pixels that must be orange-or-blue to be Tango.
 #: 彩色像素中「橘或藍」要佔多少才算 Tango。
 TANGO_HUE_RATIO = 0.75

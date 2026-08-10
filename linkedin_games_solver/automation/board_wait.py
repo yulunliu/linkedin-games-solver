@@ -27,15 +27,26 @@ not to answer "is anything board-shaped here yet" as fast as possible -
 running it every poll would burn CPU waiting for a page that has not loaded
 yet. Measured on a 640x700 region: the same locators solve_image() itself
 uses to find a board at all (find_board_bbox, find_board_by_grid_lines), at
-1x scale only, cost 1.4ms once a board is present and 18.7ms when nothing is
+1x scale only, cost 1.4ms once a board is present and 30.0ms when nothing is
 there yet (both locators get tried). That is cheap enough to poll often
 without the cost showing up anywhere a user would notice.
+
+UPDATE 2026-08-10: 1x alone is not always enough - see BORDER_RETRY_SCALE.
+When 1x finds nothing, one retry at 1.75x is tried before giving up on that
+poll, which raises the "nothing there yet" cost to 150.9ms (still under
+POLL_INTERVAL's own budget, and never paid once a board - at either scale -
+is actually present).
 solve_image() 完整的裁切 x 縮放階梯是設計來找出「正確答案」的，不是設計來
 盡快回答「這裡現在有沒有棋盤形狀的東西」——每次輪詢都跑一次階梯，
 只會在頁面根本還沒載入時空燒 CPU。實測 640x700 的擷取範圍：solve_image()
 自己用來定位棋盤的同一組定位器（find_board_bbox、find_board_by_grid_lines），
 只用 1 倍縮放，棋盤已經出現時要 1.4 毫秒，還沒出現時（兩種都要試）要
-18.7 毫秒。夠便宜，可以常常輪詢也不會讓使用者感覺到成本。
+30.0 毫秒。夠便宜，可以常常輪詢也不會讓使用者感覺到成本。
+
+更新 2026-08-10：只用 1 倍不一定夠——見 BORDER_RETRY_SCALE。1 倍找不到時
+會再用 1.75 倍重試一次才放棄這次輪詢，讓「還沒出現」的成本提高到
+150.9 毫秒（還是在 POLL_INTERVAL 自己的預算內，而且只要任一倍率真的找到
+棋盤就不會付這筆成本）。
 
 A false positive here (some other rectangular UI element gets mistaken for a
 board) is not dangerous - it just triggers one solve_image() attempt, which
@@ -50,6 +61,8 @@ from __future__ import annotations
 
 import time
 from typing import Callable
+
+import cv2
 
 from ..core import action_log, build_grid
 from ..core.board import find_board_by_grid_lines
@@ -110,12 +123,58 @@ STABLE_POLLS = 1
 #: 這種網，所以它保留穩定窗。
 GONE_STABLE_POLLS = 2
 
+#: Prescale tried when the 1x check finds nothing at all, before giving up on
+#: this poll. Same value as puzzles/__init__.py's _PRESCALE_STEPS[1] - this is
+#: the SAME problem _locate_board's docstring already names ("pre-scaling if
+#: its faint border is missed at 1x"), just reappearing here because this
+#: module's cheap check only ever tried 1x.
+#:
+#: MEASURED 量測依據: a real Patches capture (dist/img/Patches_20260810_2.png,
+#: 2026-08-10, saved via the "測範圍" button - i.e. the exact bytes
+#: BoardWatch's own capture path produces, not a screen recording) never
+#: locates at 1x - find_board_bbox's largest contour is 7,980px^2 against the
+#: 15%-of-frame threshold of 67,200px^2; Canny+dilate's fixed-size kernels
+#: only pick up the individual number badges (several ~57x57 squares), never
+#: the board's own faint outer line. At 1.75x the same capture locates
+#: cleanly (bbox area scales with pixels, but the border becomes thick enough
+#: in absolute pixels for the same fixed kernels to close it into one
+#: contour). Confirmed this is not a video-recording artefact: the SAME
+#: region, screen-recorded in LinkedIn_20260810_2_加速版.mp4 at the same
+#: nominal coordinates, DOES locate at 1x - only BoardWatch's own real
+#: capture needs the rescale, which is why this went unnoticed until a real
+#: capture was saved and inspected directly.
+#: Cost: measured over 30 calls on the real capture above (640x700, no board
+#: found at either scale - the worst case, since both scales are always
+#: tried): 1x alone averages 30.0ms; adding this 1.75x retry brings it to
+#: 150.9ms. Both stay well under POLL_INTERVAL's own budget - this only
+#: slows down polling while genuinely nothing is on screen yet, never once a
+#: board (at either scale) is found, and never during a fill.
+#: 同一顆問題 _locate_board 的文件字串早就取了名字（「淡色邊框在原尺寸抓不到
+#: 時先放大再找」）——這裡會重演，純粹是因為這個模組的便宜檢查一直只試
+#: 1 倍。量測依據：一張真實的拼塊擷取（dist/img/Patches_20260810_2.png，
+#: 2026-08-10，用面板上的「測範圍」按鈕存的——也就是 BoardWatch 自己擷取
+#: 路徑真正產生的位元組，不是螢幕錄影）在 1 倍下完全定位不到——
+#: find_board_bbox 找到的最大輪廓只有 7,980 平方像素，門檻（畫面 15%）是
+#: 67,200；Canny+dilate 固定尺寸的核只抓得到一顆顆數字標籤（幾個約 57x57
+#: 的正方形），抓不到棋盤本身那圈很淡的外框線。放大到 1.75 倍，同一張擷取
+#: 乾淨定位成功（bbox 面積隨像素數縮放，但外框線在絕對像素上變粗到同一組
+#: 固定核能把它接成一圈輪廓）。確認過這不是螢幕錄影的假象：同一個範圍，
+#: 用同樣的座標從 LinkedIn_20260810_2_加速版.mp4 錄影截出來，在 1 倍下就
+#: 定位得到——只有 BoardWatch 自己真正的擷取需要放大，這也是為什麼直到
+#: 真的存下一張真實擷取直接檢視之前，這個問題完全沒被發現。
+#: 成本：對著上面那張真實擷取（640x700，兩種倍率都找不到棋盤——兩種倍率
+#: 都一定會試到的最壞情況）量 30 次：只用 1 倍平均 30.0ms；加上這次
+#: 1.75 倍重試後變成 150.9ms。兩者都還在 POLL_INTERVAL 自己的預算之內——
+#: 這只會讓「畫面上真的還沒有任何東西」時的輪詢變慢，一旦任一倍率找得到
+#: 棋盤就不會多花這筆成本，填答期間也完全不會用到。
+BORDER_RETRY_SCALE = 1.75
 
-def _board_present(image) -> bool:
+
+def _board_present_at(image) -> bool:
     """A board counts as present only when a FULL grid - border AND interior
-    cell structure - can be located, at 1x only.
+    cell structure - can be located, at whatever scale `image` already is.
     只有在「完整」的棋盤——外框「加上」內部格線結構——都定位得到時，
-    才算棋盤存在。只用 1 倍縮放。
+    才算棋盤存在，用傳進來的這個縮放倍率判斷。
 
     WHY the full grid, not just a bounding box 為什麼要完整格線、不能只看外框:
     measured from a real session log (2026-08-06 19:47): the puzzle's entrance
@@ -141,6 +200,24 @@ def _board_present(image) -> bool:
         pass
     found = find_board_by_grid_lines(image)
     return found is not None
+
+
+def _board_present(image) -> bool:
+    """A board counts as present when _board_present_at succeeds at 1x, or -
+    if not - at BORDER_RETRY_SCALE. See BORDER_RETRY_SCALE for why the retry
+    exists: some boards' own border is too faint for either locator to close
+    into a contour at native capture resolution, no matter how long polling
+    continues, unless it is retried at a larger scale.
+    _board_present_at 在 1 倍下成功、或（不成功的話）在 BORDER_RETRY_SCALE
+    下成功，就算棋盤存在。為什麼需要這次重試見 BORDER_RETRY_SCALE 的說明：
+    某些棋盤自己的外框在原始擷取解析度下太淡，不管兩種定位器、也不管輪詢
+    多久，都接不成一圈輪廓，除非用更大的倍率重試。
+    """
+    if _board_present_at(image):
+        return True
+    scaled = cv2.resize(image, None, fx=BORDER_RETRY_SCALE, fy=BORDER_RETRY_SCALE,
+                         interpolation=cv2.INTER_CUBIC)
+    return _board_present_at(scaled)
 
 
 def wait_for_board(

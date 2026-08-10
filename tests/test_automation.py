@@ -928,6 +928,89 @@ def test_continuous_mode_alerts_and_stops_after_a_failed_round():
         print("  continuous mode alerts and stops after a failed round OK")
 
 
+def test_solve_failed_frame_is_saved_for_diagnosis():
+    """
+    Bug this guards: a 2026-08-10 Patches failure ("28 label(s) unreadable ...
+    tiling is ambiguous", every crop/scale in the ladder) could not be
+    root-caused afterwards because nothing kept the actual bytes the
+    recogniser saw - a hand screenshot taken around the same time solved
+    cleanly, proving it was not the same capture. This proves the fix: a
+    solve that exhausts every retry must save the LAST attempted capture
+    (the exact image `result` came from, not a fresh grab) to captures_dir()
+    and log where it went, mirroring the existing guard boardwatch_stop save.
+    這個測試守住的問題：2026-08-10 有一次 Patches 失敗（「28 個標籤讀不出來
+    …切法不唯一」，階梯裡每個裁切／縮放都試過）事後完全查不出根因，因為
+    沒有任何東西留住辨識器當時實際看到的位元組——差不多同時間手動截的圖
+    卻能乾淨解出來，證明根本不是同一張擷取畫面。這個測試驗證修正：重試
+    全部用盡後的失敗，必須把「最後一次嘗試」用的擷取畫面（也就是產生
+    `result` 的那張圖，不是重新擷取的新畫面）存進 captures_dir()，並在
+    記錄裡寫出存去哪裡，做法比照既有的守衛 boardwatch_stop 存檔。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver, from_file_image\n"
+        "from linkedin_games_solver.core import read_image\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "board = read_image(r'" + str(FIXTURES / 'live_queens_3.png') + "')\n"
+        "def grab():\n"
+        "    return from_file_image(board)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.hide_var.set(True)\n"
+        "app.settings['fullscreen'] = False\n"
+        "root.geometry('400x470+100+100')\n"
+        "root.update_idletasks()\n"
+        ""
+        "# Same guaranteed-failure technique as the repeated-failure alert test:\n"
+        "# forcing a real Queens fixture through Tango's solver fails cleanly on\n"
+        "# structural guards (test_recognition.py's 'wrong type does not fake\n"
+        "# success'), never on a threshold call, so this cannot flake.\n"
+        "app._worker(None, 'tango', True, capture_fn=grab, driver_kwargs=dict(dry_run=True))\n"
+        ""
+        "saved = list(captures_root.glob('solve_failed_*.png'))\n"
+        "assert len(saved) == 1, 'expected exactly one saved failure frame / 應該存下剛好一張失敗畫面: %r' % saved\n"
+        "print('FRAME_SAVED_OK')\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert translator('log_solve_failed_frame_saved') in log, log\n"
+        "print('LOG_MESSAGE_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "solve-failed diagnostic save is broken / 求解失敗診斷存檔有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  solve failed frame is saved for diagnosis OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in ("FRAME_SAVED_OK", "LOG_MESSAGE_OK")), out
+        print("  solve failed frame is saved for diagnosis OK")
+
+
 def test_harvest_calibration_candidates_only_saves_safe_ground_truth():
     """
     Guards _harvest_calibration_candidates' whole reason for existing: it
@@ -1046,5 +1129,6 @@ if __name__ == "__main__":
     test_region_monitor_size_only_restamps_when_the_region_actually_changes()
     test_resolution_change_warning_fires_only_when_sizes_differ()
     test_continuous_mode_alerts_and_stops_after_a_failed_round()
+    test_solve_failed_frame_is_saved_for_diagnosis()
     test_harvest_calibration_candidates_only_saves_safe_ground_truth()
     print("\nAll passed / 全部通過")

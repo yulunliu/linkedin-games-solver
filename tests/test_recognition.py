@@ -10,6 +10,8 @@ them as tests stops those bugs coming back.
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from linkedin_games_solver.core import detect_type, read_image  # noqa: E402
@@ -40,6 +42,7 @@ def test_puzzle_type_detection():
         ("live_queens_with_crowns.png", "queens"),
         ("live_tango.png", "tango"),
         ("live_patches.png", "patches"),
+        ("live_mini_sudoku_browser.png", "sudoku"),
         ("S__104316934_0.jpg", "queens"),
         ("S__104316931.jpg", "tango"),
         ("S__104316935_0.jpg", "sudoku"),
@@ -51,6 +54,54 @@ def test_puzzle_type_detection():
         got = detect_type(_load(name))
         assert got == expected, f"{name}: expected {expected}, got {got}"
     print(f"  puzzle type detection: {len(cases)} cases OK")
+
+
+def test_mini_sudoku_survives_extra_colour_noise():
+    """
+    Bug this guards: two real 2026-08-10 production runs (run_20260810_181407
+    and run_20260810_185005) show detect_type guessing "tango" for a genuine
+    Mini Sudoku board, which only resolved correctly several seconds later via
+    the fallback sweep - costing ~6-9s per occurrence while the real board sat
+    on screen the whole time (dist/logs). Measured cause: the only live
+    fixture on file, live_mini_sudoku_browser.png, has a coloured ratio
+    (sub-box shading) of 0.00366 against the OLD NO_COLOR_RATIO=0.006 - only a
+    1.6x margin - and that colour is itself 88.7% orange/blue, so crossing the
+    ratio threshold sent it straight into "tango" with no further check.
+    Ordinary capture variance (zoom, monitor DPI scaling, anti-aliasing) is
+    enough to cross a 1.6x margin.
+
+    This reproduces that class of variance by synthetically colouring an
+    extra ~0.34% of the image blue-ish, landing the ratio at ~0.0072 -
+    ABOVE the old 0.006 threshold (would have flipped to tango) but still
+    below the new NO_COLOR_RATIO=0.01. Must still resolve as sudoku.
+    這個測試守住的問題：兩筆真實 2026-08-10 執行記錄（run_20260810_181407
+    與 run_20260810_185005）顯示 detect_type 把一個真的 Mini Sudoku 盤面
+    猜成「tango」，要等備援掃描跑完好幾秒後才解對——每次白燒 6~9 秒，
+    而真正的棋盤其實整段時間都在畫面上（見 dist/logs）。量測到的原因：
+    目前唯一的真實測試圖 live_mini_sudoku_browser.png，彩色比例（子九宮格
+    底色）是 0.00366，對上舊門檻 NO_COLOR_RATIO=0.006 只有 1.6 倍安全邊界，
+    而且那個顏色本身有 88.7% 是橘／藍，一旦跨過比例門檻就會直接被當成
+    「tango」，不會再做任何檢查。一般擷取誤差（縮放、螢幕 DPI、反鋸齒）
+    就足以跨過 1.6 倍邊界。
+
+    這裡合成著色圖片裡額外約 0.34% 的像素成偏藍色，模擬那種誤差，讓比例落在
+    約 0.0072——「高於」舊門檻 0.006（照舊門檻會誤判成 tango），但「低於」
+    新門檻 NO_COLOR_RATIO=0.01。在新門檻下仍然必須解成 sudoku。
+    """
+    image = _load("live_mini_sudoku_browser.png").copy()
+    h, w = image.shape[:2]
+    rng = np.random.RandomState(0)
+    n_pixels = int(h * w * 0.0034)
+    ys = rng.randint(0, h, n_pixels)
+    xs = rng.randint(0, w, n_pixels)
+    image[ys, xs] = (200, 120, 60)  # BGR - saturated, blue-ish (matches the real hue mix)
+
+    got = detect_type(image)
+    assert got == "sudoku", (
+        f"expected sudoku to survive ordinary capture-variance-level colour "
+        f"noise, got {got}"
+    )
+    print("  mini sudoku survives extra colour noise: OK")
 
 
 # --------------------------------------------------------------- solving
@@ -480,6 +531,7 @@ def test_should_continue_cuts_a_failing_solve_short():
 if __name__ == "__main__":
     print("Recognition tests / 辨識測試")
     test_puzzle_type_detection()
+    test_mini_sudoku_survives_extra_colour_noise()
     test_all_five_puzzles_solve()
     test_live_queens_boards()
     test_live_tango_matches_screen()
