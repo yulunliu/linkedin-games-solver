@@ -44,7 +44,44 @@ from . import board as board_mod
 QUEENS_FILLED_CELL_RATIO = 0.8
 #: Dark-pixel ratio above this means thick black walls / dots -> Zip.
 #: 深色像素比例超過此值，代表有粗黑牆與黑色圓點 -> Zip。
-ZIP_DARK_RATIO = 0.05
+#:
+#: MEASURED 量測依據: a real 2026-08-11 production Zip board (captured from
+#: the session recording at the exact moment solve_image first ran on it,
+#: saved as tests/fixtures/zip_faint_walls_20260811.png) measures 0.0494 -
+#: just under the OLD 0.05 threshold, missing the Zip branch by a hair and
+#: falling through to the colour/hue checks, which then read it as tango
+#: (its own path is 97.2% blue). Confirmed against the real 2026-08-11
+#: session log: 12 straight tango-ladder attempts (all "multiple solutions"
+#: or "no solution") before a fallback-type sweep eventually reached zip -
+#: costing 5.8s, the entire measured gap between "puzzle detected" and the
+#: first mouse action that day. Lowered to 0.038: comfortably below the
+#: measured 0.0494 (1.3x margin) and comfortably above 0.0293, the highest
+#: dark-ratio value among every OTHER real fixture on file, including
+#: heavily-filled Patches boards (1.3x margin the other way) - see
+#: test_puzzle_type_detection and
+#: test_a_faint_walled_zip_board_is_not_misread_as_tango. This only changes
+#: which type is tried FIRST; every module still requires its own
+#: unique-solution/sanity guard, so a wrong guess still fails cleanly rather
+#: than inventing an answer - this is a speed fix, not a loosened
+#: correctness gate. Same class of fragility as NO_COLOR_RATIO below, just a
+#: different board falling through a different one of detect_type's checks.
+#: 實測依據：一個真實的 2026-08-11 正式執行 Zip 棋盤（在 solve_image 第一次
+#: 對它出手的那一刻，從螢幕錄影截下來，存成
+#: tests/fixtures/zip_faint_walls_20260811.png）量到 0.0494——只比舊門檻
+#: 0.05 低一點點，以毫釐之差沒進到 Zip 分支，落到彩色／色相檢查，然後被讀成
+#: tango（它自己的路徑有 97.2% 是藍色）。對照真實的 2026-08-11 執行記錄
+#: 確認：連續 12 次 tango 階梯嘗試（全部「多組解」或「無解」）才靠備援
+#: 類型全掃找到 zip——白燒 5.8 秒，正好是那天「偵測到題目」到「滑鼠第一次
+#: 動作」之間量到的全部空檔。降到 0.038：舒服地低於量到的 0.0494（1.3 倍
+#: 邊界），也舒服地高於 0.0293——目前所有其他真實測試圖裡最高的深色比例
+#: （包括填了很多的 Patches 盤面）（另一邊也是 1.3 倍邊界）——見
+#: test_puzzle_type_detection 與
+#: test_a_faint_walled_zip_board_is_not_misread_as_tango。這裡只改變
+#: 「先試哪個類型」——每個模組仍然各自要求解唯一／合理性守門，猜錯一樣會
+#: 乾淨地失敗而不是編答案；這是速度修正，不是放寬正確性門檻。跟下面
+#: NO_COLOR_RATIO 是同一類脆弱，只是另一個棋盤從 detect_type 另一道檢查
+#: 的縫隙漏過去。
+ZIP_DARK_RATIO = 0.038
 #: Below this coloured ratio the board has no colour content at all -> Sudoku.
 #: 彩色像素比例低於此值代表盤面沒有彩色內容 -> Sudoku。
 #:

@@ -68,6 +68,52 @@ review before shipping (see the Patches guard entry).
   失敗擷取（`tests/fixtures/patches_faint_border_20260810.png`）整個穿過
   `wait_for_board()` 釘住。
 
+### Fixed — Zip misdetected as Tango, costing 5.8s per occurrence Zip 被誤判成 Tango，每次白燒 5.8 秒
+
+- **`ZIP_DARK_RATIO` (0.05) missed a genuine Zip board by 0.0006 - a hair
+  under threshold - sending it into the colour/hue checks, where its own
+  path (97.2% blue) read as Tango.** Diagnosed from a real 2026-08-11
+  five-puzzle session where every puzzle eventually solved correctly, but a
+  user-supplied per-round timing table showed Zip alone taking 5.8s to
+  compute an answer that normally takes under half a second. The session
+  log showed the same signature as the earlier Sudoku-as-Tango bug: 12
+  straight tango-ladder attempts (all "multiple solutions" or "no
+  solution") before a fallback-type sweep eventually reached zip - and that
+  5.8s was the ENTIRE gap that day between "puzzle detected" and the first
+  mouse action, matching the user's own video-timed estimate almost
+  exactly. Root-caused by extracting the exact frame from the session
+  recording at the moment `solve_image` first ran on it (not a proxy
+  screenshot) and measuring directly: dark-pixel ratio 0.0494 against the
+  OLD `ZIP_DARK_RATIO=0.05`. Lowered to 0.038: 1.3x margin below the
+  measured 0.0494, and 1.3x margin above 0.0293, the highest dark-ratio
+  value among every other real fixture on file (including heavily-filled
+  Patches boards). Same class of fragility as the Sudoku fix above, just a
+  different board falling through a different one of `detect_type`'s
+  checks - confirmed via a full re-run of every fixture that this change
+  causes zero regressions. This only changes which type is tried first;
+  every puzzle module still requires its own unique-solution/sanity guard.
+  New regression test (`test_a_faint_walled_zip_board_is_not_misread_as_tango`)
+  pins the real near-miss capture
+  (`tests/fixtures/zip_faint_walls_20260811.png`).
+  **`ZIP_DARK_RATIO`（0.05）以 0.0006 之差，毫釐之差沒接住一個真的 Zip
+  棋盤，讓它落進彩色／色相檢查，被自己的路徑（97.2% 藍色）讀成
+  Tango。** 從一次真實的 2026-08-11 五題全部答對的執行診斷出來：使用者
+  提供的每輪時間表顯示，唯獨 Zip 求解花了 5.8 秒才算出答案——平常不到
+  半秒。執行記錄顯示的特徵跟先前 Sudoku 被誤判成 Tango 的問題一模一樣：
+  連續 12 次 tango 階梯嘗試（全部「多組解」或「無解」）才靠備援類型全掃
+  找到 zip——而那 5.8 秒正好是那天「偵測到題目」到「滑鼠第一次動作」
+  之間的全部空檔，跟使用者自己用影片量出來的估計幾乎完全吻合。找到根因
+  的方法：從螢幕錄影截出 `solve_image` 第一次對它出手那一刻的確切畫面
+  （不是替代品），直接實測：深色像素比例 0.0494，對上舊門檻
+  `ZIP_DARK_RATIO=0.05`。降到 0.038：低於量到的 0.0494 有 1.3 倍邊界，
+  高於目前所有其他真實測試圖裡最高的深色比例值 0.0293（包括填了很多的
+  Patches 盤面）也有 1.3 倍邊界。跟上面 Sudoku 那項修正是同一類脆弱，
+  只是另一個棋盤從 `detect_type` 另一道檢查的縫隙漏過去——把每一張測試圖
+  重新跑過一次確認這個改動零迴歸。這裡只改變「先試哪個類型」；每個謎題
+  模組仍然各自要求解唯一／合理性守門。新增回歸測試
+  （`test_a_faint_walled_zip_board_is_not_misread_as_tango`）釘住這次真實
+  的差點誤判擷取（`tests/fixtures/zip_faint_walls_20260811.png`）。
+
 ### Fixed — Mini Sudoku misdetected as Tango, costing 6-9s per occurrence 迷你數獨被誤判成 Tango，每次白燒 6~9 秒
 
 - **`detect_type`'s `NO_COLOR_RATIO` (0.006) gave a genuine Mini Sudoku board

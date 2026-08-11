@@ -10,11 +10,13 @@ them as tests stops those bugs coming back.
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from linkedin_games_solver.core import detect_type, read_image  # noqa: E402
+from linkedin_games_solver.core.detect_type import _board_roi  # noqa: E402
 from linkedin_games_solver.puzzles import patches, queens, solve_image  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -49,6 +51,7 @@ def test_puzzle_type_detection():
         ("S__104316936_0.jpg", "patches"),
         ("S__104316937_0.jpg", "zip"),
         ("puzzle_answer.png", "tango"),           # fully filled 全部填滿
+        ("zip_faint_walls_20260811.png", "zip"),  # faint walls, real near-miss 淡牆，真實的差點誤判
     ]
     for name, expected in cases:
         got = detect_type(_load(name))
@@ -102,6 +105,50 @@ def test_mini_sudoku_survives_extra_colour_noise():
         f"noise, got {got}"
     )
     print("  mini sudoku survives extra colour noise: OK")
+
+
+def test_a_faint_walled_zip_board_is_not_misread_as_tango():
+    """
+    Bug this guards: a real 2026-08-11 production run shows detect_type
+    guessing "tango" for a genuine Zip board, burning a full 12-attempt tango
+    ladder (all "multiple solutions" or "no solution") before a fallback-type
+    sweep eventually reached zip - 5.8s wasted, which was the ENTIRE measured
+    gap that day between "puzzle detected" and the first mouse action.
+    Root cause, measured directly on the exact frame captured from the
+    session recording at the moment solve_image first ran on it
+    (zip_faint_walls_20260811.png): dark-pixel ratio 0.0494, just under the
+    OLD ZIP_DARK_RATIO=0.05 - missing the Zip branch by a hair and falling
+    through to the colour/hue check, where its own path (97.2% blue) reads
+    as tango. Same class of fragility as
+    test_mini_sudoku_survives_extra_colour_noise, a different board falling
+    through a different one of detect_type's checks.
+    這個測試守住的問題：一個真實的 2026-08-11 正式執行顯示 detect_type 把一個
+    真的 Zip 棋盤猜成「tango」，燒完整條 12 次嘗試的 tango 階梯（全部「多組
+    解」或「無解」）才靠備援類型全掃找到 zip——白燒 5.8 秒，正好是那天
+    「偵測到題目」到「滑鼠第一次動作」之間量到的全部空檔。根因，直接對著
+    從螢幕錄影截下來、solve_image 第一次對它出手那一刻的畫面實測
+    （zip_faint_walls_20260811.png）：深色像素比例 0.0494，只比舊門檻
+    ZIP_DARK_RATIO=0.05 低一點點，以毫釐之差沒進到 Zip 分支，落到彩色／
+    色相檢查，它自己的路徑（97.2% 藍色）就被讀成 tango。跟
+    test_mini_sudoku_survives_extra_colour_noise 是同一類脆弱，只是另一個
+    棋盤從 detect_type 另一道檢查的縫隙漏過去。
+    """
+    image = _load("zip_faint_walls_20260811.png")
+    roi = _board_roi(image)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    dark_ratio = float((gray < 90).mean())
+    assert dark_ratio < 0.05, (
+        f"the near-miss fixture's dark ratio is no longer below the OLD "
+        f"0.05 threshold ({dark_ratio:.4f}) - this test's premise (the "
+        f"fixture reproduces a real near-miss) no longer holds, re-check "
+        f"against a fresh real capture / "
+        f"這張差點誤判的測試圖深色比例已經不再低於舊門檻 0.05"
+        f"（{dark_ratio:.4f}）——這個測試的前提（測試圖真的重現了一次真實的"
+        f"差點誤判）不再成立，請對照新的真實擷取重新確認"
+    )
+    got = detect_type(image)
+    assert got == "zip", f"expected zip, got {got}"
+    print("  a faint-walled zip board is not misread as tango: OK")
 
 
 # --------------------------------------------------------------- solving
@@ -532,6 +579,7 @@ if __name__ == "__main__":
     print("Recognition tests / 辨識測試")
     test_puzzle_type_detection()
     test_mini_sudoku_survives_extra_colour_noise()
+    test_a_faint_walled_zip_board_is_not_misread_as_tango()
     test_all_five_puzzles_solve()
     test_live_queens_boards()
     test_live_tango_matches_screen()
