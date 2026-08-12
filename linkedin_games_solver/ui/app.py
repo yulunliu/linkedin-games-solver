@@ -97,6 +97,25 @@ MAX_SOLVE_ATTEMPTS = 3
 #: 這半秒的影響可以忽略。
 SOLVE_RETRY_DELAY = 0.5
 
+#: Gap (pixels) between the parked cursor and the capture rectangle's edge -
+#: also the corner fallback's offset from the literal screen corner.
+#: 停放游標跟擷取矩形邊緣之間的間隔（像素）——同一個數字也用來當角落備案
+#: 離「螢幕角落像素本身」的偏移量。
+#:
+#: WHY NOT 0 為什麼不是 0: pyautogui's FAILSAFE aborts the moment the cursor
+#: sits on the LITERAL corner pixel (0,0) etc. - see input_driver.py's
+#: module docstring. A cursor sitting exactly on the capture rectangle's own
+#: edge is also a real (if smaller) risk: anti-aliasing at a cell boundary
+#: could still tint the outermost row/column of cells. 5px clears both with
+#: room to spare without meaningfully changing where "clear of the board"
+#: means - see _park_mouse_clear_of_capture.
+#: 為什麼不是 0：pyautogui 的 FAILSAFE 會在游標剛好停在角落那個像素本身
+#: （(0,0) 等）時中止——見 input_driver.py 的模組文件字串。游標剛好停在
+#: 擷取矩形自己的邊緣上也是一個（比較小的）真實風險：格子邊界的反鋸齒
+#: 仍然可能染到最外圍那一列/欄的格子。5 像素兩邊都有餘裕地避開，
+#: 也不會實質改變「離開棋盤」這件事的意思——見 _park_mouse_clear_of_capture。
+PARK_MARGIN_PX = 5
+
 #: Seconds to wait for the page to finish redrawing before the verify pass
 #: recaptures the screen, per speed tier.
 #: 驗證步驟重新擷取畫面之前，等網頁重畫完成的秒數，依速度檔各自設定。
@@ -732,6 +751,71 @@ class SolverApp:
         action_log.log("WARN", f"app window overlapped the capture region "
                         f"({left},{top},{w},{h}) - moved to ({new_x},{new_y})")
 
+    def _park_mouse_clear_of_capture(self):
+        """Tk-thread only. Move the OS mouse cursor outside the region about
+        to be captured and analysed - see InputDriver.park's own docstring
+        for the real 2026-08-12 Queens failure this guards against.
+        只能在 Tk 執行緒呼叫。把滑鼠游標移到即將被擷取、分析的範圍之外——
+        這裡在防的是哪一次真實的 2026-08-12 Queens 失敗，見
+        InputDriver.park 自己的文件字串。
+
+        Same "beside the capture rectangle, corner as last resort" logic as
+        _keep_window_clear_of_capture, deliberately kept the same shape so
+        the two do not silently disagree about what "clear" means - just
+        landing a cursor point instead of fitting a whole window, and always
+        moving (a resting cursor position is not knowable in advance the way
+        the app's own window position is, so there is nothing to check
+        first). The corner fallback is offset by PARK_MARGIN_PX, not (0,0) -
+        pyautogui's FAILSAFE aborts on the LITERAL corner pixel, and parking
+        there to avoid a hover tint would trade one failure mode for a worse
+        one.
+        跟 _keep_window_clear_of_capture 同一套「靠在擷取矩形旁邊，角落是
+        最後手段」的邏輯，刻意維持同樣的形狀，這樣兩者才不會悄悄對「清空」
+        這件事有不同的認定——差別只在這裡是放一個游標「點」，不是塞一整個
+        視窗，而且永遠都會移動（游標目前停在哪裡沒辦法像這個程式自己的
+        視窗位置那樣事先查得到，所以沒有東西可以先檢查）。角落備案偏移了
+        PARK_MARGIN_PX，不是 (0,0)——pyautogui 的 FAILSAFE 是在「那個角落
+        像素本身」中止，為了閃開 hover 卻真的停在那裡，等於拿一種失敗
+        換一種更糟的。
+
+        Fullscreen capture has no safe position - the capture IS the whole
+        monitor - so this is a no-op there, same reasoning as
+        _keep_window_clear_of_capture's own fullscreen branch.
+        全螢幕擷取沒有安全的位置——擷取範圍就是整個螢幕——所以這裡在全螢幕
+        模式下什麼都不做，跟 _keep_window_clear_of_capture 自己的全螢幕
+        分支是同一個道理。
+        """
+        if self.settings.get("fullscreen"):
+            return
+        try:
+            left, top, w, h = self._region()
+        except Exception:
+            return
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        if left + w + PARK_MARGIN_PX <= screen_w:
+            x, y = left + w + PARK_MARGIN_PX, top
+        elif top + h + PARK_MARGIN_PX <= screen_h:
+            x, y = left, top + h + PARK_MARGIN_PX
+        else:
+            x, y = PARK_MARGIN_PX, PARK_MARGIN_PX
+        try:
+            # This runs on the Tk thread (via _ui_wait), where an Aborted
+            # raised here would surface through Tkinter's own callback-error
+            # path instead of the worker thread's normal abort handling -
+            # confusing, not dangerous. A Stop pressed in this narrow window
+            # is caught a moment later anyway, by the next should_continue()
+            # check on the actual worker thread, so swallowing it here just
+            # skips this best-effort step rather than mishandling it.
+            # 這裡是透過 _ui_wait 在 Tk 執行緒上跑的，在這裡拋出的 Aborted
+            # 會走 Tkinter 自己的回呼例外路徑，不是工作執行緒正常的中止
+            # 處理——會讓人困惑，但不危險。在這個很窄的時間點按下停止，
+            # 稍後工作執行緒自己的下一次 should_continue() 檢查一樣會抓到，
+            # 這裡吞掉它只是跳過這個「盡力而為」的步驟，不是處理不當。
+            self.driver.park(x, y)
+        except Aborted:
+            pass
+
     def _alert_solve_failure(self):
         """Tk-thread only. Make a solve failure that has already exhausted
         its retries impossible to miss, even if the window is minimised or
@@ -978,6 +1062,19 @@ class SolverApp:
         """
         timings: dict[str, float] = {}
         started = time.perf_counter()
+        if capture_fn is not None:
+            # Move the mouse off the board before the capture solve_image
+            # will actually read colours from, then re-capture - the frame
+            # `shot` arrived with may still have the cursor sitting on the
+            # board (it was taken by wait_for_board's own poll, before this
+            # round ever ran). See _park_mouse_clear_of_capture's own
+            # docstring for why this matters.
+            # 在 solve_image 真正要讀顏色的那次擷取之前，先把滑鼠移出棋盤，
+            # 再重新擷取一次——傳進來的 `shot` 有可能游標還停在棋盤上
+            # （它是 wait_for_board 自己輪詢時拍的，比這一輪還早）。
+            # 為什麼要這樣做，見 _park_mouse_clear_of_capture 自己的文件字串。
+            self._ui_wait(self._park_mouse_clear_of_capture)
+            shot = capture_fn()
         self.shot = shot
         self._clear_stale_result()
         self._ui(self._show_image, shot.image)

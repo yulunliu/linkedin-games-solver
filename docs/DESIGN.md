@@ -448,6 +448,50 @@ behaviour cannot be explained by its own code, the next step is not a
 recording of the screen - it is whatever the detector itself was actually
 given.
 
+### The cursor left over from the last puzzle
+
+*(`speed-optimization` branch, not yet merged to `main`.)*
+
+A real 2026-08-12 Queens board failed with "colour grouping looks wrong" -
+one region read as split into a 31-cell blob plus a disconnected 4-cell
+island, and a separate cell measured a third colour entirely. Nothing about
+the board itself was unusual; the saved failure capture (see the diagnostic
+save two sections up) showed eight clean, well-formed colour blocks to a
+human eye. Region reading (above, "Colour regions: why not k-means") groups
+purely by measured colour on purpose - it is the only approach that survived
+being tried against this project's actual palette - and that same design
+has no way to tell "this cell's colour shifted for a reason" apart from "this
+cell really is a different region."
+
+The reason it shifted was on screen the whole time, once the session
+recording was checked against the exact moment of capture: the OS cursor was
+resting directly on the board. LinkedIn darkens whatever cell is under the
+pointer - ordinary `:hover` styling, not a bug on their end - and continuous
+mode moves from one puzzle straight into detecting the next, with no click of
+its own yet to relocate the cursor away from wherever the PREVIOUS puzzle's
+last click left it. Consecutive puzzles tend to render in similar screen
+coordinates, so that leftover position lands on the new board often enough to
+matter.
+
+No amount of tuning the colour-matching tolerance fixes this - the ambiguity
+is real at the pixel level; a hover-darkened cell and a genuinely different
+region are, for a colour-only reader, the same kind of evidence. The fix is
+to remove the cause instead of trying to detect its effect: move the cursor
+off the board before the capture that actually gets read, mirroring a
+pattern this codebase already had for a different actor sitting on the same
+spot - `_keep_window_clear_of_capture()` exists because the app's *own*
+window sat on top of a Sudoku board for an entire 2026-08-08 session,
+silently hiding a column of givens. `InputDriver.park(x, y)` (the only file
+allowed to move the mouse) is the cursor's equivalent: move without
+clicking, then `_round()` re-captures before solve_image ever runs. Same
+"beside the capture rectangle, corner as last resort" placement logic as the
+window-clearing function, deliberately kept the same shape so the two
+cannot silently disagree about what "clear" means - with one addition the
+window case does not need: the corner fallback sits `PARK_MARGIN_PX` off
+the literal corner pixel, because that exact pixel is where pyautogui's own
+FAILSAFE aborts a run, and dodging one failure mode by landing on another
+would not be a fix.
+
 ### Resuming a half-filled board
 
 If the user has already placed some crowns, or the automation was interrupted,

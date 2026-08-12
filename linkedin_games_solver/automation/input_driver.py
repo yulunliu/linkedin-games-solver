@@ -359,6 +359,47 @@ class InputDriver:
         self.log.append(message)
         action_log.log("ACTION", message)
 
+    def park(self, x: int, y: int):
+        """Move the cursor to (x, y) and leave it there - no click, no
+        settle-then-click pause. Used to get the OS mouse position off the
+        puzzle before a colour-sensitive read, never as part of a fill plan.
+        把游標移到 (x, y) 就停在那裡——不點擊，也不需要「停穩再點」的緩衝。
+        用在色彩敏感的讀取之前，把滑鼠移出棋盤，不是填答計畫的一部分。
+
+        WHY THIS EXISTS 為什麼需要這個: a real 2026-08-12 Queens board
+        (dist/img/solve_failed_queens_1786541966055.png) failed with "colour
+        grouping looks wrong" - one region was found split into a 31-cell
+        blob plus a disconnected 4-cell island, and a separate stray cell
+        measured a different colour again. Correlated against the session
+        recording: the OS cursor was sitting directly over the board's own
+        region at the exact capture moment - LinkedIn's own :hover styling
+        darkens whatever cell is under it, and read_regions() (queens.py)
+        has no way to tell a hover-tinted cell from a genuinely different
+        region, because by design it groups purely by measured colour (see
+        that module's own docstring on why - a color-tolerance check cannot
+        tell "hover changed this cell's shade" from "this cell really is a
+        different region" without knowing WHERE the ambiguity would be
+        expected, which is exactly what parking the mouse sidesteps: keep it
+        off the board and there is nothing for :hover to tint in the first
+        place.
+        為什麼需要這個：一次真實的 2026-08-12 Queens 棋盤
+        （dist/img/solve_failed_queens_1786541966055.png）失敗在「色塊分群
+        結果不合理」——其中一個色塊被拆成 31 格的主體加上不相連的 4 格
+        孤島，另外還有一格單獨量到了不同的顏色。對照螢幕錄影確認：擷取
+        的那一刻，滑鼠游標剛好停在棋盤自己的某個色塊上——LinkedIn 自己的
+        :hover 樣式會把游標底下那格的顏色變深，而 read_regions()
+        （queens.py）沒有辦法分辨「這格被 hover 改變深淺」跟「這格真的是
+        不同色塊」，因為它設計上就是單純照量到的顏色分群（原因見那個模組
+        自己的文件字串）——色差容忍度沒辦法在不知道「哪裡該有歧義」的
+        情況下分辨兩者，而把滑鼠移開棋盤，正好就繞過了這個問題：
+        沒有東西停在棋盤上，:hover 就沒有東西可以改變深淺。
+        """
+        self._check_abort()
+        self._record(f"park mouse away from the board ({x},{y})")
+        if not self.dry_run:
+            _gui().moveTo(x, y, duration=self.move_duration * self.slowdown)
+            self._pause(self.settle_after_move)
+
     def countdown(self, seconds: int, on_tick=None):
         for remaining in range(seconds, 0, -1):
             self._check_abort()

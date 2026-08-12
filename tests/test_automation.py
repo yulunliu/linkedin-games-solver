@@ -679,6 +679,184 @@ def test_the_window_cannot_sit_inside_the_capture_region():
         print("  the window cannot sit inside the capture region OK")
 
 
+def test_park_mouse_clear_of_capture_avoids_the_region_and_the_failsafe_corner():
+    """
+    Bug this guards: a real 2026-08-12 Queens board failed with "colour
+    grouping looks wrong" - one region read as split into a 31-cell blob
+    plus a disconnected 4-cell island, and a separate cell measured a third,
+    different colour again. Correlated against the session recording: the
+    OS cursor was sitting on the board at the exact capture moment -
+    LinkedIn's own :hover styling darkens whatever cell is under it, and
+    colour-based region reading has no way to tell that apart from a
+    genuinely different region. See InputDriver.park's own docstring for
+    the full story.
+    這個測試守住的問題：一次真實的 2026-08-12 Queens 棋盤失敗在「色塊分群
+    結果不合理」——其中一個色塊被讀成拆成 31 格的主體加上不相連的 4 格
+    孤島，另外還有一格單獨量到了第三種不同的顏色。對照螢幕錄影確認：
+    擷取的那一刻，滑鼠游標剛好停在棋盤上——LinkedIn 自己的 :hover 樣式
+    會把游標底下那格的顏色變深，而以顏色為準的色塊判讀沒有辦法把這個
+    跟「真的是不同色塊」分開來。完整脈絡見 InputDriver.park 自己的文件
+    字串。
+
+    Three configurations: room beside the region -> park just outside it;
+    no room anywhere -> the corner fallback, which must NOT be the literal
+    (0,0) pyautogui FAILSAFE pixel; fullscreen -> no safe position exists,
+    so this must be a no-op (nothing appended to the driver's log).
+    三種設定：旁邊有空間 -> 停在範圍外側緊鄰的地方；哪裡都沒空間 ->
+    角落備案，但不能是 pyautogui FAILSAFE 那個 (0,0) 像素本身；全螢幕 ->
+    沒有安全的位置，所以必須什麼都不做（driver 的記錄不會多出東西）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver\n"
+        "app = app_module.SolverApp(root)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.settings['fullscreen'] = False\n"
+        "screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()\n"
+        ""
+        "# 1) room to the right of the region -> parked just outside its right edge.\n"
+        "region = (200, 200, 640, 700)\n"
+        "app.x_var.set(str(region[0])); app.y_var.set(str(region[1]))\n"
+        "app.w_var.set(str(region[2])); app.h_var.set(str(region[3]))\n"
+        "app._park_mouse_clear_of_capture()\n"
+        "log_line = app.driver.log[-1]\n"
+        "assert 'park mouse' in log_line, f'no park action recorded / 沒有記錄到停放動作: {log_line!r}'\n"
+        "import re\n"
+        "mx, my = (int(v) for v in re.search(r'\\((\\d+),(\\d+)\\)', log_line).groups())\n"
+        "rl, rt, rw, rh = region\n"
+        "assert not (rl <= mx < rl + rw and rt <= my < rt + rh), f'parked INSIDE the region / 停在範圍裡面: ({mx},{my}) vs {region}'\n"
+        "assert mx >= rl + rw, f'expected beside the right edge / 預期在右邊緊鄰: {(mx, my)}'\n"
+        "print('BESIDE_REGION_OK')\n"
+        ""
+        "# 2) region fills the whole screen -> corner fallback, not the literal (0,0) FAILSAFE pixel.\n"
+        "app.driver.reset()\n"
+        "region2 = (0, 0, screen_w, screen_h)\n"
+        "app.x_var.set(str(region2[0])); app.y_var.set(str(region2[1]))\n"
+        "app.w_var.set(str(region2[2])); app.h_var.set(str(region2[3]))\n"
+        "app._park_mouse_clear_of_capture()\n"
+        "log_line2 = app.driver.log[-1]\n"
+        "mx2, my2 = (int(v) for v in re.search(r'\\((\\d+),(\\d+)\\)', log_line2).groups())\n"
+        "assert (mx2, my2) != (0, 0), 'parked on the literal pyautogui FAILSAFE corner / 停在 pyautogui FAILSAFE 的那個角落像素上'\n"
+        "print('CORNER_FALLBACK_NOT_FAILSAFE_OK')\n"
+        ""
+        "# 3) fullscreen -> no safe position exists, must be a no-op.\n"
+        "app.driver.reset()\n"
+        "app.settings['fullscreen'] = True\n"
+        "app._park_mouse_clear_of_capture()\n"
+        "assert len(app.driver.log) == 0, f'fullscreen must not park the mouse / 全螢幕模式不該停放滑鼠: {app.driver.log}'\n"
+        "print('FULLSCREEN_NOOP_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "mouse parking can still land inside the capture region or the FAILSAFE corner / 停放滑鼠仍然可能落在擷取範圍裡或 FAILSAFE 角落上:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  park mouse clear of capture avoids the region and the failsafe corner OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "BESIDE_REGION_OK", "CORNER_FALLBACK_NOT_FAILSAFE_OK", "FULLSCREEN_NOOP_OK",
+        )), out
+        print("  park mouse clear of capture avoids the region and the failsafe corner OK")
+
+
+def test_round_parks_the_mouse_and_recaptures_before_solving():
+    """
+    End-to-end companion to the unit-level park test above: a real round
+    must actually USE the feature, not just have it available. Forces a
+    guaranteed-clean solve (a real Queens fixture, correct type) and checks
+    that (a) the mouse was parked before solve_image ever ran, and (b) the
+    capture solve_image analysed was a FRESH one taken after parking, not
+    the (potentially cursor-tainted) frame wait_for_board handed in - proven
+    by capture_fn being called MORE than once even though nothing here ever
+    fails and needs a retry.
+    跟上面單元測試互補的端到端測試：真正的一輪求解，必須「真的用上」這個
+    功能，不能只是功能本身存在。強制一次保證乾淨的求解（真實的 Queens
+    測試圖、類型給對），檢查 (a) 滑鼠在 solve_image 開始跑之前就已經被
+    停放過，(b) solve_image 實際分析的是停放「之後」重新擷取的新畫面，
+    不是 wait_for_board 傳進來、可能還被游標影響的那一張——用
+    capture_fn 被呼叫超過一次來證明，即使這裡從頭到尾都沒有失敗、
+    不需要任何重試。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver, from_file_image\n"
+        "from linkedin_games_solver.core import read_image\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "board = read_image(r'" + str(FIXTURES / 'live_queens_3.png') + "')\n"
+        "calls = {'n': 0}\n"
+        "def grab():\n"
+        "    calls['n'] += 1\n"
+        "    return from_file_image(board)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.hide_var.set(True)\n"
+        "app.settings['fullscreen'] = False\n"
+        "root.geometry('400x470+100+100')\n"
+        "root.update_idletasks()\n"
+        ""
+        "outcome, text = app._round(grab(), 'queens', True, grab)\n"
+        "assert outcome == 'done', f'expected a clean solve, got {outcome!r}: {text!r}'\n"
+        "assert calls['n'] >= 2, f'expected capture_fn called again after parking (1 for the caller + at least 1 inside _round), got {calls[\"n\"]}'\n"
+        "park_index = next((i for i, line in enumerate(app.driver.log) if 'park mouse' in line), None)\n"
+        "assert park_index is not None, 'no park action recorded in the round / 這一輪沒有記錄到停放動作'\n"
+        "assert park_index == 0, f'park must be the FIRST driver action, before any click - got position {park_index} in {app.driver.log}'\n"
+        "print('PARKED_BEFORE_SOLVE_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "a round no longer parks the mouse before solving / 一輪求解不再會於求解前停放滑鼠:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  round parks the mouse and recaptures before solving OK (skipped - no display)")
+    else:
+        assert "PARKED_BEFORE_SOLVE_OK" in out, out
+        print("  round parks the mouse and recaptures before solving OK")
+
+
 def test_region_monitor_size_only_restamps_when_the_region_actually_changes():
     """
     Guards the resolution-change warning's ONE correctness requirement (see
@@ -1126,6 +1304,8 @@ if __name__ == "__main__":
     test_image_mode_needs_no_screen_packages()
     test_stop_interrupts_an_in_progress_solve()
     test_the_window_cannot_sit_inside_the_capture_region()
+    test_park_mouse_clear_of_capture_avoids_the_region_and_the_failsafe_corner()
+    test_round_parks_the_mouse_and_recaptures_before_solving()
     test_region_monitor_size_only_restamps_when_the_region_actually_changes()
     test_resolution_change_warning_fires_only_when_sizes_differ()
     test_continuous_mode_alerts_and_stops_after_a_failed_round()

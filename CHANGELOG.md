@@ -18,6 +18,62 @@ review before shipping (see the Patches guard entry).
 這些修正；其中三項在上線前被獨立的對抗性審查抓到問題並重做過
 （見 Patches 保護那一條）。
 
+### Added — park the mouse off the board before every solve, so :hover cannot tint a cell's colour 每次求解前先把滑鼠移出棋盤，避免 :hover 改變格子顏色
+
+- **A real 2026-08-12 Queens board failed with "colour grouping looks wrong"
+  - one region read as split into a 31-cell blob plus a disconnected
+  4-cell island, and a separate cell measured a third, different colour
+  again.** Correlated against the session recording: the OS cursor was
+  sitting directly on the board at the exact capture moment. LinkedIn's own
+  `:hover` styling darkens whatever cell is under the cursor, and
+  colour-based region reading (`queens.py`'s `read_regions`, by design -
+  see that module's own docstring) has no way to tell a hover-tinted cell
+  apart from a genuinely different region, because it groups purely by
+  measured colour. The board most likely inherited the cursor's resting
+  position from the PREVIOUS round's last click - continuous mode moves
+  straight from one puzzle to the next, and consecutive puzzles render in
+  similar screen coordinates.
+  Fixed at the source rather than by trying to detect hover after the fact:
+  `InputDriver.park(x, y)` (`input_driver.py` - the only file allowed to
+  move the mouse) moves the cursor without clicking, and `_round()`
+  (`ui/app.py`) now calls it - via a new `_park_mouse_clear_of_capture()`,
+  same "beside the capture rectangle, corner as last resort" logic as the
+  existing `_keep_window_clear_of_capture()` - and re-captures BEFORE
+  solve_image ever runs, on every round, in both continuous and single-shot
+  screen mode (a no-op in image mode, where there is no live mouse/screen).
+  The corner fallback is offset by `PARK_MARGIN_PX=5`, not `(0,0)` -
+  pyautogui's FAILSAFE aborts on the literal corner pixel, and parking
+  there to dodge a hover tint would trade one failure mode for a worse one.
+  Fullscreen capture has no safe position (the capture IS the whole
+  monitor) and is left as a documented, unaddressed residual, same as the
+  window-clearing feature's own fullscreen branch. New tests pin both the
+  positioning logic in isolation and that a real round actually uses it
+  (capture_fn called again, after parking, before solve_image - proven by
+  the call count, not by trusting the code path was taken).
+  **一次真實的 2026-08-12 Queens 棋盤失敗在「色塊分群結果不合理」——其中
+  一個色塊被讀成拆成 31 格的主體加上不相連的 4 格孤島，另外還有一格單獨
+  量到了第三種不同的顏色。** 對照螢幕錄影確認：擷取的那一刻，滑鼠游標
+  剛好停在棋盤上。LinkedIn 自己的 `:hover` 樣式會把游標底下那格的顏色
+  變深，而以顏色為準的色塊判讀（`queens.py` 的 `read_regions`，設計上
+  就是如此——見那個模組自己的文件字串）沒有辦法把「被 hover 改變深淺」
+  跟「真的是不同色塊」分開來，因為它單純照量到的顏色分群。這塊棋盤的
+  游標位置，最可能是從「上一輪」最後一次點擊繼承下來的——連續模式從
+  一題直接接到下一題，相鄰兩題常常畫在螢幕上很接近的座標。
+  修法從源頭下手，不是事後去偵測 hover：`InputDriver.park(x, y)`
+  （`input_driver.py`——唯一可以動滑鼠的檔案）只移動游標、不點擊，
+  `_round()`（`ui/app.py`）現在會呼叫它——透過新的
+  `_park_mouse_clear_of_capture()`，跟既有的 `_keep_window_clear_of_capture()`
+  同一套「靠在擷取矩形旁邊，角落是最後手段」邏輯——並且在 solve_image
+  真正開始跑「之前」重新擷取一次，每一輪都會做，連續模式跟單發模式的
+  螢幕模式都適用（圖片模式沒有真實的滑鼠／螢幕，直接跳過）。角落備案
+  偏移了 `PARK_MARGIN_PX=5`，不是 `(0,0)`——pyautogui 的 FAILSAFE 會在
+  那個角落像素本身中止，為了閃開 hover 卻真的停在那裡，等於拿一種失敗
+  換一種更糟的。全螢幕擷取沒有安全的位置（擷取範圍就是整個螢幕），
+  維持成一個有記錄下來、還沒處理的殘留限制，跟視窗清空功能自己的全螢幕
+  分支一樣。新增的測試同時釘住定位邏輯本身，以及「真的一輪求解確實有
+  用上它」（用 capture_fn 被呼叫的次數證明有在停放之後重新擷取，
+  不是單純相信程式碼路徑有被走到）。
+
 ### Fixed — Patches never detected while waiting, however long the wait 拼塊等待再久都偵測不到
 
 - **`wait_for_board()`'s cheap presence check only ever tried 1x scale, and
