@@ -18,6 +18,117 @@ review before shipping (see the Patches guard entry).
 這些修正；其中三項在上線前被獨立的對抗性審查抓到問題並重做過
 （見 Patches 保護那一條）。
 
+### Fixed — a guard abort silently ended continuous mode instead of moving on to the next puzzle 修正：守衛中止會讓連續模式悄悄停下來，而不是繼續下一題
+
+- **A real 2026-08-17 session solved three puzzles cleanly, then round 4
+  misread a stale, already-solved board as a fresh puzzle. The mid-plan
+  guard correctly rejected it - but continuous mode then silently stopped
+  instead of moving on, right as the user was opening the real next puzzle,
+  wasting the time it took them to notice and press Start again.** Root
+  cause: a guard abort latches the driver's `stop_requested` flag
+  (`InputDriver._check_abort`'s "latch, so nothing restarts it" - this
+  exists so a click cannot slip through after the guard rejects it).
+  `wait_for_board_gone()`, called right after `_round()` returns `"guard"`,
+  runs on that SAME driver instance - the next round's genuinely fresh one
+  is not built until the top of the next loop iteration - and reads that
+  exact latched flag as its `should_continue` check, so it returns
+  instantly (0 polls) and the loop's `if not wait_for_board_gone(...):
+  break` ends the WHOLE continuous run. This directly contradicted the
+  loop's own documented intent (`_round`'s docstring: "guard" is meant to
+  let continuous mode move on to the next puzzle, since a guard abort
+  usually just means the completion screen replaced the board). Fixed by
+  resetting the latch on that same driver instance the moment `"guard"`
+  comes back, before `wait_for_board_gone` runs - never on `"done"`, where
+  a latched `stop_requested` would mean the user pressed Stop mid-fill and
+  `wait_for_board_gone` should honour it (that path already returns
+  `"stop"` above and never reaches this code). Verified as a genuine fix,
+  not a plausible-looking one: the new regression test was run against the
+  code WITHOUT the fix first and confirmed it fails exactly as the real
+  incident did (`{'round': 1}` - the loop never reached round 2), then
+  passes with the fix restored.
+  **一次真實的 2026-08-17 遊玩乾淨解完三題後，第 4 輪誤讀了一個已經解完、
+  過期的棋盤當成新題目。填答中途的保護正確地拒絕了它——但連續模式接著
+  卻悄悄停了下來，而不是繼續下一題，剛好停在使用者正要打開下一題真正
+  題目的那一刻，浪費的是使用者發現、重新按下開始的那段時間。** 根本
+  原因：守衛中止會鎖住 driver 的 `stop_requested` 旗標
+  （`InputDriver._check_abort` 的「鎖定，不會被重啟」——這個設計是為了
+  確保保護拒絕之後不會再滑進一個動作）。`_round()` 回傳 `"guard"` 之後
+  立刻呼叫的 `wait_for_board_gone()`，用的是「同一個」driver 實例——
+  下一輪真正全新的實例要到下一次迴圈開頭才會建立——讀的正是那個已經
+  鎖住的旗標當作 `should_continue`，所以會立刻回傳（0 次輪詢），讓迴圈的
+  `if not wait_for_board_gone(...): break` 把整個連續流程結束掉。這直接
+  違背了迴圈自己文件寫的意圖（`_round` 的說明：`"guard"` 就是要讓連續
+  模式繼續下一題，因為守衛中止通常只代表完成畫面把棋盤換掉了）。修正
+  方式：在 `"guard"` 一回來、`wait_for_board_gone` 執行之前，就在同一個
+  driver 實例上重設這個鎖定——絕不對 `"done"` 這麼做，因為那種情況下
+  鎖住的 `stop_requested` 代表使用者在填答途中真的按了停止，
+  `wait_for_board_gone` 就該尊重它（那條路徑早就在上面被 `"stop"` 攔截，
+  永遠不會走到這裡）。驗證方式不只是「看起來合理」：新增的回歸測試先在
+  沒有這個修正的程式碼上跑過一次，確認它會像真實事故一樣失敗
+  （`{'round': 1}`——迴圈從未走到第 2 輪），修正補回去之後才通過。
+
+### Added — auto-harvest a "puzzle" / "answer" capture pair for every digit puzzle, not just Sudoku's unreadable cells 新增：自動存下三款數字題目的「題目／答案」成對畫面，不只數獨讀不回來的格子
+
+- **Every successful Sudoku, Zip or Patches solve now saves the exact,
+  pre-fill frame `solve_image` read - real material for a future
+  per-puzzle digit-template split (see the ROADMAP "shared thresholds"
+  item), not just the narrow got=None case the existing Sudoku-only
+  harvester (below) already covered.** Prompted by the observation that the
+  project's real digit-recognition data is thin and grows only when a
+  failure happens to occur and get saved - there was no path that
+  accumulated GOOD, clean examples on an ordinary successful day. The saved
+  frame is the puzzle's OWN rendering of its OWN digits (Sudoku's givens,
+  Zip's dot numbers, Patches' size labels) captured before any of our own
+  clicks or drags touch the board, so unlike the existing harvester below it
+  is not limited to one cell that happened to fail readback - a human
+  reviewing it later can crop and label every digit on the board. Screen
+  mode only (image mode already has its source file on disk); Queens and
+  Tango are skipped, since neither ever calls into `core/digits.py`. Saved
+  to the same `calibration_candidates/` folder as the existing harvester,
+  under the same rule: never fed into the digit templates automatically,
+  only reviewed by a human before anything reaches
+  `tools/calibrate_digits.py`.
+  **現在每一次 Sudoku、Zip 或 Patches 求解成功，都會存下 `solve_image`
+  當時實際讀到、填答前的那一張畫面——這是未來把三款題目數字範本各自拆分
+  獨立（見 ROADMAP「共用門檻」那一項）需要的真實素材，範圍比下面既有的
+  數獨限定收集（只收 got=None 那一種情況）更廣。** 起因是觀察到專案目前
+  真實的數字辨識資料很薄，而且只有在剛好發生失敗、又剛好被存下來時才會
+  變多——平常解題成功的日子完全沒有管道去累積「乾淨的正確範例」。存下的
+  畫面是題目自己畫出來的自己的數字（Sudoku 提示數字、Zip 圓點編號、
+  Patches 大小標籤），在我們自己的任何點擊或拖曳碰到棋盤之前擷取，所以
+  跟下面既有的收集機制不同，不會被限制在「剛好讀不回來的那一格」——
+  之後人工檢視時可以把整個棋盤上的每一個數字都裁切出來標記。只在螢幕
+  模式生效（圖片模式的來源檔案本來就已經在磁碟上）；跳過皇后與雙子星，
+  因為它們從來不會呼叫 `core/digits.py`。存進跟既有收集機制同一個
+  `calibration_candidates/` 資料夾，遵守同一條規則：絕不自動餵進數字
+  範本，一定要先有人看過，才會進到 `tools/calibrate_digits.py`。
+
+- **Each raw capture above is now paired with the computed-answer
+  overlay, so both "puzzle" and "answer" for the same round are saved
+  together.** Deliberately the overlay `render_overlay` already computes
+  for the on-screen preview - drawn on the pixels already in memory - not
+  a fresh post-fill screen re-capture. A real re-capture was considered
+  and rejected: Zip and Patches currently skip ALL post-fill verification
+  specifically to avoid the ~0.95s redraw-wait + re-capture cost
+  `verify.supports`'s own measurement documents (see ROADMAP item 3) -
+  adding one here for calibration purposes would quietly undo that saving
+  for two of the three puzzles this exists to help, while buying little:
+  Zip's drawn path and Patches' fill colour cover the very digits a
+  post-fill capture would otherwise be useful for. The overlay costs
+  nothing extra - already computed, no new capture or screen-mode
+  dependency needed to write it to disk.
+  **上面的每一張原始畫面，現在都會配上一張算出來的答案疊圖，讓同一輪
+  的「題目」跟「答案」成對存在一起。** 刻意用 `render_overlay` 本來就
+  已經為了畫面預覽算好的疊圖——畫在已經在記憶體裡的像素上——不是填答
+  完成後對網頁重新截一次螢幕。曾經考慮過真的重新截圖，但否決了：
+  Zip 與 Patches 現在完全跳過填答後的驗證，就是為了避開
+  `verify.supports` 自己量測記錄下來的那約 0.95 秒「等重畫＋重新擷取」
+  成本（見 ROADMAP 第三項）——為了校準用途在這裡加一次擷取，等於悄悄
+  把這個省下來的成本，在這個功能原本要幫助的三款題目裡的兩款上又加
+  回去，而且換到的價值有限：Zip 畫出來的路徑、Patches 填上的顏色，
+  剛好會蓋住填答後截圖原本該有用的那些數字。疊圖不用多花任何成本——
+  本來就已經算好了，寫進磁碟不需要任何新的擷取，也不依賴螢幕模式。
+
 ### Added — park the mouse off the board before every solve, so :hover cannot tint a cell's colour 每次求解前先把滑鼠移出棋盤，避免 :hover 改變格子顏色
 
 - **A real 2026-08-12 Queens board failed with "colour grouping looks wrong"

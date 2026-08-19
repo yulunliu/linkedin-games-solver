@@ -53,12 +53,21 @@ from ..puzzles import (
     CANCELLED,
     DISPLAY_ORDER,
     MIN_BOARD_PIXELS,
+    patches,
     puzzle_name,
     render_overlay,
     solve_image,
     sudoku,
+    zip_path,
 )
 from . import settings as settings_store
+
+#: The three puzzle types whose recognition reads digits (core/digits.py) -
+#: see _harvest_raw_board_capture. Queens and Tango never call into digit
+#: recognition at all.
+#: 三款會讀數字的題目（core/digits.py）——見 _harvest_raw_board_capture。
+#: 皇后與雙子星從來不會呼叫數字辨識。
+DIGIT_PUZZLE_KEYS = frozenset({sudoku.KEY, zip_path.KEY, patches.KEY})
 
 #: Preview is deliberately small so the message area always has room, and so the
 #: window stays compact enough to sit beside a browser while screen-recording.
@@ -1048,6 +1057,54 @@ class SolverApp:
                 # 預演只跑一輪就結束。
                 self._ui(self._finish, text)
                 return
+            if outcome == "guard":
+                # A guard abort LATCHES this round's driver.stop_requested
+                # (InputDriver._check_abort's "latch, so nothing restarts
+                # it") so a click cannot slip through after rejection - but
+                # wait_for_board_gone below runs on this SAME driver
+                # instance (the next round's genuinely fresh one is not
+                # built until the top of the next loop iteration) and reads
+                # that exact flag as its should_continue. Left alone, a
+                # guard abort - which in continuous mode usually just means
+                # the completion screen replaced the board, see _round's
+                # own "guard"-outcome comment - makes wait_for_board_gone
+                # return instantly (0 polls) and END THE WHOLE CONTINUOUS
+                # RUN instead of moving on to the next puzzle. A real
+                # 2026-08-17 session hit exactly this: round 4 misread a
+                # stale, already-solved board, the guard correctly rejected
+                # it, and continuous mode silently stopped while the user
+                # was opening the next real puzzle - wasting the time it
+                # took them to notice and restart. Reset the latch here, on
+                # the SAME instance, so the wait below reflects only a
+                # genuine Stop - never gated on outcome == "done", where
+                # stop_requested being True means the user pressed Stop
+                # during fill/verify and wait_for_board_gone SHOULD honour
+                # it (that path already returns "stop" above, never reaches
+                # here - see _round's docstring: "stop" is the only outcome
+                # that means the user, or an emergency, asked to end
+                # everything).
+                # 守衛中止會鎖住這一輪 driver 的 stop_requested
+                # （InputDriver._check_abort 的「鎖定，不會被重啟」），
+                # 確保拒絕之後不會再滑進一個動作——但下面的
+                # wait_for_board_gone 用的是「同一個」driver 實例
+                # （下一輪真正全新的 driver 要到下一次迴圈開頭才會建立），
+                # 讀的正是同一個旗標當作 should_continue。放著不管的話，
+                # 守衛中止——在連續模式下通常只代表完成畫面把棋盤換掉了，
+                # 見 _round 自己對 "guard" 結果的說明——會讓
+                # wait_for_board_gone 立刻回傳（0 次輪詢），把「整個連續
+                # 流程」結束掉，而不是繼續等下一題。2026-08-17 有一次真實
+                # 遊玩正好撞上：第 4 輪誤讀了一個已經解完、過期的棋盤，
+                # 守衛正確地拒絕了它，但連續模式卻在使用者正要打開下一題
+                # 真正的題目時悄悄停了下來——浪費的是使用者發現、重新按下
+                # 開始的那段時間。在這裡、同一個實例上重設鎖定，讓下面的
+                # 等待只會被真正的停止要求擋下——絕不對 outcome == "done"
+                # 這麼做，因為那種情況下 stop_requested 為 True 代表使用者
+                # 在填答/驗證途中真的按了停止，wait_for_board_gone 就該
+                # 尊重它（那條路徑其實早就在上面被 outcome == "stop" 攔截
+                # 走了，永遠不會走到這裡——見 _round 自己的文件字串：
+                # "stop" 是唯一代表「使用者（或緊急機制）要求全部結束」的
+                # 結果）。
+                self.driver.reset()
             self._ui(self.status_label.config, {"text": translator("status_waiting_next")})
             if not wait_for_board_gone(capture_fn, should_continue=alive):
                 break
@@ -1137,6 +1194,9 @@ class SolverApp:
             for line in result.info:
                 self._ui(self._log, f"  {line}")
 
+            if result.ok and capture_fn is not None:
+                self._harvest_raw_board_capture(shot.image, result.puzzle_key)
+
             if not result.ok:
                 if result.error == CANCELLED:
                     return "stop", translator("status_stopped")
@@ -1191,6 +1251,8 @@ class SolverApp:
             overlay = render_overlay(shot.image, result)
             if overlay is not None:
                 self._ui(self._show_image, overlay)
+            if capture_fn is not None:
+                self._harvest_overlay_capture(overlay, result.puzzle_key)
 
             self.mapper = BoardMapper(shot=shot, grid=result.grid)
             self._ui(self._log, f"  {self.mapper.describe()}")
@@ -1423,6 +1485,123 @@ class SolverApp:
                         f"filled ourselves but could not read back confidently "
                         f"({cells}) -> {path}")
         self._ui(self._log, f"  {translator('log_calibration_candidate_saved', n=len(unread))}")
+
+    def _harvest_raw_board_capture(self, image, puzzle_key):
+        """Save the pristine, pre-fill board capture for a puzzle whose
+        recognition depends on reading digits - real material for the
+        per-puzzle digit-template split described in ROADMAP item 8.
+        存下數字類題目「填答前、乾淨」的原始擷取畫面——ROADMAP 第八項
+        （把每款題目的數字範本拆分獨立）需要的真實素材。
+
+        ONLY Sudoku, Zip, Patches (DIGIT_PUZZLE_KEYS) - the only puzzles
+        that ever call into core/digits.py. Queens and Tango captures would
+        not help this.
+        只限 DIGIT_PUZZLE_KEYS 這三款——只有它們會呼叫 core/digits.py。
+        皇后與雙子星的畫面存了也沒用。
+
+        ONLY on a successful solve, and ONLY the exact frame `solve_image`
+        itself read to produce that result - before any of our own
+        clicks/drags have touched the board. This is a BETTER ground-truth
+        source than _harvest_calibration_candidates' filled-in cells: it is
+        the puzzle's own rendering of its own digits (Sudoku's givens,
+        Zip's dot numbers, Patches' size labels), not something typed by
+        InputDriver, so a human reviewing it later can label EVERY digit on
+        the board, not just the one cell that happened to fail readback.
+        只在求解成功時存，而且只存 solve_image 自己實際讀到、用來產生這次
+        成功結果的那一張畫面——在我們自己任何點擊/拖曳碰到棋盤之前。這比
+        _harvest_calibration_candidates 存的「自己填出來的格子」更好：這是
+        題目自己畫出來的自己的數字（Sudoku 提示數字、Zip 圓點編號、Patches
+        大小標籤），不是 InputDriver 打上去的，之後人工檢視時可以標記整個
+        棋盤上的每一個數字，不只是剛好讀不回來的那一格。
+
+        Screen mode only (the caller only reaches here when capture_fn is
+        not None) - image mode already has the source file on disk under a
+        name the user chose; saving a second copy here would not add
+        anything.
+        只在螢幕模式（呼叫端只有在 capture_fn 不是 None 時才會呼叫這裡）——
+        圖片模式的來源檔案本來就已經在磁碟上、用使用者自己取的檔名存著，
+        這裡再存一份不會多出任何東西。
+
+        Same folder and same "never fed automatically" rule as
+        _harvest_calibration_candidates - see that method's own docstring
+        and this project's core rule: no threshold or template change
+        without a human looking at real evidence first.
+        跟 _harvest_calibration_candidates 存在同一個資料夾，遵守同一條
+        「絕不自動餵進辨識」規則——見那個方法自己的文件字串，以及本專案的
+        核心規則：沒有人先看過真實證據，不能改動任何門檻或範本。
+        """
+        if puzzle_key not in DIGIT_PUZZLE_KEYS:
+            return
+        try:
+            folder = settings_store.calibration_candidates_dir()
+            path = folder / f"{puzzle_key}_raw_{int(time.time() * 1000)}.png"
+            if not write_image(str(path), image):
+                return
+        except Exception:
+            # Best-effort only - same reasoning as
+            # _harvest_calibration_candidates.
+            # 盡力而為——理由跟 _harvest_calibration_candidates 一樣。
+            return
+        action_log.log("CALIBRATE", f"saved a raw pre-fill board capture "
+                        f"for {puzzle_key} -> {path}")
+        self._ui(self._log, f"  {translator('log_raw_board_saved')}")
+
+    def _harvest_overlay_capture(self, overlay, puzzle_key):
+        """Save the computed-answer overlay alongside the raw board capture
+        _harvest_raw_board_capture already saved - a "puzzle" / "answer"
+        pair for the same digit puzzles, for the same future per-puzzle
+        digit-template work.
+        把算出來的答案疊圖，跟 _harvest_raw_board_capture 已經存下的原始
+        棋盤畫面配成一對——「題目」／「答案」——給同樣的未來每款題目
+        數字範本拆分工作用。
+
+        Deliberately the ALREADY-COMPUTED overlay (`render_overlay`'s
+        result, drawn on the pixels already in memory), not a fresh screen
+        capture of the page after filling. A real post-fill re-capture was
+        considered and explicitly rejected: Zip and Patches currently skip
+        all post-fill verification specifically to avoid the ~0.95s
+        redraw-wait + re-capture cost verify.supports's own measurement
+        documents (see ROADMAP item 3) - adding a capture here for
+        calibration purposes would quietly undo that saving for two of the
+        three puzzles this exists to help, and buys little in return: Zip's
+        drawn path and Patches' fill colour would cover the very digits a
+        post-fill capture would otherwise be useful for. The overlay costs
+        nothing extra to save - it is already computed for the on-screen
+        preview - and needs no new capture, sleep, or screen-mode
+        dependency to write to disk.
+        刻意用「已經算好」的疊圖（`render_overlay` 的結果，畫在已經在
+        記憶體裡的像素上），不是填答完成後對網頁重新截一次螢幕。曾經
+        考慮過真的重新截圖，但明確否決：Zip 與 Patches 現在完全跳過
+        填答後的驗證，就是為了避開 verify.supports 自己量測記錄下來的
+        那約 0.95 秒「等重畫＋重新擷取」成本（見 ROADMAP 第三項）——為了
+        校準用途在這裡加一次擷取，等於悄悄把這個省下來的成本，在這個
+        功能原本要幫助的三款題目裡的兩款上又加回去，而且換到的價值有限：
+        Zip 畫出來的路徑、Patches 填上的顏色，剛好會蓋住填答後截圖原本
+        該有用的那些數字。疊圖不用多花任何成本存——它本來就已經為了畫面
+        預覽算好了，寫進磁碟不需要任何新的擷取、等待，也不依賴螢幕模式。
+
+        Same DIGIT_PUZZLE_KEYS restriction, same folder, same "never fed
+        automatically" rule as _harvest_raw_board_capture - see that
+        method's own docstring.
+        跟 _harvest_raw_board_capture 一樣限定 DIGIT_PUZZLE_KEYS、存在同一個
+        資料夾、遵守同一條「絕不自動餵進辨識」規則——見那個方法自己的
+        文件字串。
+        """
+        if puzzle_key not in DIGIT_PUZZLE_KEYS or overlay is None:
+            return
+        try:
+            folder = settings_store.calibration_candidates_dir()
+            path = folder / f"{puzzle_key}_answer_{int(time.time() * 1000)}.png"
+            if not write_image(str(path), overlay):
+                return
+        except Exception:
+            # Best-effort only - same reasoning as
+            # _harvest_calibration_candidates.
+            # 盡力而為——理由跟 _harvest_calibration_candidates 一樣。
+            return
+        action_log.log("CALIBRATE", f"saved the computed-answer overlay "
+                        f"for {puzzle_key} -> {path}")
+        self._ui(self._log, f"  {translator('log_answer_overlay_saved')}")
 
     def _verify_and_retry(self, driver, max_rounds: int = 3):
         """Re-capture, compare, and re-click only what is still wrong.

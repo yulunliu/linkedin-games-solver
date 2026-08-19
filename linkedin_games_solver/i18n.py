@@ -143,6 +143,18 @@ _TEXTS: dict[str, dict[str, str]] = {
         "zh": "  已把 {n} 個我們自己填的、但辨識信心不足的格子存成未來數字"
               "校準的候選資料（不會自動生效）。",
     },
+    "log_raw_board_saved": {
+        "en": "  Saved the original board capture as a future digit-"
+              "calibration candidate (not used automatically).",
+        "zh": "  已存下原始棋盤畫面，作為未來數字校準的候選資料"
+              "（不會自動生效）。",
+    },
+    "log_answer_overlay_saved": {
+        "en": "  Saved the computed-answer overlay alongside it, as a "
+              "future digit-calibration candidate (not used automatically).",
+        "zh": "  已一併存下算出來的答案疊圖，作為未來數字校準的候選資料"
+              "（不會自動生效）。",
+    },
     "log_persistent_failure_hint": {
         "en": "All {n} attempts (each on a fresh screen capture) gave the "
               "exact same result. This does not look like a rendering-timing "

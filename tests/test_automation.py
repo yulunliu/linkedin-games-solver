@@ -1106,6 +1106,134 @@ def test_continuous_mode_alerts_and_stops_after_a_failed_round():
         print("  continuous mode alerts and stops after a failed round OK")
 
 
+def test_guard_abort_does_not_kill_continuous_mode():
+    """
+    Bug this guards: a real 2026-08-17 session solved three puzzles cleanly,
+    then round 4 misread a stale, already-solved board as a fresh puzzle -
+    the mid-plan guard correctly rejected it (InputDriver._check_abort's
+    "guard rejected the next action -> aborting plan"), but continuous mode
+    then silently stopped instead of moving on to the next puzzle, right as
+    the user was opening it - wasting the time it took them to notice and
+    press Start again.
+
+    Root cause: a guard abort LATCHES the driver's stop_requested flag (the
+    "latch, so nothing restarts it" comment in _check_abort) so a click
+    cannot slip through after rejection. wait_for_board_gone(), called right
+    after _round() returns "guard", runs on that SAME driver instance - the
+    next round's genuinely fresh one is not built until the top of the next
+    loop iteration - and reads that exact latched flag as its
+    should_continue check, so it returns instantly (0 polls) and the loop's
+    `if not wait_for_board_gone(...): break` ends the WHOLE continuous run.
+    The fix resets the latch on that same instance the moment "guard" comes
+    back, before wait_for_board_gone runs.
+
+    This test never touches real image recognition - it fakes _round()
+    directly to return "guard" then "stop", and fakes wait_for_board /
+    wait_for_board_gone to return exactly what their `should_continue`
+    argument evaluates to, mirroring the real functions' own short-circuit
+    behaviour. Without the fix, should_continue() (the `alive` closure)
+    reads the still-latched flag as False right after round 1's "guard",
+    wait_for_board_gone returns False, and round 2 never happens.
+    這個測試守住的問題：一次真實的 2026-08-17 遊玩乾淨解完三題後，第 4 輪
+    誤讀了一個已經解完、過期的棋盤當成新題目——填答中途的保護正確地拒絕了
+    它（InputDriver._check_abort 的「guard rejected the next action ->
+    aborting plan」），但連續模式接著卻悄悄停了下來，而不是繼續下一題——
+    剛好停在使用者正要打開下一題的那一刻，浪費的是使用者發現、重新按下
+    開始的那段時間。
+
+    根本原因：守衛中止會鎖住 driver 的 stop_requested 旗標
+    （_check_abort 裡「鎖定，不會被重啟」那句註解），確保拒絕之後不會再
+    滑進一個動作。_round() 回傳 "guard" 之後立刻呼叫的
+    wait_for_board_gone()，用的是「同一個」driver 實例——下一輪真正全新
+    的實例要到下一次迴圈開頭才會建立——讀的正是那個已經鎖住的旗標當作
+    should_continue，所以會立刻回傳（0 次輪詢），讓迴圈的
+    `if not wait_for_board_gone(...): break` 把整個連續流程結束掉。
+    修正在 "guard" 一回來、wait_for_board_gone 執行之前，就在同一個實例上
+    重設這個鎖定。
+
+    這個測試完全不碰真正的影像辨識——直接假造 _round() 依序回傳 "guard"
+    再 "stop"，並假造 wait_for_board / wait_for_board_gone，讓它們回傳的
+    值就是自己 `should_continue`參數算出來的結果，模擬真正函式自己的
+    短路行為。沒有這個修正的話，should_continue()（也就是 `alive`
+    closure）在第 1 輪的 "guard" 之後會讀到還鎖著的旗標、算出 False，
+    wait_for_board_gone 回傳 False，第 2 輪永遠不會發生。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "app.driver = InputDriver(dry_run=False)\n"
+        "app.driver.reset()\n"
+        ""
+        "calls = {'round': 0}\n"
+        "gone_calls = []\n"
+        "def fake_wait_for_board(capture_fn, should_continue=None):\n"
+        "    return object()  # any non-None 'shot' is enough for the loop\n"
+        "def fake_wait_for_board_gone(capture_fn, should_continue=None):\n"
+        "    result = should_continue()\n"
+        "    gone_calls.append(result)\n"
+        "    return result\n"
+        "def fake_round(shot, puzzle_key, fill_answers, capture_fn, wait_time=None):\n"
+        "    calls['round'] += 1\n"
+        "    if calls['round'] == 1:\n"
+        "        # Reproduce exactly what a real guard rejection leaves\n"
+        "        # behind on the driver - see InputDriver._check_abort.\n"
+        "        app.driver.stopped_by_guard = True\n"
+        "        app.driver._stop_requested = True\n"
+        "        return 'guard', 'stopped by guard'\n"
+        "    return 'stop', 'ended for the test'\n"
+        "app_module.wait_for_board = fake_wait_for_board\n"
+        "app_module.wait_for_board_gone = fake_wait_for_board_gone\n"
+        "app._round = fake_round\n"
+        ""
+        "app._worker(None, 'auto', True, capture_fn=lambda: object(), driver_kwargs=dict(dry_run=False))\n"
+        ""
+        "assert calls['round'] == 2, (\n"
+        "    'continuous mode stopped after the guard abort instead of moving on / '\n"
+        "    '連續模式在守衛中止之後就停了，沒有繼續下一輪: %r' % calls)\n"
+        "print('ROUND_2_REACHED_OK')\n"
+        "assert gone_calls == [True], (\n"
+        "    'wait_for_board_gone saw a still-latched stop flag right after '\n"
+        "    'the guard abort / wait_for_board_gone 在守衛中止之後看到的還是'\n"
+        "    '鎖住的停止旗標: %r' % gone_calls)\n"
+        "print('LATCH_RESET_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "a guard abort still kills continuous mode / 守衛中止還是會讓連續模式停下來:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  guard abort does not kill continuous mode OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "ROUND_2_REACHED_OK", "LATCH_RESET_OK",
+        )), out
+        print("  guard abort does not kill continuous mode OK")
+
+
 def test_solve_failed_frame_is_saved_for_diagnosis():
     """
     Bug this guards: a 2026-08-10 Patches failure ("28 label(s) unreadable ...
@@ -1288,6 +1416,160 @@ def test_harvest_calibration_candidates_only_saves_safe_ground_truth():
         print("  harvest calibration candidates only saves safe ground truth OK")
 
 
+def test_harvest_raw_board_capture_only_for_digit_puzzles():
+    """
+    Guards _harvest_raw_board_capture: it must save the pristine pre-fill
+    board for Sudoku, Zip and Patches (the only puzzles that read digits -
+    see core/digits.py), and must NOT save for Queens or Tango, which never
+    call into digit recognition at all.
+    守住 _harvest_raw_board_capture：必須為 Sudoku、Zip、Patches（唯三會讀
+    數字的題目——見 core/digits.py）存下填答前的乾淨畫面，且絕不能為皇后
+    或雙子星存——它們從來不會呼叫數字辨識。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.puzzles import sudoku, zip_path, patches, queens, tango\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "image = np.zeros((10, 10, 3), dtype='uint8')\n"
+        "candidates_dir = captures_root / 'calibration_candidates'\n"
+        ""
+        "# The three digit puzzles -> each saves exactly one raw capture.\n"
+        "for key in (sudoku.KEY, zip_path.KEY, patches.KEY):\n"
+        "    app._clear_log()\n"
+        "    app._harvest_raw_board_capture(image, key)\n"
+        "    matches = list(candidates_dir.glob(key + '_raw_*.png'))\n"
+        "    assert len(matches) == 1, 'expected one raw capture for %r / 應該存下一張原始畫面: %r' % (key, matches)\n"
+        "    log = app.log_text.get('1.0', 'end')\n"
+        "    assert translator('log_raw_board_saved') in log, log\n"
+        "print('DIGIT_PUZZLES_HARVESTED_OK')\n"
+        ""
+        "# Queens and Tango never read digits -> must NOT be saved.\n"
+        "before = len(list(candidates_dir.glob('*.png')))\n"
+        "app._harvest_raw_board_capture(image, queens.KEY)\n"
+        "app._harvest_raw_board_capture(image, tango.KEY)\n"
+        "after = len(list(candidates_dir.glob('*.png')))\n"
+        "assert after == before, 'a non-digit puzzle was harvested / 非數字題目也被存了: before=%r after=%r' % (before, after)\n"
+        "print('NON_DIGIT_PUZZLES_NOT_HARVESTED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "raw board capture harvesting is broken / 原始棋盤畫面收集有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  harvest raw board capture only for digit puzzles OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "DIGIT_PUZZLES_HARVESTED_OK", "NON_DIGIT_PUZZLES_NOT_HARVESTED_OK",
+        )), out
+        print("  harvest raw board capture only for digit puzzles OK")
+
+
+def test_harvest_overlay_capture_only_for_digit_puzzles():
+    """
+    Guards _harvest_overlay_capture: it must save the already-computed
+    answer overlay for Sudoku, Zip and Patches, must NOT save for Queens or
+    Tango, and must NOT save when there is no overlay to save (None - the
+    same thing render_overlay itself returns on failure).
+    守住 _harvest_overlay_capture：必須為 Sudoku、Zip、Patches 存下已經算好
+    的答案疊圖，絕不能為皇后或雙子星存，也絕不能在沒有疊圖可存時存
+    （None——跟 render_overlay 失敗時自己回傳的東西一樣）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.puzzles import sudoku, zip_path, patches, queens, tango\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "overlay = np.zeros((10, 10, 3), dtype='uint8')\n"
+        "candidates_dir = captures_root / 'calibration_candidates'\n"
+        ""
+        "# The three digit puzzles -> each saves exactly one overlay.\n"
+        "for key in (sudoku.KEY, zip_path.KEY, patches.KEY):\n"
+        "    app._clear_log()\n"
+        "    app._harvest_overlay_capture(overlay, key)\n"
+        "    matches = list(candidates_dir.glob(key + '_answer_*.png'))\n"
+        "    assert len(matches) == 1, 'expected one overlay for %r / 應該存下一張疊圖: %r' % (key, matches)\n"
+        "    log = app.log_text.get('1.0', 'end')\n"
+        "    assert translator('log_answer_overlay_saved') in log, log\n"
+        "print('DIGIT_PUZZLES_HARVESTED_OK')\n"
+        ""
+        "# Queens and Tango never read digits -> must NOT be saved.\n"
+        "before = len(list(candidates_dir.glob('*.png')))\n"
+        "app._harvest_overlay_capture(overlay, queens.KEY)\n"
+        "app._harvest_overlay_capture(overlay, tango.KEY)\n"
+        "after = len(list(candidates_dir.glob('*.png')))\n"
+        "assert after == before, 'a non-digit puzzle was harvested / 非數字題目也被存了: before=%r after=%r' % (before, after)\n"
+        "print('NON_DIGIT_PUZZLES_NOT_HARVESTED_OK')\n"
+        ""
+        "# No overlay (render_overlay failed) -> must NOT be saved.\n"
+        "before2 = len(list(candidates_dir.glob('*.png')))\n"
+        "app._harvest_overlay_capture(None, sudoku.KEY)\n"
+        "after2 = len(list(candidates_dir.glob('*.png')))\n"
+        "assert after2 == before2, 'a None overlay was harvested / None 疊圖也被存了: before=%r after=%r' % (before2, after2)\n"
+        "print('NO_OVERLAY_NOT_HARVESTED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "answer overlay harvesting is broken / 答案疊圖收集有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  harvest overlay capture only for digit puzzles OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "DIGIT_PUZZLES_HARVESTED_OK", "NON_DIGIT_PUZZLES_NOT_HARVESTED_OK",
+            "NO_OVERLAY_NOT_HARVESTED_OK",
+        )), out
+        print("  harvest overlay capture only for digit puzzles OK")
+
+
 if __name__ == "__main__":
     print("Automation tests / 自動化測試")
     test_queens_resumes_half_done_board()
@@ -1309,6 +1591,9 @@ if __name__ == "__main__":
     test_region_monitor_size_only_restamps_when_the_region_actually_changes()
     test_resolution_change_warning_fires_only_when_sizes_differ()
     test_continuous_mode_alerts_and_stops_after_a_failed_round()
+    test_guard_abort_does_not_kill_continuous_mode()
     test_solve_failed_frame_is_saved_for_diagnosis()
     test_harvest_calibration_candidates_only_saves_safe_ground_truth()
+    test_harvest_raw_board_capture_only_for_digit_puzzles()
+    test_harvest_overlay_capture_only_for_digit_puzzles()
     print("\nAll passed / 全部通過")

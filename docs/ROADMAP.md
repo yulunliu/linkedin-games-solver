@@ -471,6 +471,129 @@ Blocked on having the right screenshot, not on any code.
 
 ---
 
+## 7. Zip's drag can outrun the page and draw the wrong path
+
+*(Found on `speed-optimization`, not yet on `main`.)*
+
+### The problem
+
+A real 2026-08-14 session: `solve_image` computed the correct answer, the
+drag executed (49 interpolated points), and LinkedIn's own page rejected it -
+a visible red banner reading "哎呀！您必須按照數字的順序。" (Oops, you must
+follow the numbers in order), with most of the board filled in a pattern that
+does not follow the 1→13 sequence. The answer was right; what actually got
+drawn on the page was not.
+
+`drag_step_delay` at the "fastest" tier is 0.007s. A 13-number Zip path
+interpolated into 49 points completes in roughly 49 × 0.007 ≈ 0.34s of raw
+step delay - fast enough that the page's own per-cell hover/dragover
+handling plausibly cannot keep up on a long, winding path, even though the
+same speed tier handles shorter drags (and every other puzzle's clicks)
+without incident.
+
+### Why it matters
+
+Zip has no post-fill verification by design (`verify.py`'s own docstring:
+its answer is a drawn path, not something the recognisers read back), so
+this class of failure is invisible to the program. It fills, reports done,
+and moves on - the only way this was caught at all was a human watching the
+screen recording. A retry of the same puzzle at normal speed succeeded
+cleanly (`board gone` in 2.10s, versus 16.26s of the page stuck mid-transition
+after the failed attempt) - one data point suggesting the drag speed is the
+actual variable, not the puzzle or the page being unusually slow that day,
+but one data point is not a measurement.
+
+### Planned
+
+1. **Measure, not guess.** Reproduce with a scripted/stubbed drag at
+   several `drag_step_delay` values against a real Zip board of comparable
+   length (13 numbers), and find where the failure stops reproducing - the
+   same "measure before touching a speed constant" discipline every other
+   timing constant in this branch has been held to.
+2. **Consider scaling delay with path length**, not just puzzle type - a
+   3-number Zip and a 13-number Zip currently get the same per-step delay;
+   the failure so far has only been seen on the longer one.
+3. **Whatever the fix, it must not regress `03-CALIBRATION.md`'s existing
+   speed-tier measurements** for the other four puzzles, which were
+   real-play-validated at the current values.
+
+Blocked on collecting more real Zip failures/successes across a range of
+path lengths before changing a shared timing constant - one incident is a
+lead, not yet a calibration.
+
+---
+
+## 8. Sudoku, Zip and Patches' digit templates and thresholds are shared, not per-puzzle
+
+*(Found on `speed-optimization`, not yet on `main`.)*
+
+### The problem
+
+A real 2026-08-14 Patches failure: a clearly legible "6" badge scored 0.9722
+against the "6" template - comfortably above `MIN_SCORE=0.90` - but was
+still rejected, because "5" scored 0.9573, a margin of 0.0148 against a
+required `max(MIN_MARGIN, MIN_RELATIVE_MARGIN * (1 - best_score))` of
+0.0223. `classify_glyph` correctly refused to guess - that part worked
+exactly as designed - but the label was thrown away for the whole round.
+
+`core/digits.py`'s templates are already organised by digit, not by puzzle -
+`_load_templates()` accepts contributions from any source and
+`classify_glyph` always takes the best-scoring variant per digit, so adding
+more real templates is close to risk-free by construction. The genuinely
+shared, genuinely risky part is the three threshold constants
+(`MIN_SCORE`, `MIN_MARGIN`, `MIN_RELATIVE_MARGIN`) - one global value each,
+applied to Sudoku's, Zip's and Patches' classification decisions alike.
+Loosening them to let this Patches "6" through would loosen them for
+Sudoku and Zip too, with no way to measure the blast radius from inside
+Patches' own test fixtures.
+
+### Why it matters
+
+Today's specific case degrades safely (an unreadable-but-not-wrong label,
+same as item 5's 0/7 gap) - but every future attempt to sharpen Patches'
+digit reading runs into the same wall: any threshold change is a change to
+all three puzzles' acceptance bar, whether intended or not.
+
+### Planned
+
+1. **Split templates and thresholds into three independent, per-puzzle
+   sets.** Templates already need no more than reorganising by puzzle
+   (currently flat, digit-keyed); thresholds need `classify_glyph` and
+   `read_number` (`core/digits.py`) to accept a puzzle identity, with
+   `sudoku.py` / `zip_path.py` / `patches.py` each passing their own -
+   contained to those files plus `tools/calibrate_digits.py`, nothing in
+   `detect_type`, grid detection, or any other puzzle's logic.
+2. **Seed the new Sudoku and Zip pools from the CURRENT shared set**, so the
+   split itself changes nothing observable for either - a pure refactor,
+   verified with the existing fixtures before any new data goes in.
+3. **Collect real Patches "5" and "6" badge captures** (today's failing
+   round is one) and re-measure the pairwise template distances for Patches
+   specifically, the same protocol `MIN_MARGIN`'s own docstring already
+   used for the shared set. **A collection mechanism for this now exists**:
+   every successful Sudoku, Zip or Patches solve saves its pristine
+   pre-fill capture to `calibration_candidates/` (`ui/app.py`'s
+   `_harvest_raw_board_capture`, added on `speed-optimization` after item
+   7/8 were first recorded) - still needs a human to review, crop and
+   label before anything reaches `tools/calibrate_digits.py`, but the
+   "there is nowhere real data accumulates on an ordinary day" gap this
+   item used to describe is closed.
+4. **Only then consider loosening Patches' own threshold** - never the
+   shared ones - backed by that measurement, exactly the way every other
+   threshold in this project has been changed.
+5. **Cheaper thing worth trying first, independent of the above:** Patches
+   never passes `allowed=` to `classify_glyph`, unlike Sudoku (which
+   already restricts candidates to `1..n` and measurably widens its
+   margins by doing so - see `MIN_MARGIN`'s own docstring). A Patches label
+   is bounded by the board's cell count; narrowing candidates the same way
+   might widen today's 6-vs-5 margin with no template or threshold changes
+   at all, and is worth measuring before the larger split.
+
+Not started - recorded for when more real Patches digit failures have been
+collected, per the user's explicit call to defer rather than change a
+shared threshold on one data point.
+
+---
+
 ## Not planned
 
 - **DOM automation.** Reading LinkedIn's HTML would be easier and more robust
