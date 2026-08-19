@@ -37,6 +37,8 @@ _TEXTS: dict[str, dict[str, str]] = {
     "puzzle_type": {"en": "Puzzle", "zh": "謎題類型"},
     "auto_detect": {"en": "Auto-detect", "zh": "自動判斷"},
     "speed": {"en": "Speed", "zh": "速度"},
+    "speed_fastest": {"en": "Fastest", "zh": "超急快"},
+    "speed_faster": {"en": "Faster", "zh": "極快"},
     "speed_fast": {"en": "Fast", "zh": "快"},
     "speed_normal": {"en": "Normal", "zh": "標準"},
     "speed_slow": {"en": "Slow", "zh": "慢"},
@@ -62,8 +64,33 @@ _TEXTS: dict[str, dict[str, str]] = {
     "status_failed": {"en": "Recognition failed", "zh": "辨識失敗"},
     "status_error": {"en": "Error", "zh": "發生錯誤"},
     "status_stopping": {"en": "Stopping...", "zh": "停止中..."},
+    "status_waiting_board": {
+        "en": "Watching the screen - open the puzzle now...",
+        "zh": "偵測畫面中——現在去開啟題目...",
+    },
+    "status_waiting_next": {
+        "en": "Round finished - open the next puzzle, or press Stop...",
+        "zh": "本輪結束——請開啟下一題，或按停止...",
+    },
+    "status_solve_failed_stopped": {
+        "en": "Recognition failed - stopped, please check",
+        "zh": "辨識失敗——已自動停止，請確認畫面",
+    },
     # ---- Log messages 訊息 ----
     "log_file": {"en": "Session log file", "zh": "本次執行的記錄檔"},
+    "log_waiting_hint": {
+        "en": "Continuous mode: every puzzle that appears in the capture region "
+              "gets solved and filled automatically, one after another, until "
+              "you press Stop. Open the first puzzle now.",
+        "zh": "連續模式：擷取範圍內每出現一題就會自動求解並填答，一題接一題，"
+              "直到你按「停止」為止。現在請開啟第一題。",
+    },
+    "log_board_appeared": {"en": "Puzzle appeared after", "zh": "題目出現，等待了"},
+    "log_round": {"en": "Round {n}", "zh": "第 {n} 輪"},
+    "log_solve_retry": {
+        "en": "Recognition failed - retrying on a fresh capture",
+        "zh": "辨識失敗——重新擷取畫面再試一次",
+    },
     "log_puzzle_type": {"en": "Puzzle type", "zh": "謎題類型"},
     "log_plan": {"en": "=== Fill plan ===", "zh": "=== 填答計畫 ==="},
     "log_elapsed": {"en": "Elapsed", "zh": "耗時"},
@@ -82,6 +109,10 @@ _TEXTS: dict[str, dict[str, str]] = {
     "log_guard_frame_saved": {
         "en": "  Saved the frame that triggered the stop",
         "zh": "  已存下觸發停止的那一張畫面",
+    },
+    "log_solve_failed_frame_saved": {
+        "en": "  Saved the capture recognition failed on, for later diagnosis",
+        "zh": "  已存下辨識失敗當時的擷取畫面，供事後排查",
     },
     "log_failsafe": {
         "en": "  Stopped: the mouse hit a screen corner (pyautogui's fail-safe).",
@@ -104,6 +135,50 @@ _TEXTS: dict[str, dict[str, str]] = {
     "log_fail_hint": {
         "en": "Press 'Test' to confirm the board is fully captured, or 'Save' to keep the image for debugging.",
         "zh": "可以先按「測範圍」確認棋盤有被完整擷取到，或按「存圖」把畫面存起來以便排查。",
+    },
+    "log_calibration_candidate_saved": {
+        "en": "  Saved {n} cell(s) we filled ourselves but could not read "
+              "back confidently, as a future digit-calibration candidate "
+              "(not used automatically).",
+        "zh": "  已把 {n} 個我們自己填的、但辨識信心不足的格子存成未來數字"
+              "校準的候選資料（不會自動生效）。",
+    },
+    "log_raw_board_saved": {
+        "en": "  Saved the original board capture as a future digit-"
+              "calibration candidate (not used automatically).",
+        "zh": "  已存下原始棋盤畫面，作為未來數字校準的候選資料"
+              "（不會自動生效）。",
+    },
+    "log_answer_overlay_saved": {
+        "en": "  Saved the computed-answer overlay alongside it, as a "
+              "future digit-calibration candidate (not used automatically).",
+        "zh": "  已一併存下算出來的答案疊圖，作為未來數字校準的候選資料"
+              "（不會自動生效）。",
+    },
+    "log_persistent_failure_hint": {
+        "en": "All {n} attempts (each on a fresh screen capture) gave the "
+              "exact same result. This does not look like a rendering-timing "
+              "issue - it may mean some digits or icons on this screen are "
+              "drawn differently from the calibrated reference images.",
+        "zh": "全部 {n} 次嘗試（每次都用新擷取的畫面）得到完全相同的結果。"
+              "這看起來不像是畫面還沒渲染完的暫時性問題——可能是這個畫面上"
+              "的某些數字或圖示，跟目前校準用的參考畫面畫法不太一樣。",
+    },
+    "log_solve_failed_alert": {
+        "en": "Recognition still failed after {n} attempts on this puzzle. "
+              "Continuous mode has been stopped so this is not missed - check "
+              "the puzzle is fully visible in the capture region, or press "
+              "'Test' to inspect it, then press 'Solve & Fill' again.",
+        "zh": "這一題辨識重試 {n} 次後仍然失敗。已自動停止連續模式，避免這個情況"
+              "沒被發現——請確認題目是否完整落在擷取範圍內，或按「測範圍」檢查"
+              "畫面，確認沒問題後再按一次「開始自動解答」。",
+    },
+    "log_resolution_changed": {
+        "en": "Screen size looks different from when the capture region was "
+              "last set (was {old}, now {new}). If solving fails, press "
+              "'Reset' or 'Test' to recalibrate.",
+        "zh": "目前螢幕尺寸跟上次設定擷取範圍時不一樣（當時 {old}，現在 "
+              "{new}）。如果解不出題目，請按「預設」或「測範圍」重新校準。",
     },
     # ---- Dialogs 對話框 ----
     "dlg_capture_failed": {"en": "Capture failed", "zh": "擷取失敗"},

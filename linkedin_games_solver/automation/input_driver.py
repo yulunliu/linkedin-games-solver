@@ -83,6 +83,7 @@ def wait_for_mouse_release(timeout: float = 2.0) -> float:
     僅限 Windows；其他平台退回一段固定的短等待。
     """
     started = time.perf_counter()
+    was_down = False
     try:
         import ctypes
 
@@ -93,12 +94,24 @@ def wait_for_mouse_release(timeout: float = 2.0) -> float:
             # 最高位為 1 代表該鍵目前是被按住的。
             if not (user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000):
                 break
+            was_down = True
             time.sleep(0.02)
     except Exception:
         time.sleep(0.3)
-    # Give the OS a moment to finish dispatching that click.
-    # 放開後給作業系統一點時間把那次點擊事件處理完。
-    time.sleep(0.12)
+        was_down = True
+    # Give the OS a moment to finish dispatching that click - but only when
+    # there WAS a click to dispatch. In wait-first continuous mode the button
+    # was released seconds ago (the user's press started the wait, not the
+    # fill), so the very first poll already reads "up" and the 0.12s grace
+    # is pure waste - measured as part of a consistent 0.42-0.45s gap between
+    # "solve done" and the first action in every real run of 2026-08-05/06.
+    # 放開後給作業系統一點時間把那次點擊事件處理完——但只有「真的有一次
+    # 點擊要處理」時才需要。在先等題目的連續模式裡，按鍵是好幾秒前就放開
+    # 的（使用者按按鈕啟動的是「等待」、不是「填答」），第一次輪詢讀到的
+    # 就已經是放開狀態，0.12 秒的緩衝是純浪費——這正是 2026-08-05/06
+    # 每一輪真實記錄裡「求解完成」到「第一個動作」之間固定 0.42~0.45 秒
+    # 的其中一段。
+    time.sleep(0.12 if was_down else 0.02)
     return time.perf_counter() - started
 
 
@@ -128,9 +141,23 @@ def focus_window_at(x: int, y: int) -> str | None:
         if not hwnd:
             return None
         root = user32.GetAncestor(hwnd, 2) or hwnd  # GA_ROOT = 2
-        user32.SetForegroundWindow(root)
         buf = ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(root, buf, 256)
+        # Skip the activation (and its 0.25s settle) when the target window
+        # is ALREADY foreground. WHY 為什麼: in wait-first mode the user's
+        # last action before the fill starts was clicking into the browser
+        # to open the puzzle - the window is already frontmost, and the
+        # 0.25s settle was a measurable quarter-second of the "about a
+        # second before it starts" a user reported. The settle only exists
+        # to let a JUST-ACTIVATED window finish coming to the front.
+        # 目標視窗「已經」在最前面時，跳過啟用動作（以及它的 0.25 秒緩衝）。
+        # 為什麼：先等題目模式下，填答開始前使用者的最後一個動作就是點進
+        # 瀏覽器開題目——視窗本來就在最前面，而這 0.25 秒正是使用者回報
+        # 「開始前大約一秒」裡量得出來的四分之一秒。這個緩衝存在的唯一
+        # 目的，是讓「剛剛才被啟用」的視窗完成切換到前景的過程。
+        if user32.GetForegroundWindow() == root:
+            return buf.value or None
+        user32.SetForegroundWindow(root)
         time.sleep(0.25)
         return buf.value or None
     except Exception:
@@ -140,16 +167,55 @@ def focus_window_at(x: int, y: int) -> str | None:
 #: Minimum gap (seconds) between two clicks on the SAME spot.
 #: 同一個位置連點時，兩次點擊之間至少要隔這麼久（秒）。
 #:
-#: Measured behaviour: clicking one spot rapidly makes the OS classify the
-#: clicks as a double/triple-click gesture (the page receives one gesture, not
-#: two separate clicks). A game that cycles state per click - Tango's
-#: empty -> sun -> moon - then advances only one step instead of two.
-#: Windows' default double-click window is 500ms, so this sits just above it.
-#: 實測行為：在同一點快速連點，作業系統會把它們歸類成「雙擊/三擊」手勢
-#: （網頁收到的是一個手勢，不是兩次獨立點擊）。遊戲若是每點一下就循環一次狀態 ——
-#: 例如 Tango 的 空白 -> 太陽 -> 月亮 —— 就只會前進一步而不是兩步。
-#: Windows 預設的雙擊判定時間是 500ms，所以這裡取略高於它的值。
-SAME_SPOT_CLICK_GAP = 0.55
+#: HISTORY 沿革: this was 0.55 - just above Windows' double-click window
+#: (GetDoubleClickTime() measured 500ms on this machine) - because rapid
+#: same-spot clicks were observed being swallowed into one double-click
+#: gesture, advancing a state-cycling cell (Tango's empty -> sun -> moon)
+#: one step instead of two. BUT that observation was made against a Tkinter
+#: test window, never against the real page - the project's own docs list
+#: verifying it on the real site as an open item that was never done.
+#: 沿革：原本是 0.55——略高於 Windows 的雙擊判定時間（這台機器用
+#: GetDoubleClickTime() 量到 500ms）——因為觀察到同一點快速連點會被吞成
+#: 一個雙擊手勢，讓循環狀態的格子（Tango 的 空白->太陽->月亮）只前進一步
+#: 而不是兩步。但那個觀察是對著「Tkinter 測試視窗」做的，從來沒有對真實
+#: 網頁驗證過——專案自己的文件一直把「在真實網站上驗證這個值」列為
+#: 未完成的待辦。
+#:
+#: WHY 0.15 IS WORTH TRYING 為什麼值得改成 0.15:
+#:   1. Browsers fire BOTH `click` events even inside the OS double-click
+#:      window - `dblclick` is delivered in addition to, not instead of, the
+#:      two clicks - so a web game listening to click/pointer events receives
+#:      two events regardless. The Tkinter behaviour does not transfer.
+#:   2. The failure mode is already covered: if a pair ever IS swallowed,
+#:      the cell reads one state short, the post-fill verify pass sees it,
+#:      and the retry plan recomputes clicks from the FRESH state - a
+#:      distance of 1, a single click, no same-spot pair involved - so the
+#:      retry converges even if every rapid pair failed.
+#:   3. Measured cost of 0.55 at the default speed: one moon cell took
+#:      ~0.99s (0.08 move + 0.24 settle + 0.55 gap + 0.12 interval), which
+#:      is exactly the "feels like a second per moon" the user reported.
+#:      At 0.15 the same cell is ~0.59s; a Tango with 12 moons saves ~4.8s.
+#:   1. 瀏覽器就算在作業系統的雙擊判定時間內，也會把「兩次」click 事件都
+#:      送出——dblclick 是「額外」多送一個，不是取代那兩次 click——所以
+#:      監聽 click/pointer 事件的網頁遊戲無論如何都收得到兩次。Tkinter 的
+#:      行為不能直接套用到網頁上。
+#:   2. 失敗情況本來就有安全網：萬一連點真的被吞掉，該格會少一個狀態，
+#:      填完後的驗證會看到，補點計畫會用「最新讀到的狀態」重新計算點擊
+#:      次數——距離是 1，單獨一次點擊，不再有同格連點——所以就算每一組
+#:      快速連點都失敗，補點也會收斂。
+#:   3. 0.55 在預設速度下的實測成本：一個月亮格約 0.99 秒（移動 0.08 +
+#:      緩衝 0.24 + 間隔 0.55 + 點後間隔 0.12），正是使用者回報的
+#:      「每個月亮感覺停頓一秒」。改 0.15 後同一格約 0.59 秒；一盤有
+#:      12 個月亮的 Tango 可省約 4.8 秒。
+#:
+#: TO BE VALIDATED IN REAL PLAY 待真實遊玩驗證: if cells start coming out
+#: one state short (sun where a moon belongs, X where a crown belongs) and
+#: the verify rounds in the session log show repeated single-click repairs,
+#: THIS value is the cause - raise it back toward 0.55 and re-measure.
+#: 待真實遊玩驗證：如果開始出現格子少一個狀態（該是月亮的變太陽、該是
+#: 皇冠的變 X），而且執行記錄檔裡的驗證輪次顯示反覆用單擊補救，原因就是
+#: 這個值——把它調回 0.55 方向並重新量測。
+SAME_SPOT_CLICK_GAP = 0.15
 
 
 #: Maximum pixels the pointer may jump in one step while dragging.
@@ -292,6 +358,47 @@ class InputDriver:
     def _record(self, message: str):
         self.log.append(message)
         action_log.log("ACTION", message)
+
+    def park(self, x: int, y: int):
+        """Move the cursor to (x, y) and leave it there - no click, no
+        settle-then-click pause. Used to get the OS mouse position off the
+        puzzle before a colour-sensitive read, never as part of a fill plan.
+        把游標移到 (x, y) 就停在那裡——不點擊，也不需要「停穩再點」的緩衝。
+        用在色彩敏感的讀取之前，把滑鼠移出棋盤，不是填答計畫的一部分。
+
+        WHY THIS EXISTS 為什麼需要這個: a real 2026-08-12 Queens board
+        (dist/img/solve_failed_queens_1786541966055.png) failed with "colour
+        grouping looks wrong" - one region was found split into a 31-cell
+        blob plus a disconnected 4-cell island, and a separate stray cell
+        measured a different colour again. Correlated against the session
+        recording: the OS cursor was sitting directly over the board's own
+        region at the exact capture moment - LinkedIn's own :hover styling
+        darkens whatever cell is under it, and read_regions() (queens.py)
+        has no way to tell a hover-tinted cell from a genuinely different
+        region, because by design it groups purely by measured colour (see
+        that module's own docstring on why - a color-tolerance check cannot
+        tell "hover changed this cell's shade" from "this cell really is a
+        different region" without knowing WHERE the ambiguity would be
+        expected, which is exactly what parking the mouse sidesteps: keep it
+        off the board and there is nothing for :hover to tint in the first
+        place.
+        為什麼需要這個：一次真實的 2026-08-12 Queens 棋盤
+        （dist/img/solve_failed_queens_1786541966055.png）失敗在「色塊分群
+        結果不合理」——其中一個色塊被拆成 31 格的主體加上不相連的 4 格
+        孤島，另外還有一格單獨量到了不同的顏色。對照螢幕錄影確認：擷取
+        的那一刻，滑鼠游標剛好停在棋盤自己的某個色塊上——LinkedIn 自己的
+        :hover 樣式會把游標底下那格的顏色變深，而 read_regions()
+        （queens.py）沒有辦法分辨「這格被 hover 改變深淺」跟「這格真的是
+        不同色塊」，因為它設計上就是單純照量到的顏色分群（原因見那個模組
+        自己的文件字串）——色差容忍度沒辦法在不知道「哪裡該有歧義」的
+        情況下分辨兩者，而把滑鼠移開棋盤，正好就繞過了這個問題：
+        沒有東西停在棋盤上，:hover 就沒有東西可以改變深淺。
+        """
+        self._check_abort()
+        self._record(f"park mouse away from the board ({x},{y})")
+        if not self.dry_run:
+            _gui().moveTo(x, y, duration=self.move_duration * self.slowdown)
+            self._pause(self.settle_after_move)
 
     def countdown(self, seconds: int, on_tick=None):
         for remaining in range(seconds, 0, -1):

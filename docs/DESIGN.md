@@ -295,8 +295,202 @@ recording of it outrunning the page.
 There is a related constant for clicking the same cell twice:
 
 ```python
-SAME_SPOT_CLICK_GAP = 0.55    # or the page reads it as a double-click
+SAME_SPOT_CLICK_GAP = 0.15    # pause between same-cell clicks; see the constant's comment
 ```
+
+### Patches: when "can the board still be located" stops being answerable
+
+*(`speed-optimization` branch, not yet merged to `main`.)*
+
+The mid-plan guard's structural check (above) has one puzzle it cannot serve
+well: Patches. Its own drawn answer covers the board in solid colour, and
+that colour erases the interior grid lines `detect_grid_size` depends on -
+not intermittently, but for good, because filling only ever adds coverage.
+A real 8x8 fill (2026-08-09) demonstrated exactly how bad this gets:
+`detect_grid_size` failed 7 checks in a row on a board that had not moved at
+all, confirmed against the screen recording - well past the tolerance a
+2026-08-06 incident had already raised to absorb a smaller version of the
+same problem.
+
+The insight that broke the deadlock: the guard does not actually need to
+*re-derive* the grid to know the board is still there. It already knows,
+from the plan itself, exactly which cells it painted and which it did not.
+So instead of asking "can I still find a grid", it asks a narrower question
+it can actually answer: **does the board's outer border still exist, and
+does the part we have not painted yet still look like it did when we
+started?**
+
+The border half is nearly free. `find_board_bbox` looks for the board's
+*outer* contour, which our own fills never touch — they are drawn strictly
+inside cells. Measured directly on the failing 8x8 frame and on every
+heavily-filled fixture already in the test suite, the border locates
+reliably in every case where the interior grid-line check does not.
+
+The content half is where the first attempt went wrong, and it is worth
+telling honestly. The first version scored how much of the reference
+frame's un-painted structure (grid remnants, label digits — anything darker
+than the background, outside our own saturated fills) still read dark in
+the current frame, and used that score to make two decisions: a high score
+meant "still ours, keep going"; a low score meant "not ours, abort now" —
+faster than the existing tolerance counter. An independent adversarial
+review, briefed only on the diff and asked to refute it, found two ways
+this was actually worse than doing nothing:
+
+- A uniform gray frame in a narrow brightness band scored a **perfect
+  1.0** and disabled the guard permanently — the metric never required the
+  *current* frame to have any contrast of its own, only that it was darker
+  than the reference's background, which any flat enough gray satisfies at
+  every pixel simultaneously.
+- Replayed against the real 2026-08-06 incident's own fixture — the one
+  `PATCHES_FAILURE_TOLERANCE=6` exists to cover — the immediate-abort
+  verdict killed that *correct* fill on the very first check. That pair has
+  a genuine ~1% scale drift between the two captures, small enough that a
+  human would call it the same board, but enough to drag the raw score
+  under the threshold.
+
+Both findings point at the same design mistake: giving the new check the
+power to make the guard *stricter* introduces exactly the kind of
+confident-but-wrong judgement the whole project exists to avoid. The fix
+was not a better number, it was a smaller contract. The check now can only
+ever **affirm** ("the content still matches — reset the failure counter")
+or **decline** ("could not confirm — fall through to the tolerance counting
+that already existed, untouched"). It never aborts anything itself:
+
+```python
+if use_content_check and reference_content_matches(reference, image):
+    consecutive_failures = 0     # affirmed - extend the plan's life
+    return True
+# declined, or the check is not enabled here: everything below is
+# byte-for-byte the same code that ran before this feature existed.
+consecutive_failures += 1
+if consecutive_failures <= failure_tolerance:
+    return True
+...
+```
+
+Under that contract, every scenario is provably no worse than the
+pre-change guard: the worst the new code can do is decline, which *is* the
+old path. Affirmation itself still has to clear two independent, measured
+gates — a structural-match floor (0.90, against a *naturally rendered*
+worst-case impostor of 0.76) and a contrast-retention floor (0.85, because a
+white scrim of opacity `a` compresses the masked content's contrast by
+exactly `1 - a`, a relationship confirmed on real screen captures rather
+than assumed) — so a uniform gray frame, a scrim, or a different Patches
+board sharing the same grid pitch all decline rather than affirm. Re-review
+after the rewrite found the contract held, with one honestly-documented
+residual: a partial *dark*, desaturated occluder is, in principle,
+indistinguishable from one of our own dark fills, because both are read the
+same way. Bounded by the plan's own length, and disclosed in the code
+rather than swept past.
+
+The broader lesson generalises past this one guard: **a safety check earns
+the right to say "stop" separately from the right to say "continue".**
+Letting the same signal do both, on the reasoning that it was measured
+carefully, is still trading a known, bounded blind spot for an unmeasured
+one — and the only way that trade got caught here was by handing the design
+to reviewers whose only job was to break it, before it ever touched the
+puzzle a real user was still trying to finish.
+
+### Waiting for a board that could never have been found
+
+*(`speed-optimization` branch, not yet merged to `main`.)*
+
+A 2026-08-10 session logged 68 seconds of continuous polling - 353 checks,
+roughly one every 190ms, exactly on schedule - that never once detected a
+board. A screen recording of the same region, played back afterwards,
+showed the real Patches puzzle sitting there, untouched, for well over ten
+of those seconds. Not a timing coincidence, not a slow poll: the polling
+loop was working exactly as designed, checking exactly as often as
+designed, against content that its own detector could never have accepted,
+no matter how many more times it checked.
+
+The habit that found this was choosing to trust neither the log's silence
+nor the recording's picture on their own, and instead going one level lower
+than either: saving the *exact bytes* the waiting loop's own capture path
+produced (the panel's "Test region" button already existed for this, it
+had just never been reached for while the loop was silently failing) and
+feeding those, not a screen recording of the same area, into the same
+detector by hand. The two were not interchangeable. The recording located
+the board at native resolution without trouble; the app's own capture,
+of what should have been the identical screen at the identical moment,
+did not. `find_board_bbox`'s largest contour on the real capture was
+7,980px² - the individual number badges, nothing more - against the
+15%-of-frame area a board-sized contour needs. The board's own outer
+border was too faint, in absolute pixels at native capture size, for a
+fixed-radius Canny-and-dilate pass to ever close it into one shape.
+
+The part worth sitting with is that this exact failure mode already had a
+name, written down, in a completely different function. `_locate_board` -
+the locator `solve_image()` itself uses once it has committed to actually
+solving - carries a docstring that opens with "pre-scaling if its faint
+border is missed at 1x," backed by a three-step prescale ladder built for
+precisely this. The *cheap* pre-check that decides when to even start
+solving was written separately, later, for a different reason (reaction
+time, not correctness - see "The page could not keep up" for why it exists
+at all), and it re-derived the same "is a board here" question from
+scratch rather than reusing the answer the slower path had already worked
+out. It re-derived it *incompletely*: one scale, not three. Nothing in
+that gap was ever exercised by a fixture, because every fixture collected
+up to that point happened to have a border that survives at 1x - Patches
+included, most of the time. The one that did not simply never got tested,
+because nobody had gone looking for one until a real session produced it
+and a real capture, not a proxy for one, was saved and inspected.
+
+The fix adds back exactly one of `_locate_board`'s three steps - a retry
+at 1.75x when the native-scale check finds nothing - measured at 150.9ms
+worst case against 30.0ms before, still comfortably inside the poll
+budget, and paid only while genuinely nothing is on screen yet. The
+broader lesson is less about scale factors and more about where trust
+should sit: a screen recording of "the same" region is a recording of what
+a human would see there, not of what the program's own capture path
+actually receives, and the two can quietly diverge. When a detector's
+behaviour cannot be explained by its own code, the next step is not a
+recording of the screen - it is whatever the detector itself was actually
+given.
+
+### The cursor left over from the last puzzle
+
+*(`speed-optimization` branch, not yet merged to `main`.)*
+
+A real 2026-08-12 Queens board failed with "colour grouping looks wrong" -
+one region read as split into a 31-cell blob plus a disconnected 4-cell
+island, and a separate cell measured a third colour entirely. Nothing about
+the board itself was unusual; the saved failure capture (see the diagnostic
+save two sections up) showed eight clean, well-formed colour blocks to a
+human eye. Region reading (above, "Colour regions: why not k-means") groups
+purely by measured colour on purpose - it is the only approach that survived
+being tried against this project's actual palette - and that same design
+has no way to tell "this cell's colour shifted for a reason" apart from "this
+cell really is a different region."
+
+The reason it shifted was on screen the whole time, once the session
+recording was checked against the exact moment of capture: the OS cursor was
+resting directly on the board. LinkedIn darkens whatever cell is under the
+pointer - ordinary `:hover` styling, not a bug on their end - and continuous
+mode moves from one puzzle straight into detecting the next, with no click of
+its own yet to relocate the cursor away from wherever the PREVIOUS puzzle's
+last click left it. Consecutive puzzles tend to render in similar screen
+coordinates, so that leftover position lands on the new board often enough to
+matter.
+
+No amount of tuning the colour-matching tolerance fixes this - the ambiguity
+is real at the pixel level; a hover-darkened cell and a genuinely different
+region are, for a colour-only reader, the same kind of evidence. The fix is
+to remove the cause instead of trying to detect its effect: move the cursor
+off the board before the capture that actually gets read, mirroring a
+pattern this codebase already had for a different actor sitting on the same
+spot - `_keep_window_clear_of_capture()` exists because the app's *own*
+window sat on top of a Sudoku board for an entire 2026-08-08 session,
+silently hiding a column of givens. `InputDriver.park(x, y)` (the only file
+allowed to move the mouse) is the cursor's equivalent: move without
+clicking, then `_round()` re-captures before solve_image ever runs. Same
+"beside the capture rectangle, corner as last resort" placement logic as the
+window-clearing function, deliberately kept the same shape so the two
+cannot silently disagree about what "clear" means - with one addition the
+window case does not need: the corner fallback sits `PARK_MARGIN_PX` off
+the literal corner pixel, because that exact pixel is where pyautogui's own
+FAILSAFE aborts a run, and dodging one failure mode by landing on another
+would not be a fix.
 
 ### Resuming a half-filled board
 

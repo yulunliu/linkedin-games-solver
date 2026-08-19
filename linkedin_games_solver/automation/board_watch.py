@@ -20,18 +20,31 @@ That is the reported bug: "解答完成後依然會控制滑鼠，就算畫面�
 
 WHAT IT CHECKS, AND WHAT IT DELIBERATELY DOES NOT 檢查什麼、刻意不檢查什麼
 ------------------------------------------------------------------------
-It asks one structural question: **can the board still be located at all?**
-It does NOT compare pixels. A pixel comparison was measured and rejected: the
-cells we are deliberately filling in change more than a 25% dimming overlay
-does (MAD 36.35-112.73 for our own fills versus 44.93 for a scrim), so there is
-no threshold in either direction. Per the project rule - if there is no gap the
+It asks one structural question first: **can the board still be located at
+all?** A GLOBAL pixel comparison was measured and rejected: the cells we are
+deliberately filling in change more than a 25% dimming overlay does (MAD
+36.35-112.73 for our own fills versus 44.93 for a scrim), so there is no
+threshold in either direction. Per the project rule - if there is no gap the
 measurement is including something it should not, and here it is including the
 very cells we are drawing on.
-它只問一個結構性的問題：**棋盤還定位得到嗎？**
-它不比對像素。像素比對已經量測過並否決：我們自己填進去的格子造成的變化，
-比整片變暗 25% 的遮罩還大（自己填答 MAD 36.35~112.73，遮罩 44.93），
-兩個方向都不存在門檻。依照專案規則 —— 沒有間隔就代表量測混進了不該包含的東西，
-而這裡混進的正是我們自己正在畫的那些格子。
+它先問一個結構性的問題：**棋盤還定位得到嗎？**「全域」像素比對已經量測過
+並否決：我們自己填進去的格子造成的變化，比整片變暗 25% 的遮罩還大
+（自己填答 MAD 36.35~112.73，遮罩 44.93），兩個方向都不存在門檻。依照專案
+規則 —— 沒有間隔就代表量測混進了不該包含的東西，而這裡混進的正是我們自己
+正在畫的那些格子。
+
+For PATCHES ONLY there is a second layer: when the locator fails, the parts
+of the board our fills have NOT painted are compared against the frame the
+plan was armed on (see the CONTENT_* constants below). That is not the
+rejected global comparison - it masks the fills out first, which is exactly
+what made the global version meaningless. Added 2026-08-09 after a real 8x8
+fill lost the grid lines to its own fills for 7 straight checks and was
+wrongly aborted.
+「僅拼塊」多了第二層：定位器失敗時，把「我們的填色沒有畫到的部分」拿去跟
+武裝當下的畫面比對（見下方 CONTENT_* 常數）。這不是被否決的那種全域比對——
+它會先把填色遮掉，而填色正是讓全域版失去意義的原因。2026-08-09 加入，
+起因是一次真實的 8x8 填答，自己的填色把格線抹掉、連續 7 次檢查失敗，
+被錯誤地中止。
 
 So: filling the board in does not trip it; the board being replaced does.
 所以：把棋盤填滿不會觸發它，棋盤被換掉才會。
@@ -163,6 +176,270 @@ def locate_board(crop: np.ndarray, n: int):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Reference-content check (Patches only) 參考內容比對（僅拼塊使用）
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS 為什麼需要這個:
+# A real 8x8 Patches fill (2026-08-09, session log + screen recording + two
+# auto-saved abort frames, reproduced IDENTICALLY twice) lost detect_grid_size
+# for 7 consecutive checks on a board that never moved, exceeding
+# PATCHES_FAILURE_TOLERANCE=6 and aborting a correct fill. Structural
+# re-detection fundamentally cannot survive a Patches fill: our own fills
+# progressively erase the interior grid lines the locator needs, and they do
+# not come back. The user's insight, adopted here: we already KNOW what we
+# filled and where - so when the locator fails, compare the parts of the
+# board we did NOT paint against the frame the plan was armed on, instead of
+# trying to re-derive the grid from scratch.
+# 一次真實的 8x8 拼塊填答（2026-08-09，執行記錄＋螢幕錄影＋兩張自動存下的
+# 中止畫面，完全相同地重現了兩次）在一個根本沒動過的棋盤上，讓
+# detect_grid_size 連續失敗 7 次、超過 PATCHES_FAILURE_TOLERANCE=6，把一次
+# 正確進行中的填答中止了。結構性重新偵測在拼塊上本質上撐不住：我們自己的
+# 填色會逐步抹掉定位器需要的內部格線，而且不會恢復。這裡採用的是使用者
+# 提出的想法：我們本來就「知道」自己填了什麼、填在哪——所以定位器失敗時，
+# 改拿「我們沒有畫到的部分」跟武裝當下的畫面比對，而不是從頭重新推算格線。
+#
+# WHY THE OLD "no pixel comparison" RULE DOES NOT APPLY 為什麼舊的「不做像素
+# 比對」規則不適用: the module docstring records that a GLOBAL pixel
+# comparison was measured and rejected - our own fills change more pixels
+# than a scrim does. That comparison INCLUDED the cells being painted. This
+# check is the complement: it masks out everything saturated (the fills) and
+# compares only what remains, one-directionally (the reference's structure
+# must still be there). Measured over every real same-board pair available
+# (see the constants below), the two problems do not overlap.
+# 模組文件字串記載過：「全域」像素比對量測後被否決——我們自己的填色改動的
+# 像素比遮罩還多。那個比對「包含了」正在被畫的格子。這裡是它的補集：把
+# 飽和的部分（填色）全部遮掉，只比對剩下的內容，而且只做單向（參考畫面的
+# 結構必須還在）。對手上每一組真實同棋盤配對量測過（見下方常數），
+# 兩個問題並不重疊。
+#
+# AFFIRMATIVE-ONLY BY DESIGN 只做正面認證，絕不做否定判決:
+# this check can only ever say "the un-painted content still matches - keep
+# going" (which resets the tolerance counter) or "I could not affirm that"
+# (which falls through to the ORIGINAL tolerance counting, unchanged). It
+# never aborts anything by itself. An earlier revision also had an
+# immediate-abort verdict; an adversarial review (2026-08-09) killed it with
+# a reproduced counter-example: the real 2026-08-06 board pair drifted ~1%
+# in SCALE between arm and check (bbox 415 -> 419), translation search
+# cannot compensate scale, the pair scored 0.2257 under the production crop
+# protocol, and the immediate-abort verdict re-broke the exact false abort
+# PATCHES_FAILURE_TOLERANCE=6 was raised to fix. With the affirmative-only
+# contract, EVERY scenario is provably no worse than the old behaviour:
+# the worst this check can do is decline to affirm, which IS the old path.
+# 這個檢查只可能說「沒被填色的內容仍然吻合——繼續」（把容忍計數歸零），
+# 或「我無法認證」（落回「原本的」容忍計數，完全不變）。它自己絕不中止
+# 任何事。先前的版本還有一個「立即中止」的判決；2026-08-09 的對抗性審查
+# 用一個重現出來的反例把它否決了：2026-08-06 那組真實棋盤在武裝與檢查
+# 之間有約 1% 的「縮放」漂移（bbox 415 -> 419），平移搜尋補償不了縮放，
+# 那組配對在正式裁切協定下只拿 0.2257 分，立即中止的判決會把
+# PATCHES_FAILURE_TOLERANCE=6 當初特地修好的那次誤判重新引爆。改成
+# 只做正面認證之後，「每一種」情境都可證明不會比舊行為差：這個檢查
+# 最壞也只是拒絕認證，而那正是舊路徑本身。
+#
+# MEASURED 量測依據 (final sweep 2026-08-09, real captures; includes every
+# counter-example the adversarial review produced. Production-representative
+# pairs are same-source and aligned - the guard re-grabs the SAME absolute
+# screen rect every check):
+#   AFFIRMED (same board; must be, or today's bug comes back)
+#     pristine vs 10-rects-filled (TODAY'S exact     score 1.0000, shift 0
+#       failure state, video + both mss aborts)
+#     abort1 vs abort2 (mss, 2 min apart)            score 1.0000, shift 0
+#     mid_drag 1of6 vs 5of6 (video)                  score 1.0000, shift 0
+#     pristine + gaussian noise sigma 2              score 1.0000, shift ~0
+#   NOT AFFIRMED -> falls back to the old tolerance path (= old behaviour)
+#     flat gray, ANY level 0..255 (incl. the         contrast requirement
+#       adversarial 225..244 band that beat the        fails: no pixel is
+#       earlier revision)                              dark vs BOTH bgs
+#     different game (tango) in the rect             0.5138
+#     DIFFERENT patches board (pristine)             0.3840
+#     DIFFERENT patches board, same 8x8 size,        0.7602 - the review's
+#       heavily filled (grid self-similarity)          strongest attack;
+#                                                      below MATCH_MIN 0.90
+#     our board shrunk to 80% / 60%                  0.0738 / 0.0519
+#     random noise                                   mask/basis floors
+#     15%..75% white scrim / dim over the filled     score ~1.0 BUT contrast
+#       board (the review showed the earlier           retained is exactly
+#       revision let these run forever; the old        1-strength: 0.85 at
+#       tolerance path aborted them - restored         15% down to 0.25 at
+#       via the CONTENT_CONTRAST_KEEP gate)            75% -> declined
+#     2026-08-06 browser pair (real ~1% scale        0.2257 under production
+#       drift between captures)                        crops -> not affirmed
+#                                                      -> old tolerance path,
+#                                                      which that puzzle's
+#                                                      tolerance=6 covers -
+#                                                      same as today
+# KNOWN RESIDUAL GAP, stated honestly 已知殘餘缺口，誠實記錄: a partial DARK
+# desaturated occluder (e.g. a dark opaque panel over part of the board,
+# page NOT dimmed) keeps every reference-structure pixel "still dark" and
+# can be affirmed while it persists. Indistinguishable in principle from
+# our own desaturated fills (brown fill measured S=29, gray~151 - the same
+# signature). Bounded: the guard only runs during a finite plan, so the
+# exposure ends with the plan; the realistic overlay (a page-dimming modal)
+# shifts structure brightness and IS declined by the shift gate.
+# 已知殘餘缺口：局部的「深色去飽和遮擋物」（例如一塊深色不透明面板蓋住
+# 部分棋盤、頁面沒有變暗）會讓參考結構像素「維持是暗的」，存在期間可能
+# 被認證通過。原理上跟我們自己的去飽和填色（棕色實測 S=29、灰階約 151，
+# 同一種特徵）無法區分。但有邊界：守衛只在有限長度的計畫期間運作，
+# 曝險隨計畫結束而結束；而現實中的覆蓋（會把整頁變暗的對話框）會讓
+# 結構亮度偏移，「會」被亮度偏移守門拒絕認證。
+CONTENT_SAT_REF = 50        # same measured threshold as mask_saturated 與 mask_saturated 同一個實測門檻
+CONTENT_SAT_CUR = 25        # stricter on the current side: excludes fill-edge halos 目前畫面側更嚴：排除填色邊緣的半飽和光暈
+CONTENT_REL_MARGIN = 20     # "structure" = darker than background median by this 「結構」＝比背景中位數暗至少這麼多
+CONTENT_KEEP_MARGIN = 10    # structure must STAY this much darker than BOTH backgrounds 結構「維持」比兩邊背景都暗至少這麼多
+CONTENT_MIN_MASK_FRACTION = 0.05  # below this the comparison declines to affirm 低於此比例拒絕認證
+CONTENT_MIN_STRUCT = 150    # minimum structure pixels for a meaningful affirmation 有意義認證所需的最少結構像素數
+#: +-px jitter tolerance. Production frames are same-rect mss grabs and all
+#: affirmed pairs measured at shift 0; 1px covers sub-pixel wobble. Kept
+#: small on purpose - the review measured the +-2 search at 25 evaluations
+#: costing 405-493ms on a 794px board; +-1 is 9, with an early exit at the
+#: centre offset for the common (matching) case.
+#: 容忍擷取抖動的±像素。正式運作的畫面是同一塊矩形的 mss 擷取，所有
+#: 認證通過的配對實測偏移都是 0；1px 足以涵蓋次像素等級的晃動。刻意
+#: 保持小——審查實測 ±2 搜尋要 25 次評估、在 794px 棋盤上花 405~493 毫秒；
+#: ±1 是 9 次，而且常見（吻合）情況在中心偏移就提前返回。
+CONTENT_SHIFT_SEARCH = 1
+#: Affirmation floor. Every production-representative same-board pair
+#: measured EXACTLY 1.0000; the strongest NATURALLY-RENDERED impostor
+#: (another real 8x8 patches board, heavily filled - grid self-similarity)
+#: reached 0.7602. 0.90 affirms only near-perfect matches. NOT a rejection
+#: threshold - scores below simply fall back to the old tolerance path.
+#: BOUNDARY, measured by the re-review and recorded honestly: that berth
+#: holds only at natural line rendering. The same impostor with its dark
+#: lines artificially thickened by a 4-5px minimum filter AND saturated
+#: bands placed to break the locator scores 0.99 and IS affirmed - the
+#: one-directional score cannot see a dark superset of the reference's
+#: structure. No real page rendering produces 3px-thicker, pixel-aligned
+#: grid lines, so this sits in the same disclosed family as the
+#: dark-desaturated-occluder residual below; recorded so a future reader
+#: knows the margin's shape instead of trusting "wide berth" blindly.
+#: 認證下限。每一組正式環境等價的同棋盤配對實測都「剛好」1.0000；
+#: 「自然渲染」下最強的冒牌貨（另一塊真實 8x8、已填大半的拼塊棋盤——
+#: 網格自相似）到 0.7602。0.90 只認證幾乎完美的吻合。這不是拒絕門檻——
+#: 低於它只是落回舊容忍路徑。邊界（複審量出，誠實記錄）：這個距離只在
+#: 自然線條渲染下成立。同一個冒牌貨若把深色線條用 4~5px 最小值濾波
+#: 人為加粗、再放上剛好弄壞定位器的飽和色帶，能拿 0.99 並「會」被認證
+#: ——單向分數看不見「參考結構的深色超集」。真實網頁渲染不會產生粗
+#: 3px、又逐像素對齊的格線，所以這屬於下方「深色去飽和遮擋物」同一類
+#: 已揭露的殘餘缺口；記下來是讓未來的讀者知道餘裕的真實形狀，
+#: 而不是盲目相信「距離很寬」。
+CONTENT_MATCH_MIN = 0.90
+#: Affirmation also requires the masked content's CONTRAST (median minus
+#: 2nd percentile of gray) to be retained. A white scrim of opacity a maps
+#: v -> (1-a)v + 255a, so distance-from-white - and therefore this ratio -
+#: scales by EXACTLY (1-a); a multiplicative dim by factor f scales it by
+#: f. Verified on the production-representative mss-vs-mss pairs (armed
+#: frame and checks are both mss grabs of the same rect in production):
+#:     same-board baseline (abort1 vs abort2)   1.0000
+#:     white scrim 10/15/20/25/50%              0.897/0.853/0.809/0.750/0.500
+#:     multiplicative dim x0.90/0.85/0.80       0.897/0.853/0.809
+#: 0.85 declines every scrim/dim of 15%+ (the earlier struct-median-shift
+#: gate was measured and REJECTED: this board's structure is dominated by
+#: light dashes whose median barely moves under a scrim - 25% shifted it
+#: only +3). One-sided on purpose: a ratio ABOVE 1 just means the current
+#: frame is crisper than the reference (the video-sourced test reference is
+#: softer than mss), and an impostor cannot exploit it - affirmation still
+#: requires the 0.90 structure score first. Residual, documented: scrims
+#: and dims BELOW 15% are affirmable; at that strength the board beneath is
+#: fully visible and the old tolerance path is the only thing that ever
+#: caught them.
+#: 認證同時要求遮罩內內容的「對比」（灰階中位數減第 2 百分位）被保留。
+#: 濃度 a 的白色遮罩把 v 映成 (1-a)v+255a，「與白的距離」——也就是這個
+#: 比值——會「精確」縮成 (1-a) 倍；乘法式調暗（係數 f）則縮成 f 倍。
+#: 在正式環境等價的 mss 對 mss 配對上驗證過（正式運作時武裝畫面與檢查
+#: 都是同一塊矩形的 mss 擷取）：上表。0.85 擋掉所有 15% 以上的遮罩/調暗
+#: （先前的「結構中位數偏移」門檻量測後否決：這塊棋盤的結構以淺色虛線
+#: 為主，中位數在遮罩下幾乎不動——25% 只偏移 +3）。刻意只設單邊：比值
+#: 高於 1 只代表目前畫面比參考更銳利（測試用的影片來源參考比 mss 軟），
+#: 冒牌貨利用不了這一點——認證仍然要先過 0.90 的結構分數。已知殘餘、
+#: 誠實記錄：15% 以下的遮罩/調暗可能被認證；那種強度下底下的棋盤完全
+#: 可見，而且那種情況以前也只有容忍路徑「碰巧」擋得住。
+CONTENT_CONTRAST_KEEP = 0.85
+
+
+def reference_content_matches(reference: np.ndarray, current: np.ndarray) -> bool:
+    """True only on AFFIRMATIVE evidence that the un-painted content of
+    `current` is still the board `reference` shows. False means "could not
+    affirm" - it is NEVER proof of replacement, and callers must treat it
+    as "behave exactly as before this check existed".
+    只有在有「正面證據」證明 `current` 裡沒被填色蓋住的內容仍然是
+    `reference` 上那個棋盤時才回傳 True。False 的意思是「無法認證」——
+    它「絕不是」被換掉的證明，呼叫端必須把它當成「照這個檢查存在之前
+    的方式行動」。
+
+    Affirmation requires ALL of 認證需要「同時」滿足:
+      1. enough mutually low-saturation content to compare (floors below)
+         夠多雙方都低飽和的內容可以比對（下限見常數）
+      2. the reference's structure still reads dark relative to BOTH
+         frames' own backgrounds - requiring contrast in the CURRENT frame
+         is what stops a uniform gray replacement from scoring perfectly
+         (the adversarial review's flat-225..244 counter-example)
+         參考畫面的結構相對「兩邊各自的」背景都仍然是暗的——要求目前
+         畫面自己也有對比，就是擋住整片單色替換拿滿分的那一關
+         （對抗性審查的 225~244 整片灰反例）
+      3. the masked content retains at least CONTENT_CONTRAST_KEEP of the
+         reference's contrast - a scrim/dim compresses contrast by exactly
+         its own strength (see the constant's measurements)
+         遮罩內內容至少保留參考畫面 CONTENT_CONTRAST_KEEP 的對比——
+         遮罩/調暗會把對比精確壓縮成它自己的強度（量測見該常數）
+    One-directional by design: the reverse check ("no NEW structure") was
+    measured and rejected - LinkedIn's palette contains desaturated fills
+    (brown S=29) whose legitimate darkening is indistinguishable from new
+    structure.
+    刻意只做單向：反向檢查（「不能出現新結構」）量測後否決——LinkedIn 的
+    配色含去飽和填色（棕色 S=29），其正當的變暗跟新結構無法區分。
+    """
+    if reference is None or current is None:
+        return False
+    if getattr(reference, "shape", None) != getattr(current, "shape", None):
+        return False
+    sat_ref = cv2.cvtColor(reference, cv2.COLOR_BGR2HSV)[:, :, 1]
+    gray_ref = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
+    h, w = reference.shape[:2]
+    # Centre offset first: the common (matching) case exits after ONE
+    # evaluation instead of paying for the whole search.
+    # 中心偏移排最前面：常見（吻合）的情況評估「一次」就返回，
+    # 不用付整趟搜尋的成本。
+    offsets = sorted(
+        ((dx, dy)
+         for dy in range(-CONTENT_SHIFT_SEARCH, CONTENT_SHIFT_SEARCH + 1)
+         for dx in range(-CONTENT_SHIFT_SEARCH, CONTENT_SHIFT_SEARCH + 1)),
+        key=lambda o: abs(o[0]) + abs(o[1]))
+    for dx, dy in offsets:
+        if dx or dy:
+            m = np.float32([[1, 0, dx], [0, 1, dy]])
+            shifted = cv2.warpAffine(current, m, (w, h),
+                                     borderValue=(255, 255, 255))
+        else:
+            shifted = current
+        sat_cur = cv2.cvtColor(shifted, cv2.COLOR_BGR2HSV)[:, :, 1]
+        gray_cur = cv2.cvtColor(shifted, cv2.COLOR_BGR2GRAY)
+        mask = ((sat_ref <= CONTENT_SAT_REF)
+                & (sat_cur <= CONTENT_SAT_CUR)).astype(np.uint8)
+        mask = cv2.erode(mask, np.ones((5, 5), np.uint8))
+        picked = mask.astype(bool)
+        if picked.mean() < CONTENT_MIN_MASK_FRACTION:
+            continue
+        ref_vals = gray_ref[picked].astype(np.float64)
+        cur_vals = gray_cur[picked].astype(np.float64)
+        bg_ref = np.median(ref_vals)
+        bg_cur = np.median(cur_vals)
+        struct = ref_vals < bg_ref - CONTENT_REL_MARGIN
+        if int(struct.sum()) < CONTENT_MIN_STRUCT:
+            continue
+        cur_struct = cur_vals[struct]
+        kept = ((cur_struct < bg_ref - CONTENT_KEEP_MARGIN)
+                & (cur_struct < bg_cur - CONTENT_KEEP_MARGIN))
+        score = float(kept.mean())
+        if score < CONTENT_MATCH_MIN:
+            continue
+        ref_contrast = bg_ref - np.percentile(ref_vals, 2)
+        cur_contrast = bg_cur - np.percentile(cur_vals, 2)
+        if ref_contrast <= 0 \
+                or cur_contrast < ref_contrast * CONTENT_CONTRAST_KEEP:
+            continue
+        return True
+    return False
+
+
 #: A filled board may read as an integer multiple of its true size, because
 #: drawing into every cell adds an apparent boundary inside each one - the
 #: sub-structure is a refinement of the original grid, so the line count scales.
@@ -196,7 +473,39 @@ def _size_is_ours(found: int, ours: int) -> bool:
 #: ui/app.py 專門套用在拼塊上的 failure_tolerance 值。量測依據跟理由都寫在
 #: BoardWatch.failure_tolerance 自己身上——這裡只是那個數字，跟它設定的
 #: class 放在一起，不要藏在 UI 層裡面。
-PATCHES_FAILURE_TOLERANCE = 2
+#:
+#: RAISED 2 -> 6 on 2026-08-06, from a real aborted run 從一次真實中止的執行
+#: 提高：
+#: A real 7x7 puzzle (session log + screen recording, 2026-08-06) solved
+#: into just 6 rectangles, FOUR of them full-width rows - unlike every
+#: existing Patches fixture (10-14 rects, none full-width; see
+#: tests/test_board_guard.py). Reproduced directly against the real
+#: captured frames: with only 2 of those 6 rows filled, detect_grid_size
+#: (with the mask_saturated fallback) failed 3 checks in a row and the
+#: guard aborted a plan that was still correctly in progress - the user
+#: went on to solve the same board by hand with no problem. Worse: even
+#: the PRISTINE frame (0 filled) failed to locate on 1 of 20 near-identical
+#: re-captures (tiny per-pixel noise only) - this puzzle's margin is thin
+#: even before anything is drawn. 6 covers this exact puzzle's full plan
+#: even in the worst case where NO check after the first ever recovers.
+#: This is deliberately NOT unlimited: a genuinely replaced board is still
+#: caught once persistent failure exceeds 6, and every fixture surveyed
+#: (10-14 rects, no full-width rows) is far less likely to lose enough
+#: grid-line visibility to need anywhere near this many in a row.
+#: 一個真實的 7x7 題目（執行記錄 + 螢幕錄影，2026-08-06）解出來只有
+#: 6 塊矩形，其中 4 塊是貫穿全寬的整列——這跟現有的每一張 Patches 測試圖
+#: 都不一樣（10~14 塊，沒有任何一塊貫穿全寬；見 test_board_guard.py）。
+#: 直接對著真實擷取的畫面重現：那 6 塊裡只填了 2 塊，`detect_grid_size`
+#: （含遮色備援）就連續 3 次檢查失敗，守衛把一個其實還在正常進行的計畫
+#: 中止了——使用者後來手動接著解完，完全沒問題。更糟的是：連「完全空白」
+#: 的畫面，對 20 次幾乎相同的重新擷取（只有極微小的像素雜訊），都有 1 次
+#: 定位失敗——這道題目的容錯空間，在還沒開始畫任何東西之前就已經很薄。
+#: 6 這個數字，讓「這道題目」完整跑完整條計畫，就算「除了第一次以外的
+#: 每一次檢查都失敗」這種最壞情況也撐得住。刻意不設成無限制：真的被換掉
+#: 的棋盤，只要持續失敗超過 6 次還是抓得到；而調查過的每一張既有測試圖
+#: （10~14 塊、沒有貫穿全寬的）都遠不容易在連續格線可見度上輸到需要
+#: 撐這麼多次。
+PATCHES_FAILURE_TOLERANCE = 6
 
 
 @dataclass
@@ -288,6 +597,23 @@ class BoardWatch:
     #:   保護的盲點被有限度、有記錄地重新打開一小段，不是無限制打開。
     failure_tolerance: int = 0
 
+    #: Enable the reference-content fallback (Patches only - see the
+    #: CONTENT_* constants above for the measurements). When the locator
+    #: fails, the un-painted content is compared against `reference`
+    #: instead of blindly consuming the failure tolerance:
+    #: match -> keep going (counter resets), mismatch -> abort IMMEDIATELY
+    #: (faster than the tolerance path catches a real replacement),
+    #: cannot-judge -> the original tolerance counting, unchanged.
+    #: 啟用參考內容備援（僅拼塊——量測依據見上方 CONTENT_* 常數）。定位器
+    #: 失敗時，改拿沒被填色的內容跟 `reference` 比對，而不是盲目消耗容忍
+    #: 次數：吻合 -> 繼續（計數歸零）、不吻合 -> 「立刻」中止（比容忍路徑
+    #: 更快抓到真的被換掉）、無法判斷 -> 走原本的容忍計數，完全不變。
+    use_content_check: bool = False
+    #: The armed frame's board crop, kept for the content check. Only stored
+    #: when use_content_check is on.
+    #: 武裝當下那一幀的棋盤裁切，留給內容比對用。只在 use_content_check
+    #: 開啟時保存。
+    reference: object = None
     #: Set once arm() succeeds. Until then the watch refuses to judge anything.
     #: arm() 成功之後才會設為 True。在那之前這個 watch 拒絕對任何事下判斷。
     armed: bool = False
@@ -325,6 +651,11 @@ class BoardWatch:
         行為，而不是把填答弄壞。
         """
         self.armed = self.locate(board_image, self.n) is not None
+        if self.armed and self.use_content_check:
+            # Kept as-is (a copy), never re-derived: this is the ground truth
+            # the plan itself was built from.
+            # 原封不動保存（複本）、絕不重新推算：這就是計畫本身所依據的真值。
+            self.reference = board_image.copy()
         if not self.armed:
             self.reason = ("board watch disabled: locator could not find the board in "
                            "the plan's own frame / 中途保護未啟用：定位器在計畫自己的"
@@ -369,6 +700,44 @@ class BoardWatch:
             return False
         image = getattr(shot, "image", shot)
         if self.locate(image, self.n) is None:
+            # Before consuming tolerance blindly, ask the reference-content
+            # check (Patches only). AFFIRMATIVE-ONLY: a match is positive
+            # evidence the board is still ours, so the counter resets; ANY
+            # other outcome falls through to the original tolerance counting
+            # completely unchanged - never to an immediate abort. See the
+            # CONTENT_* constants for the measurements and for the
+            # adversarial counter-example that killed the immediate-abort
+            # variant of this branch.
+            # 在盲目消耗容忍次數之前，先問參考內容比對（僅拼塊）。只做正面
+            # 認證：吻合是「棋盤還是我們的」的正面證據，計數歸零；「任何」
+            # 其他結果都原封不動落回原本的容忍計數——絕不落到立即中止。
+            # 量測依據、以及否決掉「立即中止」版本的對抗性反例，見
+            # CONTENT_* 常數的說明。
+            if self.use_content_check and self.reference is not None:
+                # An exception inside the affirmation is treated as a
+                # decline, never a crash - the guard's failure direction
+                # must always be "fall back to the old path", and a raise
+                # here would otherwise propagate through driver.guard into
+                # the plan run. Unreachable with production frames (mss
+                # always hands back same-shape uint8 BGR), so this only
+                # hardens against the unexpected.
+                # 認證內部的例外一律當成「拒絕認證」，絕不當機——守衛的
+                # 失敗方向永遠必須是「退回舊路徑」，否則這裡拋出的例外會
+                # 穿過 driver.guard 傳進填答流程。正式畫面碰不到這種情況
+                # （mss 回傳的一定是同形狀的 uint8 BGR），這裡只是對
+                # 預期外狀況的加固。
+                try:
+                    affirmed = reference_content_matches(self.reference, image)
+                except Exception as exc:
+                    affirmed = False
+                    action_log.log("GUARD", f"check #{self._checks}: content check "
+                                    f"raised {type(exc).__name__}: {exc} -> treated "
+                                    f"as declined")
+                if affirmed:
+                    self._consecutive_failures = 0
+                    action_log.log("GUARD", f"check #{self._checks}: locate failed, "
+                                    f"but the reference content still matches -> ok")
+                    return True
             self._consecutive_failures += 1
             if self._consecutive_failures <= self.failure_tolerance:
                 # Tolerated: report "still there" without latching _gone, so a
@@ -434,10 +803,27 @@ def attach(driver, mapper, result, image: np.ndarray) -> BoardWatch:
     # 拼塊會鋪滿整個棋盤，保護自己的偵測可能在填答剩下的過程中持續失效，
     # 即使棋盤根本沒有移動過——量測依據見 BoardWatch.failure_tolerance。
     # 其他每一款謎題都維持嚴格的預設值（0）。
-    tolerance = PATCHES_FAILURE_TOLERANCE if result.puzzle_key == patches.KEY else 0
-    watch = BoardWatch(mapper=mapper, n=result.grid.n, failure_tolerance=tolerance)
+    is_patches = result.puzzle_key == patches.KEY
+    tolerance = PATCHES_FAILURE_TOLERANCE if is_patches else 0
+    # Patches also gets the reference-content affirmation: the 2026-08-09
+    # real failure showed 7 STRAIGHT locate failures on an unmoved board -
+    # exceeding this very tolerance - because our own fills erase the grid
+    # lines for good. Content matching is affirmative evidence the board is
+    # still ours, so it resets the counter instead of consuming it. It can
+    # ONLY extend a correct fill's life - anything it cannot affirm goes
+    # through the exact tolerance path that exists today, so no replacement
+    # scenario is ever handled worse than before. Every other puzzle keeps
+    # the exact original behaviour.
+    # 拼塊同時啟用參考內容認證：2026-08-09 的真實失敗顯示，一個沒動過的
+    # 棋盤讓定位「連續」失敗了 7 次——超過這個容忍度本身——因為我們自己的
+    # 填色把格線永久抹掉了。內容吻合是「棋盤還是我們的」的正面證據，所以
+    # 它把計數歸零而不是消耗它。它「只可能」延長一次正確填答的壽命——
+    # 任何它無法認證的情況，都走今天本來就存在的那條容忍路徑，所以沒有
+    # 任何被替換情境會被處理得比以前差。其他每一款謎題維持完全原本的行為。
+    watch = BoardWatch(mapper=mapper, n=result.grid.n, failure_tolerance=tolerance,
+                       use_content_check=is_patches)
     action_log.log("GUARD", f"attach: puzzle={result.puzzle_key} n={result.grid.n} "
-                    f"tolerance={tolerance}")
+                    f"tolerance={tolerance} content_check={is_patches}")
     if watch.arm(image[by : by + bh, bx : bx + bw]):
         driver.guard = watch.still_there
     return watch

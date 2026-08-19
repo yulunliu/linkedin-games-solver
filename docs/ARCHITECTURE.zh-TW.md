@@ -232,7 +232,7 @@ capture_screen()  capture_region(l, t, w, h)  default_region()  from_file_image(
 
 | 常數 | 理由 |
 |---|---|
-| `SAME_SPOT_CLICK_GAP = 0.55` | 同一格的兩次點擊再快一點就會被讀成 double-click |
+| `SAME_SPOT_CLICK_GAP = 0.15` | 同一格兩次點擊之間的停頓；舊值 0.55（高於作業系統雙擊判定）是對著 Tkinter 校準的、從未對真實網頁驗證過——為什麼 0.15 有驗證補點當安全網，見常數自己的註解 |
 | `DRAG_MAX_STEP_PX = 12` | 拖曳會被插值，讓網頁看到經過的每一格 |
 
 這裡還有：`slowdown`（全域延遲倍率）、`settle_after_move`、

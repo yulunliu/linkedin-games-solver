@@ -31,6 +31,7 @@ from ..automation import (
     focus_window_at,
     from_file_image,
     verify,
+    verify_supports,
     wait_for_mouse_release,
 )
 from ..automation import board_watch
@@ -236,6 +237,16 @@ def _recapture(args, previous):
 
 
 def _verify_and_retry(args, shot, result, mapper, driver):
+    # Same skip as the GUI: an unverifiable puzzle must not pay the redraw
+    # sleep and a capture just to hear "not supported" - see verify.supports.
+    # 跟 GUI 一樣的跳過：驗證不了的謎題不該先付「等重畫」跟一次擷取的成本、
+    # 才被告知「不支援」——見 verify.supports。
+    if not verify_supports(result.puzzle_key):
+        action_log.log("VERIFY", f"{result.puzzle_key}: not supported, "
+                        f"skipped without the redraw wait")
+        print(f"\n[check 1 / 檢查第 1 輪] {result.puzzle_key}: "
+              f"cannot verify, skipped / 無法驗證，直接略過")
+        return
     previous_wrong = None
     for attempt in range(1, args.retry + 1):
         action_log.log("VERIFY", f"CLI check round {attempt}/{args.retry} starting")

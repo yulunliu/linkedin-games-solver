@@ -10,9 +10,13 @@ them as tests stops those bugs coming back.
 import sys
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from linkedin_games_solver.core import detect_type, read_image  # noqa: E402
+from linkedin_games_solver.core.detect_type import _board_roi  # noqa: E402
 from linkedin_games_solver.puzzles import patches, queens, solve_image  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -40,17 +44,111 @@ def test_puzzle_type_detection():
         ("live_queens_with_crowns.png", "queens"),
         ("live_tango.png", "tango"),
         ("live_patches.png", "patches"),
+        ("live_mini_sudoku_browser.png", "sudoku"),
         ("S__104316934_0.jpg", "queens"),
         ("S__104316931.jpg", "tango"),
         ("S__104316935_0.jpg", "sudoku"),
         ("S__104316936_0.jpg", "patches"),
         ("S__104316937_0.jpg", "zip"),
         ("puzzle_answer.png", "tango"),           # fully filled 全部填滿
+        ("zip_faint_walls_20260811.png", "zip"),  # faint walls, real near-miss 淡牆，真實的差點誤判
     ]
     for name, expected in cases:
         got = detect_type(_load(name))
         assert got == expected, f"{name}: expected {expected}, got {got}"
     print(f"  puzzle type detection: {len(cases)} cases OK")
+
+
+def test_mini_sudoku_survives_extra_colour_noise():
+    """
+    Bug this guards: two real 2026-08-10 production runs (run_20260810_181407
+    and run_20260810_185005) show detect_type guessing "tango" for a genuine
+    Mini Sudoku board, which only resolved correctly several seconds later via
+    the fallback sweep - costing ~6-9s per occurrence while the real board sat
+    on screen the whole time (dist/logs). Measured cause: the only live
+    fixture on file, live_mini_sudoku_browser.png, has a coloured ratio
+    (sub-box shading) of 0.00366 against the OLD NO_COLOR_RATIO=0.006 - only a
+    1.6x margin - and that colour is itself 88.7% orange/blue, so crossing the
+    ratio threshold sent it straight into "tango" with no further check.
+    Ordinary capture variance (zoom, monitor DPI scaling, anti-aliasing) is
+    enough to cross a 1.6x margin.
+
+    This reproduces that class of variance by synthetically colouring an
+    extra ~0.34% of the image blue-ish, landing the ratio at ~0.0072 -
+    ABOVE the old 0.006 threshold (would have flipped to tango) but still
+    below the new NO_COLOR_RATIO=0.01. Must still resolve as sudoku.
+    這個測試守住的問題：兩筆真實 2026-08-10 執行記錄（run_20260810_181407
+    與 run_20260810_185005）顯示 detect_type 把一個真的 Mini Sudoku 盤面
+    猜成「tango」，要等備援掃描跑完好幾秒後才解對——每次白燒 6~9 秒，
+    而真正的棋盤其實整段時間都在畫面上（見 dist/logs）。量測到的原因：
+    目前唯一的真實測試圖 live_mini_sudoku_browser.png，彩色比例（子九宮格
+    底色）是 0.00366，對上舊門檻 NO_COLOR_RATIO=0.006 只有 1.6 倍安全邊界，
+    而且那個顏色本身有 88.7% 是橘／藍，一旦跨過比例門檻就會直接被當成
+    「tango」，不會再做任何檢查。一般擷取誤差（縮放、螢幕 DPI、反鋸齒）
+    就足以跨過 1.6 倍邊界。
+
+    這裡合成著色圖片裡額外約 0.34% 的像素成偏藍色，模擬那種誤差，讓比例落在
+    約 0.0072——「高於」舊門檻 0.006（照舊門檻會誤判成 tango），但「低於」
+    新門檻 NO_COLOR_RATIO=0.01。在新門檻下仍然必須解成 sudoku。
+    """
+    image = _load("live_mini_sudoku_browser.png").copy()
+    h, w = image.shape[:2]
+    rng = np.random.RandomState(0)
+    n_pixels = int(h * w * 0.0034)
+    ys = rng.randint(0, h, n_pixels)
+    xs = rng.randint(0, w, n_pixels)
+    image[ys, xs] = (200, 120, 60)  # BGR - saturated, blue-ish (matches the real hue mix)
+
+    got = detect_type(image)
+    assert got == "sudoku", (
+        f"expected sudoku to survive ordinary capture-variance-level colour "
+        f"noise, got {got}"
+    )
+    print("  mini sudoku survives extra colour noise: OK")
+
+
+def test_a_faint_walled_zip_board_is_not_misread_as_tango():
+    """
+    Bug this guards: a real 2026-08-11 production run shows detect_type
+    guessing "tango" for a genuine Zip board, burning a full 12-attempt tango
+    ladder (all "multiple solutions" or "no solution") before a fallback-type
+    sweep eventually reached zip - 5.8s wasted, which was the ENTIRE measured
+    gap that day between "puzzle detected" and the first mouse action.
+    Root cause, measured directly on the exact frame captured from the
+    session recording at the moment solve_image first ran on it
+    (zip_faint_walls_20260811.png): dark-pixel ratio 0.0494, just under the
+    OLD ZIP_DARK_RATIO=0.05 - missing the Zip branch by a hair and falling
+    through to the colour/hue check, where its own path (97.2% blue) reads
+    as tango. Same class of fragility as
+    test_mini_sudoku_survives_extra_colour_noise, a different board falling
+    through a different one of detect_type's checks.
+    這個測試守住的問題：一個真實的 2026-08-11 正式執行顯示 detect_type 把一個
+    真的 Zip 棋盤猜成「tango」，燒完整條 12 次嘗試的 tango 階梯（全部「多組
+    解」或「無解」）才靠備援類型全掃找到 zip——白燒 5.8 秒，正好是那天
+    「偵測到題目」到「滑鼠第一次動作」之間量到的全部空檔。根因，直接對著
+    從螢幕錄影截下來、solve_image 第一次對它出手那一刻的畫面實測
+    （zip_faint_walls_20260811.png）：深色像素比例 0.0494，只比舊門檻
+    ZIP_DARK_RATIO=0.05 低一點點，以毫釐之差沒進到 Zip 分支，落到彩色／
+    色相檢查，它自己的路徑（97.2% 藍色）就被讀成 tango。跟
+    test_mini_sudoku_survives_extra_colour_noise 是同一類脆弱，只是另一個
+    棋盤從 detect_type 另一道檢查的縫隙漏過去。
+    """
+    image = _load("zip_faint_walls_20260811.png")
+    roi = _board_roi(image)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    dark_ratio = float((gray < 90).mean())
+    assert dark_ratio < 0.05, (
+        f"the near-miss fixture's dark ratio is no longer below the OLD "
+        f"0.05 threshold ({dark_ratio:.4f}) - this test's premise (the "
+        f"fixture reproduces a real near-miss) no longer holds, re-check "
+        f"against a fresh real capture / "
+        f"這張差點誤判的測試圖深色比例已經不再低於舊門檻 0.05"
+        f"（{dark_ratio:.4f}）——這個測試的前提（測試圖真的重現了一次真實的"
+        f"差點誤判）不再成立，請對照新的真實擷取重新確認"
+    )
+    got = detect_type(image)
+    assert got == "zip", f"expected zip, got {got}"
+    print("  a faint-walled zip board is not misread as tango: OK")
 
 
 # --------------------------------------------------------------- solving
@@ -150,6 +248,48 @@ def test_live_patches_with_blank_labels():
                 covered[(r, c)] = True
     assert len(covered) == n * n
     print("  live patches with blank labels OK")
+
+
+def test_live_browser_mini_sudoku_reads_every_given():
+    """
+    Bug this guards: a real session (2026-08-08 log + screen recording) showed
+    digit "3" scoring only 0.876-0.898 against the digit templates on this
+    board - short of MIN_SCORE (0.90) - while every OTHER digit on the same
+    board scored 0.94-0.99. classify_glyph correctly refused to guess
+    (that is the safety mechanism working as designed), so the puzzle read as
+    under-constrained and every solve attempt correctly - but uselessly -
+    failed with "solution not unique". Not a logic bug: this board's own
+    rendering of "3" (LinkedIn's in-BROWSER Mini Sudoku widget) simply was not
+    close enough to the templates, which had come only from a phone-app
+    screenshot. Fixed by adding this board's own digits as a second
+    calibration source (tools/calibrate_digits.py's BROWSER_SUDOKU_GIVENS) -
+    not by loosening MIN_SCORE, which would have let a genuinely ambiguous
+    glyph through on every OTHER board too.
+    這個測試守住的問題：一次真實執行（2026-08-08 執行記錄 + 螢幕錄影）
+    顯示，這個棋盤上的數字「3」對數字範本只拿到 0.876~0.898 分——不到
+    MIN_SCORE（0.90）——而同一個棋盤上其他每個數字都拿到 0.94~0.99 分。
+    classify_glyph 正確地拒絕用猜的（這正是安全機制設計上該有的行為），
+    於是題目被讀成條件不足，每一次求解嘗試都正確地——但沒有用地——失敗在
+    「解不唯一」。這不是邏輯錯誤：這個棋盤自己畫的「3」（LinkedIn 瀏覽器內建
+    的 Mini Sudoku 元件），純粹跟範本不夠像，而範本原本只來自一張手機 App
+    截圖。修法是把這個棋盤自己的數字加進第二個校準來源
+    （tools/calibrate_digits.py 的 BROWSER_SUDOKU_GIVENS）——不是放寬
+    MIN_SCORE，那樣會讓其他每一個棋盤上真正模稜兩可的字形也一起被放行。
+    """
+    image = _load("live_mini_sudoku_browser.png")
+    result = solve_image(image)
+    assert result.ok, result.error
+    assert result.puzzle_key == "sudoku"
+
+    givens = result.data["givens"]
+    expected = {
+        (0, 0): 1, (0, 2): 2, (0, 5): 3,
+        (2, 0): 2, (2, 2): 4,
+        (3, 3): 4, (3, 5): 5,
+        (5, 0): 3, (5, 3): 5, (5, 5): 1,
+    }
+    assert givens == expected, f"givens mismatch / 給定數字不符: {givens}"
+    print("  live browser Mini Sudoku reads every given OK")
 
 
 def test_wrong_type_does_not_fake_success():
@@ -438,10 +578,13 @@ def test_should_continue_cuts_a_failing_solve_short():
 if __name__ == "__main__":
     print("Recognition tests / 辨識測試")
     test_puzzle_type_detection()
+    test_mini_sudoku_survives_extra_colour_noise()
+    test_a_faint_walled_zip_board_is_not_misread_as_tango()
     test_all_five_puzzles_solve()
     test_live_queens_boards()
     test_live_tango_matches_screen()
     test_live_patches_with_blank_labels()
+    test_live_browser_mini_sudoku_reads_every_given()
     test_wrong_type_does_not_fake_success()
     test_zoom_hint_is_not_appended_to_a_comfortably_large_borderless_board()
     test_initial_recognition_survives_a_partially_filled_patches_board()

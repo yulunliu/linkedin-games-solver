@@ -575,6 +575,1001 @@ def test_stop_interrupts_an_in_progress_solve():
         print(f"  stop interrupts an in-progress solve OK ({out.strip().splitlines()[-2]})")
 
 
+def test_the_window_cannot_sit_inside_the_capture_region():
+    """
+    Bug this guards: a real session (2026-08-08) showed the app's own
+    window sitting directly on top of a Mini Sudoku board's first column,
+    for the rest of that session - confirmed by matching a saved diagnostic
+    capture against the screen recording (92.9% correlation at the matching
+    frame). The obscured column's given digits were never seen, the puzzle
+    read as under-constrained, and every solve attempt correctly - but
+    uselessly - failed with "solution not unique". The old hide-window
+    logic ran once, before continuous mode's first wait; the taskbar entry
+    a minimised window keeps exists specifically so it CAN be restored (to
+    reach Stop) - and once restored, nothing put it back for the rest of
+    that multi-puzzle session.
+    這個測試守住的問題：一次真實執行（2026-08-08）顯示，程式自己的視窗
+    整段時間都疊在 Mini Sudoku 棋盤的第一欄上——已經用存下的診斷畫面
+    比對螢幕錄影確認過（在吻合的那一幀相關係數 92.9%）。被擋住的那一欄，
+    原本印的數字從來沒被看到，題目就被讀成條件不足，之後每一次嘗試都
+    「正確但沒用」地失敗在「解不唯一」。舊的隱藏視窗邏輯只在連續模式
+    第一次等待之前執行一次；最小化視窗留著的工作列入口，就是故意讓它
+    「能」被還原（好去按停止）——一旦被還原，接下來整個多題的過程中都
+    沒有東西把它挪開過。
+
+    Three configurations, one call each: fullscreen forces iconify no
+    matter what; hide-window on iconifies; hide-window off keeps the
+    window VISIBLE (2026-08-08's session needed it reachable to switch
+    speed tiers between rounds) but moves it clear of the capture rect.
+    三種設定各呼叫一次：全螢幕不管怎樣都強制最小化；勾了隱藏視窗就
+    最小化；沒勾隱藏視窗會維持視窗「看得到」（2026-08-08 那次執行需要
+    在兩輪之間切換速度檔，視窗要碰得到），但會被移到擷取矩形外面。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "app = app_module.SolverApp(root)\n"
+        "region = (200, 200, 640, 700)\n"
+        "app.x_var.set(str(region[0])); app.y_var.set(str(region[1]))\n"
+        "app.w_var.set(str(region[2])); app.h_var.set(str(region[3]))\n"
+        "app.settings['fullscreen'] = False\n"
+        ""
+        "# 1) hide-window off, window placed squarely inside the region -\n"
+        "# must stay visible (not iconic) but move clear of it.\n"
+        "app.hide_var.set(False)\n"
+        "root.geometry('400x470+250+250')\n"
+        "root.update_idletasks()\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update_idletasks()\n"
+        "wx, wy = root.winfo_x(), root.winfo_y()\n"
+        "ww, wh = root.winfo_width(), root.winfo_height()\n"
+        "rl, rt, rw, rh = region\n"
+        "overlaps = not (wx + ww <= rl or wx >= rl + rw or wy + wh <= rt or wy >= rt + rh)\n"
+        "assert root.state() != 'iconic', 'hide-window off must not iconify / 沒勾隱藏視窗卻被最小化了'\n"
+        "assert not overlaps, f'window still overlaps the capture region after being moved / 移動後仍然重疊: ({wx},{wy},{ww},{wh}) vs {region}'\n"
+        "print('MOVED_CLEAR_OK')\n"
+        ""
+        "# 2) hide-window on -> iconify, same as before.\n"
+        "root.deiconify(); root.geometry('400x470+250+250'); app._minimized_for_wait = False\n"
+        "root.update_idletasks()\n"
+        "app.hide_var.set(True)\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update()\n"
+        "assert root.state() == 'iconic', 'hide-window on must iconify / 勾了隱藏視窗却沒最小化'\n"
+        "print('ICONIFY_ON_HIDE_OK')\n"
+        ""
+        "# 3) fullscreen -> iconify regardless of hide-window.\n"
+        "root.deiconify(); app._minimized_for_wait = False\n"
+        "root.update_idletasks()\n"
+        "app.hide_var.set(False)\n"
+        "app.settings['fullscreen'] = True\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update()\n"
+        "assert root.state() == 'iconic', 'fullscreen must iconify even with hide-window off / 全螢幕模式即使沒勾隱藏視窗也應該最小化'\n"
+        "print('ICONIFY_ON_FULLSCREEN_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "the app window can still land inside the capture region / 程式視窗仍然可能落在擷取範圍裡:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  the window cannot sit inside the capture region OK (skipped - no display)")
+    else:
+        assert "MOVED_CLEAR_OK" in out and "ICONIFY_ON_HIDE_OK" in out and "ICONIFY_ON_FULLSCREEN_OK" in out, \
+            "one of the three configurations failed / 三種設定裡有一種沒通過:\n" + out
+        print("  the window cannot sit inside the capture region OK")
+
+
+def test_park_mouse_clear_of_capture_avoids_the_region_and_the_failsafe_corner():
+    """
+    Bug this guards: a real 2026-08-12 Queens board failed with "colour
+    grouping looks wrong" - one region read as split into a 31-cell blob
+    plus a disconnected 4-cell island, and a separate cell measured a third,
+    different colour again. Correlated against the session recording: the
+    OS cursor was sitting on the board at the exact capture moment -
+    LinkedIn's own :hover styling darkens whatever cell is under it, and
+    colour-based region reading has no way to tell that apart from a
+    genuinely different region. See InputDriver.park's own docstring for
+    the full story.
+    這個測試守住的問題：一次真實的 2026-08-12 Queens 棋盤失敗在「色塊分群
+    結果不合理」——其中一個色塊被讀成拆成 31 格的主體加上不相連的 4 格
+    孤島，另外還有一格單獨量到了第三種不同的顏色。對照螢幕錄影確認：
+    擷取的那一刻，滑鼠游標剛好停在棋盤上——LinkedIn 自己的 :hover 樣式
+    會把游標底下那格的顏色變深，而以顏色為準的色塊判讀沒有辦法把這個
+    跟「真的是不同色塊」分開來。完整脈絡見 InputDriver.park 自己的文件
+    字串。
+
+    Three configurations: room beside the region -> park just outside it;
+    no room anywhere -> the corner fallback, which must NOT be the literal
+    (0,0) pyautogui FAILSAFE pixel; fullscreen -> no safe position exists,
+    so this must be a no-op (nothing appended to the driver's log).
+    三種設定：旁邊有空間 -> 停在範圍外側緊鄰的地方；哪裡都沒空間 ->
+    角落備案，但不能是 pyautogui FAILSAFE 那個 (0,0) 像素本身；全螢幕 ->
+    沒有安全的位置，所以必須什麼都不做（driver 的記錄不會多出東西）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver\n"
+        "app = app_module.SolverApp(root)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.settings['fullscreen'] = False\n"
+        "screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()\n"
+        ""
+        "# 1) room to the right of the region -> parked just outside its right edge.\n"
+        "region = (200, 200, 640, 700)\n"
+        "app.x_var.set(str(region[0])); app.y_var.set(str(region[1]))\n"
+        "app.w_var.set(str(region[2])); app.h_var.set(str(region[3]))\n"
+        "app._park_mouse_clear_of_capture()\n"
+        "log_line = app.driver.log[-1]\n"
+        "assert 'park mouse' in log_line, f'no park action recorded / 沒有記錄到停放動作: {log_line!r}'\n"
+        "import re\n"
+        "mx, my = (int(v) for v in re.search(r'\\((\\d+),(\\d+)\\)', log_line).groups())\n"
+        "rl, rt, rw, rh = region\n"
+        "assert not (rl <= mx < rl + rw and rt <= my < rt + rh), f'parked INSIDE the region / 停在範圍裡面: ({mx},{my}) vs {region}'\n"
+        "assert mx >= rl + rw, f'expected beside the right edge / 預期在右邊緊鄰: {(mx, my)}'\n"
+        "print('BESIDE_REGION_OK')\n"
+        ""
+        "# 2) region fills the whole screen -> corner fallback, not the literal (0,0) FAILSAFE pixel.\n"
+        "app.driver.reset()\n"
+        "region2 = (0, 0, screen_w, screen_h)\n"
+        "app.x_var.set(str(region2[0])); app.y_var.set(str(region2[1]))\n"
+        "app.w_var.set(str(region2[2])); app.h_var.set(str(region2[3]))\n"
+        "app._park_mouse_clear_of_capture()\n"
+        "log_line2 = app.driver.log[-1]\n"
+        "mx2, my2 = (int(v) for v in re.search(r'\\((\\d+),(\\d+)\\)', log_line2).groups())\n"
+        "assert (mx2, my2) != (0, 0), 'parked on the literal pyautogui FAILSAFE corner / 停在 pyautogui FAILSAFE 的那個角落像素上'\n"
+        "print('CORNER_FALLBACK_NOT_FAILSAFE_OK')\n"
+        ""
+        "# 3) fullscreen -> no safe position exists, must be a no-op.\n"
+        "app.driver.reset()\n"
+        "app.settings['fullscreen'] = True\n"
+        "app._park_mouse_clear_of_capture()\n"
+        "assert len(app.driver.log) == 0, f'fullscreen must not park the mouse / 全螢幕模式不該停放滑鼠: {app.driver.log}'\n"
+        "print('FULLSCREEN_NOOP_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "mouse parking can still land inside the capture region or the FAILSAFE corner / 停放滑鼠仍然可能落在擷取範圍裡或 FAILSAFE 角落上:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  park mouse clear of capture avoids the region and the failsafe corner OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "BESIDE_REGION_OK", "CORNER_FALLBACK_NOT_FAILSAFE_OK", "FULLSCREEN_NOOP_OK",
+        )), out
+        print("  park mouse clear of capture avoids the region and the failsafe corner OK")
+
+
+def test_round_parks_the_mouse_and_recaptures_before_solving():
+    """
+    End-to-end companion to the unit-level park test above: a real round
+    must actually USE the feature, not just have it available. Forces a
+    guaranteed-clean solve (a real Queens fixture, correct type) and checks
+    that (a) the mouse was parked before solve_image ever ran, and (b) the
+    capture solve_image analysed was a FRESH one taken after parking, not
+    the (potentially cursor-tainted) frame wait_for_board handed in - proven
+    by capture_fn being called MORE than once even though nothing here ever
+    fails and needs a retry.
+    跟上面單元測試互補的端到端測試：真正的一輪求解，必須「真的用上」這個
+    功能，不能只是功能本身存在。強制一次保證乾淨的求解（真實的 Queens
+    測試圖、類型給對），檢查 (a) 滑鼠在 solve_image 開始跑之前就已經被
+    停放過，(b) solve_image 實際分析的是停放「之後」重新擷取的新畫面，
+    不是 wait_for_board 傳進來、可能還被游標影響的那一張——用
+    capture_fn 被呼叫超過一次來證明，即使這裡從頭到尾都沒有失敗、
+    不需要任何重試。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver, from_file_image\n"
+        "from linkedin_games_solver.core import read_image\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "board = read_image(r'" + str(FIXTURES / 'live_queens_3.png') + "')\n"
+        "calls = {'n': 0}\n"
+        "def grab():\n"
+        "    calls['n'] += 1\n"
+        "    return from_file_image(board)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.hide_var.set(True)\n"
+        "app.settings['fullscreen'] = False\n"
+        "root.geometry('400x470+100+100')\n"
+        "root.update_idletasks()\n"
+        ""
+        "outcome, text = app._round(grab(), 'queens', True, grab)\n"
+        "assert outcome == 'done', f'expected a clean solve, got {outcome!r}: {text!r}'\n"
+        "assert calls['n'] >= 2, f'expected capture_fn called again after parking (1 for the caller + at least 1 inside _round), got {calls[\"n\"]}'\n"
+        "park_index = next((i for i, line in enumerate(app.driver.log) if 'park mouse' in line), None)\n"
+        "assert park_index is not None, 'no park action recorded in the round / 這一輪沒有記錄到停放動作'\n"
+        "assert park_index == 0, f'park must be the FIRST driver action, before any click - got position {park_index} in {app.driver.log}'\n"
+        "print('PARKED_BEFORE_SOLVE_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "a round no longer parks the mouse before solving / 一輪求解不再會於求解前停放滑鼠:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  round parks the mouse and recaptures before solving OK (skipped - no display)")
+    else:
+        assert "PARKED_BEFORE_SOLVE_OK" in out, out
+        print("  round parks the mouse and recaptures before solving OK")
+
+
+def test_region_monitor_size_only_restamps_when_the_region_actually_changes():
+    """
+    Guards the resolution-change warning's ONE correctness requirement (see
+    ui/app.py's _save_settings comment): the recorded screen size must only
+    move when the region VALUE itself was just recalibrated, never merely
+    because _save_settings() ran (Start press, language change, ...) with
+    the region untouched - otherwise the warning would fire once and then
+    go silent forever even though the region is still wrong for the new
+    screen.
+    這個測試守住解析度改變警告唯一的正確性要求（見 ui/app.py
+    _save_settings 的註解）：記錄的螢幕尺寸只能在範圍「數值本身」剛被
+    重新校準時才移動，絕不能只因為 _save_settings() 被呼叫過（按開始、
+    切語言……）就跟著動，否則警告只會出現一次、之後永遠安靜下去，
+    即使範圍其實還是對不上新螢幕。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "app = app_module.SolverApp(root)\n"
+        "app_module.primary_monitor_size = lambda: (1920, 1080)\n"
+        ""
+        "# First save with a region: nothing was stored before, so this counts\n"
+        "# as a real calibration - must stamp the (faked) current size.\n"
+        "app.x_var.set('100'); app.y_var.set('100'); app.w_var.set('640'); app.h_var.set('700')\n"
+        "app._save_settings()\n"
+        "assert app.settings['region_monitor_size'] == [1920, 1080], app.settings['region_monitor_size']\n"
+        "print('FIRST_STAMP_OK')\n"
+        ""
+        "# Screen size 'changes' but the region fields are untouched (this is\n"
+        "# exactly what pressing Start does) - must NOT restamp.\n"
+        "app_module.primary_monitor_size = lambda: (2560, 1440)\n"
+        "app._save_settings()\n"
+        "assert app.settings['region_monitor_size'] == [1920, 1080], (\n"
+        "    'restamped even though the region value did not change / '\n"
+        "    '範圍數值沒變卻被重新記錄了: ' + repr(app.settings['region_monitor_size']))\n"
+        "print('NO_RESTAMP_ON_UNCHANGED_REGION_OK')\n"
+        ""
+        "# Now the region VALUE actually changes (a real recalibration) -\n"
+        "# must restamp with whatever the current (faked) size is NOW.\n"
+        "app.w_var.set('650')\n"
+        "app._save_settings()\n"
+        "assert app.settings['region_monitor_size'] == [2560, 1440], app.settings['region_monitor_size']\n"
+        "print('RESTAMP_ON_CHANGED_REGION_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "region_monitor_size stamping logic is wrong / region_monitor_size 的記錄邏輯不對:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  region_monitor_size only restamps when the region actually changes OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "FIRST_STAMP_OK", "NO_RESTAMP_ON_UNCHANGED_REGION_OK", "RESTAMP_ON_CHANGED_REGION_OK",
+        )), out
+        print("  region_monitor_size only restamps when the region actually changes OK")
+
+
+def test_resolution_change_warning_fires_only_when_sizes_differ():
+    """
+    _warn_if_resolution_changed must log its hint when the current screen
+    size disagrees with what was recorded at calibration time, and must
+    stay quiet when they match - a warning on every run regardless of
+    whether anything changed would just be noise the user learns to ignore.
+    _warn_if_resolution_changed 在目前螢幕尺寸跟校準時記錄的不一樣時，
+    必須把提示寫進記錄；兩者相符時必須保持安靜——如果不管有沒有變都跳
+    警告，使用者很快就會學會忽略它，等於沒有這個功能。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "app = app_module.SolverApp(root)\n"
+        "app.settings['region_monitor_size'] = [1920, 1080]\n"
+        ""
+        "# Same size as recorded -> quiet.\n"
+        "app_module.primary_monitor_size = lambda: (1920, 1080)\n"
+        "app._clear_log()\n"
+        "app._warn_if_resolution_changed()\n"
+        "assert app.log_text.get('1.0', 'end').strip() == '', (\n"
+        "    'warned even though the size matches / 尺寸相符卻還是警告了: ' + app.log_text.get('1.0', 'end'))\n"
+        "print('QUIET_WHEN_UNCHANGED_OK')\n"
+        ""
+        "# Different size -> warns, with both the old and new size in the message.\n"
+        "app_module.primary_monitor_size = lambda: (2560, 1440)\n"
+        "app._clear_log()\n"
+        "app._warn_if_resolution_changed()\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "expected = translator('log_resolution_changed', old='1920x1080', new='2560x1440')\n"
+        "assert expected in log, 'expected: %r, got: %r' % (expected, log)\n"
+        "print('WARNS_WHEN_CHANGED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "resolution-change warning is broken / 解析度改變警告有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  resolution change warning fires only when sizes differ OK (skipped - no display)")
+    else:
+        assert "QUIET_WHEN_UNCHANGED_OK" in out and "WARNS_WHEN_CHANGED_OK" in out, out
+        print("  resolution change warning fires only when sizes differ OK")
+
+
+def test_continuous_mode_alerts_and_stops_after_a_failed_round():
+    """
+    Bug this guards: continuous mode used to leave a failed round completely
+    silent - the status text changed but, with the window minimised (hide-window
+    or wait-first both iconify it), nothing on screen showed it, and the loop
+    would go on to wait for a board that structurally never disappears (the
+    user never navigated away from the failed puzzle). This proves the fix
+    end to end: a puzzle forced through the WRONG solver (guaranteed to fail
+    all MAX_SOLVE_ATTEMPTS retries, same technique test_recognition.py's
+    "wrong type does not fake success" uses) makes the window come back into
+    view, the status turn into the alert text, and the worker return instead
+    of looping on.
+    這個測試守住的問題：連續模式以前對一輪失敗完全沒有反應——狀態文字換了，
+    但視窗被最小化時（隱藏視窗或先等題目模式都會讓它最小化）畫面上完全
+    看不到，迴圈接著會去等一個結構上不會消失的棋盤（使用者根本沒有切離
+    那個失敗的題目）。這個測試從頭到尾驗證修正：把一張圖強制用「錯的」
+    求解器去解（保證會讓 MAX_SOLVE_ATTEMPTS 全部重試失敗，跟
+    test_recognition.py「wrong type does not fake success」用的是同一招），
+    視窗要被還原、狀態要變成提醒文字、工作執行緒要直接返回而不是繼續迴圈。
+
+    Also covers the persistent-vs-transient distinction added alongside this
+    alert: since capture_fn keeps returning the IDENTICAL image on every
+    retry, all MAX_SOLVE_ATTEMPTS attempts must produce the exact same error,
+    so self._last_failure_persistent must end up True and the extra hint
+    must appear in the log.
+    也一併涵蓋跟這個提醒一起加上的「持續性 vs 暫時性」判斷：因為 capture_fn
+    每次重試都回傳「一模一樣」的圖，MAX_SOLVE_ATTEMPTS 次嘗試必然得到完全
+    相同的錯誤，所以 self._last_failure_persistent 最後必須是 True，
+    而且記錄裡要出現那段額外的提示文字。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver, from_file_image\n"
+        "from linkedin_games_solver.core import read_image\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "app = app_module.SolverApp(root)\n"
+        "# _ui/_ui_wait exist to hop onto the Tk thread from the WORKER thread;\n"
+        "# this test calls _worker() directly on the main (Tk-owning) thread, so\n"
+        "# the normal root.after()-based versions would deadlock waiting for an\n"
+        "# event loop nothing is pumping. Made synchronous for this reason only -\n"
+        "# the cross-thread handoff itself is covered elsewhere\n"
+        "# (test_stop_mid_drag_from_another_thread_still_releases_the_mouse).\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "board = read_image(r'" + str(FIXTURES / 'live_queens_3.png') + "')\n"
+        "def grab():\n"
+        "    return from_file_image(board)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.hide_var.set(True)\n"
+        "app.settings['fullscreen'] = False\n"
+        "root.geometry('400x470+100+100')\n"
+        "root.update_idletasks()\n"
+        ""
+        "# Forcing a real Queens fixture through Tango's solver is guaranteed to\n"
+        "# fail (structural guards, not a threshold call) - see\n"
+        "# test_recognition.py's 'wrong type does not fake success'.\n"
+        "app._worker(None, 'tango', True, capture_fn=grab, driver_kwargs=dict(dry_run=True))\n"
+        ""
+        "assert root.state() != 'iconic', 'window was not restored after the alert / 提醒後視窗沒有被還原'\n"
+        "print('WINDOW_RESTORED_OK')\n"
+        "assert app.status_label.cget('text') == translator('status_solve_failed_stopped'), app.status_label.cget('text')\n"
+        "print('STATUS_TEXT_OK')\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert translator('log_solve_failed_alert', n=app_module.MAX_SOLVE_ATTEMPTS) in log, log\n"
+        "print('LOG_MESSAGE_OK')\n"
+        "assert app._last_failure_persistent is True, (\n"
+        "    'identical errors on every retry were not recognised as persistent / '\n"
+        "    '每次重試都得到一樣的錯誤，卻沒有被判定成持續性失敗')\n"
+        "assert translator('log_persistent_failure_hint', n=app_module.MAX_SOLVE_ATTEMPTS) in log, log\n"
+        "print('PERSISTENT_HINT_OK')\n"
+        "assert str(app.start_btn.cget('state')) == 'normal', 'worker did not reach _finish() / 工作執行緒沒有走到 _finish()'\n"
+        "print('FINISHED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "repeated-failure alert is broken / 連續失敗提醒有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  continuous mode alerts and stops after a failed round OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "WINDOW_RESTORED_OK", "STATUS_TEXT_OK", "LOG_MESSAGE_OK",
+            "PERSISTENT_HINT_OK", "FINISHED_OK",
+        )), out
+        print("  continuous mode alerts and stops after a failed round OK")
+
+
+def test_guard_abort_does_not_kill_continuous_mode():
+    """
+    Bug this guards: a real 2026-08-17 session solved three puzzles cleanly,
+    then round 4 misread a stale, already-solved board as a fresh puzzle -
+    the mid-plan guard correctly rejected it (InputDriver._check_abort's
+    "guard rejected the next action -> aborting plan"), but continuous mode
+    then silently stopped instead of moving on to the next puzzle, right as
+    the user was opening it - wasting the time it took them to notice and
+    press Start again.
+
+    Root cause: a guard abort LATCHES the driver's stop_requested flag (the
+    "latch, so nothing restarts it" comment in _check_abort) so a click
+    cannot slip through after rejection. wait_for_board_gone(), called right
+    after _round() returns "guard", runs on that SAME driver instance - the
+    next round's genuinely fresh one is not built until the top of the next
+    loop iteration - and reads that exact latched flag as its
+    should_continue check, so it returns instantly (0 polls) and the loop's
+    `if not wait_for_board_gone(...): break` ends the WHOLE continuous run.
+    The fix resets the latch on that same instance the moment "guard" comes
+    back, before wait_for_board_gone runs.
+
+    This test never touches real image recognition - it fakes _round()
+    directly to return "guard" then "stop", and fakes wait_for_board /
+    wait_for_board_gone to return exactly what their `should_continue`
+    argument evaluates to, mirroring the real functions' own short-circuit
+    behaviour. Without the fix, should_continue() (the `alive` closure)
+    reads the still-latched flag as False right after round 1's "guard",
+    wait_for_board_gone returns False, and round 2 never happens.
+    這個測試守住的問題：一次真實的 2026-08-17 遊玩乾淨解完三題後，第 4 輪
+    誤讀了一個已經解完、過期的棋盤當成新題目——填答中途的保護正確地拒絕了
+    它（InputDriver._check_abort 的「guard rejected the next action ->
+    aborting plan」），但連續模式接著卻悄悄停了下來，而不是繼續下一題——
+    剛好停在使用者正要打開下一題的那一刻，浪費的是使用者發現、重新按下
+    開始的那段時間。
+
+    根本原因：守衛中止會鎖住 driver 的 stop_requested 旗標
+    （_check_abort 裡「鎖定，不會被重啟」那句註解），確保拒絕之後不會再
+    滑進一個動作。_round() 回傳 "guard" 之後立刻呼叫的
+    wait_for_board_gone()，用的是「同一個」driver 實例——下一輪真正全新
+    的實例要到下一次迴圈開頭才會建立——讀的正是那個已經鎖住的旗標當作
+    should_continue，所以會立刻回傳（0 次輪詢），讓迴圈的
+    `if not wait_for_board_gone(...): break` 把整個連續流程結束掉。
+    修正在 "guard" 一回來、wait_for_board_gone 執行之前，就在同一個實例上
+    重設這個鎖定。
+
+    這個測試完全不碰真正的影像辨識——直接假造 _round() 依序回傳 "guard"
+    再 "stop"，並假造 wait_for_board / wait_for_board_gone，讓它們回傳的
+    值就是自己 `should_continue`參數算出來的結果，模擬真正函式自己的
+    短路行為。沒有這個修正的話，should_continue()（也就是 `alive`
+    closure）在第 1 輪的 "guard" 之後會讀到還鎖著的旗標、算出 False，
+    wait_for_board_gone 回傳 False，第 2 輪永遠不會發生。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "app.driver = InputDriver(dry_run=False)\n"
+        "app.driver.reset()\n"
+        ""
+        "calls = {'round': 0}\n"
+        "gone_calls = []\n"
+        "def fake_wait_for_board(capture_fn, should_continue=None):\n"
+        "    return object()  # any non-None 'shot' is enough for the loop\n"
+        "def fake_wait_for_board_gone(capture_fn, should_continue=None):\n"
+        "    result = should_continue()\n"
+        "    gone_calls.append(result)\n"
+        "    return result\n"
+        "def fake_round(shot, puzzle_key, fill_answers, capture_fn, wait_time=None):\n"
+        "    calls['round'] += 1\n"
+        "    if calls['round'] == 1:\n"
+        "        # Reproduce exactly what a real guard rejection leaves\n"
+        "        # behind on the driver - see InputDriver._check_abort.\n"
+        "        app.driver.stopped_by_guard = True\n"
+        "        app.driver._stop_requested = True\n"
+        "        return 'guard', 'stopped by guard'\n"
+        "    return 'stop', 'ended for the test'\n"
+        "app_module.wait_for_board = fake_wait_for_board\n"
+        "app_module.wait_for_board_gone = fake_wait_for_board_gone\n"
+        "app._round = fake_round\n"
+        ""
+        "app._worker(None, 'auto', True, capture_fn=lambda: object(), driver_kwargs=dict(dry_run=False))\n"
+        ""
+        "assert calls['round'] == 2, (\n"
+        "    'continuous mode stopped after the guard abort instead of moving on / '\n"
+        "    '連續模式在守衛中止之後就停了，沒有繼續下一輪: %r' % calls)\n"
+        "print('ROUND_2_REACHED_OK')\n"
+        "assert gone_calls == [True], (\n"
+        "    'wait_for_board_gone saw a still-latched stop flag right after '\n"
+        "    'the guard abort / wait_for_board_gone 在守衛中止之後看到的還是'\n"
+        "    '鎖住的停止旗標: %r' % gone_calls)\n"
+        "print('LATCH_RESET_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "a guard abort still kills continuous mode / 守衛中止還是會讓連續模式停下來:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  guard abort does not kill continuous mode OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "ROUND_2_REACHED_OK", "LATCH_RESET_OK",
+        )), out
+        print("  guard abort does not kill continuous mode OK")
+
+
+def test_solve_failed_frame_is_saved_for_diagnosis():
+    """
+    Bug this guards: a 2026-08-10 Patches failure ("28 label(s) unreadable ...
+    tiling is ambiguous", every crop/scale in the ladder) could not be
+    root-caused afterwards because nothing kept the actual bytes the
+    recogniser saw - a hand screenshot taken around the same time solved
+    cleanly, proving it was not the same capture. This proves the fix: a
+    solve that exhausts every retry must save the LAST attempted capture
+    (the exact image `result` came from, not a fresh grab) to captures_dir()
+    and log where it went, mirroring the existing guard boardwatch_stop save.
+    這個測試守住的問題：2026-08-10 有一次 Patches 失敗（「28 個標籤讀不出來
+    …切法不唯一」，階梯裡每個裁切／縮放都試過）事後完全查不出根因，因為
+    沒有任何東西留住辨識器當時實際看到的位元組——差不多同時間手動截的圖
+    卻能乾淨解出來，證明根本不是同一張擷取畫面。這個測試驗證修正：重試
+    全部用盡後的失敗，必須把「最後一次嘗試」用的擷取畫面（也就是產生
+    `result` 的那張圖，不是重新擷取的新畫面）存進 captures_dir()，並在
+    記錄裡寫出存去哪裡，做法比照既有的守衛 boardwatch_stop 存檔。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import InputDriver, from_file_image\n"
+        "from linkedin_games_solver.core import read_image\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._ui_wait = lambda func, timeout=1.0: func()\n"
+        ""
+        "board = read_image(r'" + str(FIXTURES / 'live_queens_3.png') + "')\n"
+        "def grab():\n"
+        "    return from_file_image(board)\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app.hide_var.set(True)\n"
+        "app.settings['fullscreen'] = False\n"
+        "root.geometry('400x470+100+100')\n"
+        "root.update_idletasks()\n"
+        ""
+        "# Same guaranteed-failure technique as the repeated-failure alert test:\n"
+        "# forcing a real Queens fixture through Tango's solver fails cleanly on\n"
+        "# structural guards (test_recognition.py's 'wrong type does not fake\n"
+        "# success'), never on a threshold call, so this cannot flake.\n"
+        "app._worker(None, 'tango', True, capture_fn=grab, driver_kwargs=dict(dry_run=True))\n"
+        ""
+        "saved = list(captures_root.glob('solve_failed_*.png'))\n"
+        "assert len(saved) == 1, 'expected exactly one saved failure frame / 應該存下剛好一張失敗畫面: %r' % saved\n"
+        "print('FRAME_SAVED_OK')\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert translator('log_solve_failed_frame_saved') in log, log\n"
+        "print('LOG_MESSAGE_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "solve-failed diagnostic save is broken / 求解失敗診斷存檔有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  solve failed frame is saved for diagnosis OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in ("FRAME_SAVED_OK", "LOG_MESSAGE_OK")), out
+        print("  solve failed frame is saved for diagnosis OK")
+
+
+def test_harvest_calibration_candidates_only_saves_safe_ground_truth():
+    """
+    Guards _harvest_calibration_candidates' whole reason for existing: it
+    must save a cell we filled ourselves that could not be read back
+    confidently (got=None - genuine ground truth, since `want` is what OUR
+    OWN solver chose and the driver clicked/typed), and must refuse the
+    three unsafe cases - a CONFIDENTLY wrong reading (ground truth is
+    suspect - could be a real misread or a dropped click), a changed board,
+    and any puzzle other than Sudoku (the only one verify() reads back cell
+    by cell).
+    守住 _harvest_calibration_candidates 存在的全部理由：它必須存下一個
+    我們自己填的、讀不回來的格子（got=None——真值可信，因為 `want` 是
+    「我們自己的」求解器選中、driver 親自點擊/打字打上去的），並且必須
+    拒絕三種不安全的情況——讀對了但錯的數字（真值本身可疑，可能真的
+    誤讀、也可能是點擊沒生效）、盤面已改變、以及數獨以外的任何題目
+    （verify() 只有數獨會逐格讀回）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import VerifyReport\n"
+        "from linkedin_games_solver.puzzles import sudoku, queens\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np, types\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "image = np.zeros((10, 10, 3), dtype='uint8')\n"
+        "candidates_dir = captures_root / 'calibration_candidates'\n"
+        ""
+        "# Case 1: got=None - we filled it, OCR could not confirm -> harvested.\n"
+        "app.result = types.SimpleNamespace(puzzle_key=sudoku.KEY)\n"
+        "report = VerifyReport(supported=True, ok=False, mismatches=[(0, 0, None, 5)])\n"
+        "app._clear_log()\n"
+        "app._harvest_calibration_candidates(image, report)\n"
+        "saved = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved) == 1, 'expected exactly one saved candidate / 應該存下剛好一個候選: %r' % saved\n"
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert translator('log_calibration_candidate_saved', n=1) in log, log\n"
+        "print('UNREAD_CELL_HARVESTED_OK')\n"
+        ""
+        "# Case 2: got is a WRONG digit (read confidently, just not what we\n"
+        "# filled) -> must NOT be harvested, the ground truth itself is suspect.\n"
+        "report2 = VerifyReport(supported=True, ok=False, mismatches=[(1, 1, 3, 5)])\n"
+        "app._harvest_calibration_candidates(image, report2)\n"
+        "saved2 = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved2) == 1, 'a confidently-wrong digit was harvested / 讀對但錯的數字被收集了: %r' % saved2\n"
+        "print('WRONG_DIGIT_NOT_HARVESTED_OK')\n"
+        ""
+        "# Case 3: board_changed -> must NOT be harvested.\n"
+        "report3 = VerifyReport(supported=True, ok=False, board_changed=True, mismatches=[(2, 2, None, 5)])\n"
+        "app._harvest_calibration_candidates(image, report3)\n"
+        "saved3 = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved3) == 1, 'harvested from a changed board / 從已改變的盤面收集了: %r' % saved3\n"
+        "print('BOARD_CHANGED_NOT_HARVESTED_OK')\n"
+        ""
+        "# Case 4: not Sudoku -> must NOT be harvested (verify() only reads\n"
+        "# individual cells back for Sudoku).\n"
+        "app.result = types.SimpleNamespace(puzzle_key=queens.KEY)\n"
+        "report4 = VerifyReport(supported=True, ok=False, mismatches=[(3, 3, None, 5)])\n"
+        "app._harvest_calibration_candidates(image, report4)\n"
+        "saved4 = list(candidates_dir.glob('*.png'))\n"
+        "assert len(saved4) == 1, 'harvested from a non-Sudoku puzzle / 從非數獨題目收集了: %r' % saved4\n"
+        "print('NON_SUDOKU_NOT_HARVESTED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "calibration-candidate harvesting is broken / 校準候選資料收集有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  harvest calibration candidates only saves safe ground truth OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "UNREAD_CELL_HARVESTED_OK", "WRONG_DIGIT_NOT_HARVESTED_OK",
+            "BOARD_CHANGED_NOT_HARVESTED_OK", "NON_SUDOKU_NOT_HARVESTED_OK",
+        )), out
+        print("  harvest calibration candidates only saves safe ground truth OK")
+
+
+def test_harvest_raw_board_capture_only_for_digit_puzzles():
+    """
+    Guards _harvest_raw_board_capture: it must save the pristine pre-fill
+    board for Sudoku, Zip and Patches (the only puzzles that read digits -
+    see core/digits.py), and must NOT save for Queens or Tango, which never
+    call into digit recognition at all.
+    守住 _harvest_raw_board_capture：必須為 Sudoku、Zip、Patches（唯三會讀
+    數字的題目——見 core/digits.py）存下填答前的乾淨畫面，且絕不能為皇后
+    或雙子星存——它們從來不會呼叫數字辨識。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.puzzles import sudoku, zip_path, patches, queens, tango\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "image = np.zeros((10, 10, 3), dtype='uint8')\n"
+        "candidates_dir = captures_root / 'calibration_candidates'\n"
+        ""
+        "# The three digit puzzles -> each saves exactly one raw capture.\n"
+        "for key in (sudoku.KEY, zip_path.KEY, patches.KEY):\n"
+        "    app._clear_log()\n"
+        "    app._harvest_raw_board_capture(image, key)\n"
+        "    matches = list(candidates_dir.glob(key + '_raw_*.png'))\n"
+        "    assert len(matches) == 1, 'expected one raw capture for %r / 應該存下一張原始畫面: %r' % (key, matches)\n"
+        "    log = app.log_text.get('1.0', 'end')\n"
+        "    assert translator('log_raw_board_saved') in log, log\n"
+        "print('DIGIT_PUZZLES_HARVESTED_OK')\n"
+        ""
+        "# Queens and Tango never read digits -> must NOT be saved.\n"
+        "before = len(list(candidates_dir.glob('*.png')))\n"
+        "app._harvest_raw_board_capture(image, queens.KEY)\n"
+        "app._harvest_raw_board_capture(image, tango.KEY)\n"
+        "after = len(list(candidates_dir.glob('*.png')))\n"
+        "assert after == before, 'a non-digit puzzle was harvested / 非數字題目也被存了: before=%r after=%r' % (before, after)\n"
+        "print('NON_DIGIT_PUZZLES_NOT_HARVESTED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "raw board capture harvesting is broken / 原始棋盤畫面收集有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  harvest raw board capture only for digit puzzles OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "DIGIT_PUZZLES_HARVESTED_OK", "NON_DIGIT_PUZZLES_NOT_HARVESTED_OK",
+        )), out
+        print("  harvest raw board capture only for digit puzzles OK")
+
+
+def test_harvest_overlay_capture_only_for_digit_puzzles():
+    """
+    Guards _harvest_overlay_capture: it must save the already-computed
+    answer overlay for Sudoku, Zip and Patches, must NOT save for Queens or
+    Tango, and must NOT save when there is no overlay to save (None - the
+    same thing render_overlay itself returns on failure).
+    守住 _harvest_overlay_capture：必須為 Sudoku、Zip、Patches 存下已經算好
+    的答案疊圖，絕不能為皇后或雙子星存，也絕不能在沒有疊圖可存時存
+    （None——跟 render_overlay 失敗時自己回傳的東西一樣）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.puzzles import sudoku, zip_path, patches, queens, tango\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "overlay = np.zeros((10, 10, 3), dtype='uint8')\n"
+        "candidates_dir = captures_root / 'calibration_candidates'\n"
+        ""
+        "# The three digit puzzles -> each saves exactly one overlay.\n"
+        "for key in (sudoku.KEY, zip_path.KEY, patches.KEY):\n"
+        "    app._clear_log()\n"
+        "    app._harvest_overlay_capture(overlay, key)\n"
+        "    matches = list(candidates_dir.glob(key + '_answer_*.png'))\n"
+        "    assert len(matches) == 1, 'expected one overlay for %r / 應該存下一張疊圖: %r' % (key, matches)\n"
+        "    log = app.log_text.get('1.0', 'end')\n"
+        "    assert translator('log_answer_overlay_saved') in log, log\n"
+        "print('DIGIT_PUZZLES_HARVESTED_OK')\n"
+        ""
+        "# Queens and Tango never read digits -> must NOT be saved.\n"
+        "before = len(list(candidates_dir.glob('*.png')))\n"
+        "app._harvest_overlay_capture(overlay, queens.KEY)\n"
+        "app._harvest_overlay_capture(overlay, tango.KEY)\n"
+        "after = len(list(candidates_dir.glob('*.png')))\n"
+        "assert after == before, 'a non-digit puzzle was harvested / 非數字題目也被存了: before=%r after=%r' % (before, after)\n"
+        "print('NON_DIGIT_PUZZLES_NOT_HARVESTED_OK')\n"
+        ""
+        "# No overlay (render_overlay failed) -> must NOT be saved.\n"
+        "before2 = len(list(candidates_dir.glob('*.png')))\n"
+        "app._harvest_overlay_capture(None, sudoku.KEY)\n"
+        "after2 = len(list(candidates_dir.glob('*.png')))\n"
+        "assert after2 == before2, 'a None overlay was harvested / None 疊圖也被存了: before=%r after=%r' % (before2, after2)\n"
+        "print('NO_OVERLAY_NOT_HARVESTED_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "answer overlay harvesting is broken / 答案疊圖收集有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  harvest overlay capture only for digit puzzles OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "DIGIT_PUZZLES_HARVESTED_OK", "NON_DIGIT_PUZZLES_NOT_HARVESTED_OK",
+            "NO_OVERLAY_NOT_HARVESTED_OK",
+        )), out
+        print("  harvest overlay capture only for digit puzzles OK")
+
+
 if __name__ == "__main__":
     print("Automation tests / 自動化測試")
     test_queens_resumes_half_done_board()
@@ -590,4 +1585,15 @@ if __name__ == "__main__":
     test_dry_run_touches_no_mouse_module()
     test_image_mode_needs_no_screen_packages()
     test_stop_interrupts_an_in_progress_solve()
+    test_the_window_cannot_sit_inside_the_capture_region()
+    test_park_mouse_clear_of_capture_avoids_the_region_and_the_failsafe_corner()
+    test_round_parks_the_mouse_and_recaptures_before_solving()
+    test_region_monitor_size_only_restamps_when_the_region_actually_changes()
+    test_resolution_change_warning_fires_only_when_sizes_differ()
+    test_continuous_mode_alerts_and_stops_after_a_failed_round()
+    test_guard_abort_does_not_kill_continuous_mode()
+    test_solve_failed_frame_is_saved_for_diagnosis()
+    test_harvest_calibration_candidates_only_saves_safe_ground_truth()
+    test_harvest_raw_board_capture_only_for_digit_puzzles()
+    test_harvest_overlay_capture_only_for_digit_puzzles()
     print("\nAll passed / 全部通過")

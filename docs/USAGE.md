@@ -42,14 +42,21 @@ Windows only.
 |---|---|
 | **Board** | The screen rectangle to capture (X / Y / W / H). **Reset** restores the default; **Test** shows what would be captured |
 | **Puzzle** | Leave on *Auto-detect* unless it guesses wrong |
-| **Speed** | Fast / Normal / Slow / Slowest. Start at Normal; if the page cannot keep up, go slower |
+| **Speed** | Fastest / Faster / Fast / Normal / Slow / Slowest. Start at Normal; if the page cannot keep up, go slower. Measured five-game fill totals: Normal 37s, Fast 21s, Faster 20s, Fastest 18s - Fastest and Faster are pulled close to Fast on purpose (an earlier, far more aggressive Fastest caused real dropped input and was pulled back) but remain less tested; dropped clicks are self-repaired by the verify pass, a Zip drag that outruns the page is not |
 | **Preview** | Tick this and it prints the plan without touching the mouse |
-| **Hide** | Minimise the app window while it plays |
+| **Hide** | Minimise the app window while it plays. Left unticked, the window stays visible but is automatically kept clear of the capture region - it can no longer sit on top of the board and block part of it from ever being captured (2026-08-08: this is exactly what broke Mini Sudoku recognition for a whole session) |
 | **Verify** | After filling, re-read the board and fix any cells that did not take |
 | **Solve & Fill** | Do it |
 | **Solve only** | Work out the answer and show it, but do not touch the mouse |
 | **Stop** | Abort immediately |
 | **Save** | Save the captured image — useful when reporting a recognition problem |
+
+**If you switch monitors, change resolution, or change Windows display
+scaling**, the saved **Board** rectangle can go stale — it is a fixed
+position on screen, calibrated once. The app now remembers the screen size
+from when the region was last actually calibrated and warns (without
+blocking) when it no longer matches. If you see this warning and solving
+starts failing, press **Reset** or **Test** to recalibrate.
 
 ### Mode: Image file
 
@@ -70,16 +77,39 @@ Your choice is saved and applies next time you open the app.
 
 ---
 
-## Playing a puzzle on the web
+## Playing a sitting on the web (continuous mode)
 
-1. Open the puzzle in Chrome and let the page finish loading. Do not scroll the
-   board out of view.
-2. Start the app and select **Screen (auto-play)**.
-3. Optional but recommended the first time: tick **Preview** and press
-   **Solve & Fill**. It prints exactly what it would click without touching
-   anything. Check the puzzle type and board size look right, then untick.
-4. Press **Solve & Fill**.
-5. **Take your hands off the mouse.** It waits about a second, then plays.
+The order is the opposite of what you might expect: **press the button first,
+open the puzzle second**. And **one press covers the whole sitting**: after
+**Solve & Fill**, the program keeps watching the capture region - every
+puzzle that appears gets solved and filled, one after another, until you
+press **Stop**.
+
+1. Start the app and select **Screen (auto-play)**.
+2. Optional but recommended the first time: tick **Preview**, press
+   **Solve & Fill**, and switch to the puzzle page. It prints exactly what it
+   would click without touching anything (a preview runs one round and
+   stops). Check the puzzle type and board size look right, then untick.
+3. Press **Solve & Fill**. The status line shows it is watching the screen.
+4. Switch to Chrome and open the first puzzle. Do not scroll the board out
+   of view.
+5. **Take your hands off the mouse.** The moment the board appears, it plays.
+6. When a round finishes the status line asks for the next puzzle. Open it
+   and the program takes over again; press **Stop** after the last one.
+
+Pressing the button with the puzzle already on screen also works - it detects
+the board within a second and starts right away. If recognition fails on a
+round (say the page's entrance animation had not settled), it automatically
+retries on a fresh capture up to three times.
+
+**If it still fails after all three attempts, it does not fail silently.**
+The window comes back into view, a system alert sound plays, the status line
+turns red, and continuous mode stops there instead of waiting unattended for
+a puzzle that will never be filled. If every retry hit the exact same error,
+the message says so explicitly - that means retrying again by hand is
+unlikely to help either, and it is worth checking the capture region (press
+**Test**) before starting again. Play the puzzle by hand, then press
+**Solve & Fill** again for the next one.
 
 ### While it is running
 

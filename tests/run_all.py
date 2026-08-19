@@ -11,8 +11,8 @@ from pathlib import Path
 
 SUITES = ["test_compat.py", "test_solvers.py", "test_digits.py",
           "test_recognition.py", "test_automation.py",
-          "test_board_guard.py", "test_zip_dots.py", "test_settings.py",
-          "test_image_io.py", "test_cli.py"]
+          "test_board_guard.py", "test_board_wait.py", "test_zip_dots.py",
+          "test_settings.py", "test_image_io.py", "test_cli.py"]
 
 
 def main():

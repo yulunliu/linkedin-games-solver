@@ -223,6 +223,26 @@ def _verify_sudoku(image: np.ndarray, result, n_hint) -> VerifyReport:
 _VERIFIERS = {queens.KEY: _verify_queens, tango.KEY: _verify_tango, sudoku.KEY: _verify_sudoku}
 
 
+def supports(puzzle_key: str) -> bool:
+    """Can this puzzle's answer be read back at all?
+    這款謎題的作答結果讀得回來嗎？
+
+    WHY callers need this BEFORE verify() 為什麼呼叫端要在 verify() 之前問:
+    measured in real play (both 2026-08-05 and 2026-08-06 session logs), the
+    verify step slept 0.9s waiting for the page to redraw and took a fresh
+    screen capture - and only THEN discovered the puzzle was Zip or Patches
+    and nothing could be read back. ~0.95s of pure waste per drag-puzzle
+    round, on 2 of the 5 daily puzzles. Support is a static fact about the
+    dispatch table; asking it costs nothing and needs no capture.
+    為什麼呼叫端要在 verify() 之前問：真實遊玩實測（2026-08-05 與
+    2026-08-06 兩天的執行記錄都一樣），驗證步驟會先睡 0.9 秒等網頁重畫、
+    再擷取一次畫面——「然後」才發現這題是 Zip 或 Patches、根本讀不回來。
+    每一輪拖曳類謎題白白浪費約 0.95 秒，五題裡有兩題如此。支不支援是
+    分派表裡的靜態事實，問一下不花任何成本、也不需要擷取。
+    """
+    return puzzle_key in _VERIFIERS
+
+
 def verify(image: np.ndarray, result, n_hint: int | None = None) -> VerifyReport:
     verifier = _VERIFIERS.get(result.puzzle_key)
     if verifier is None:

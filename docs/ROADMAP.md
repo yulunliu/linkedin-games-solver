@@ -160,6 +160,30 @@ the measured evidence.
   not fixed: `PatchesPlayer` now runs its last two rectangles with the
   mid-plan check off — a small, bounded, and documented reopening of the risk
   the guard exists to close, not a silent one.
+  **Superseded on the `speed-optimization` branch (not yet merged to
+  `main`):** a real 8x8 Patches fill (2026-08-09) showed this gap is bigger
+  than "the last two rectangles" — 7 consecutive structural-check failures,
+  well past the position-based mitigation above. Fixed properly this time
+  with a reference-content check rather than another position-based
+  carve-out: when the structural check fails, the parts of the board NOT
+  covered by our own fills are compared against the frame the plan was armed
+  on. The naive first version of this repeated the exact "random noise reads
+  as our board" mistake described above and was caught by an independent
+  adversarial review before shipping — see the
+  [`[Unreleased]` CHANGELOG entry](../CHANGELOG.md) for the full story,
+  including why the fix had to be re-designed around an affirm-or-decline
+  contract that can only make the guard's judgement more lenient toward a
+  board proven to still be ours, never less strict toward one that is not.
+  **在 `speed-optimization` 分支上已經取代（尚未合併回 `main`）：** 一次
+  真實的 8x8 拼塊填答（2026-08-09）顯示這個缺口比「最後兩塊矩形」大得多
+  ——結構性檢查連續失敗 7 次，遠超過上面那個位置判斷法能撐住的範圍。
+  這次改用參考內容比對真正修好，不是再做一個位置判斷的特例：結構性檢查
+  失敗時，把棋盤上「沒被我們填色蓋住」的部分拿去跟計畫武裝當下的畫面
+  比對。這個做法的第一版天真地重演了上面那個「雜訊被讀成我們的棋盤」的
+  錯誤，在上線前被一次獨立的對抗性審查抓到——完整過程見
+  [`[尚未發布]` 的 CHANGELOG 條目](../CHANGELOG.md)，包含為什麼修法最後
+  要改成「只能認證、不能判死」的契約——這種契約只可能讓保護對「證實還是
+  我們的棋盤」更寬容，絕不會讓它對「證實不是」變得更不嚴格。
 
 ---
 
@@ -193,7 +217,30 @@ UI for anything else.
   primary display; there is no search across displays.
 - **Windows display scaling is unhandled.** At 125 % or 150 % DPI scaling, `mss`
   and `pyautogui` can disagree about what a "pixel" is, so the capture is right
-  and the clicks land slightly off.
+  and the clicks land slightly off. Still true on `speed-optimization` as of
+  2026-08-09 - the item just below only detects that the *screen* changed, not
+  a DPI-scaling mismatch on an otherwise unchanged screen. Not yet investigated
+  on real hardware.
+  `speed-optimization` 分支到 2026-08-09 為止依然如此——下面那一項只能
+  偵測「螢幕本身變了」，偵測不到「螢幕沒變、但 DPI 縮放不一致」這種情況。
+  還沒有在真實有縮放設定的硬體上驗證過。
+
+**Partial progress, `speed-optimization` branch (not yet merged to `main`):**
+the region is now stamped with the primary monitor's size at the moment it
+was last actually recalibrated, and a mismatch against the current monitor
+size is now surfaced as a non-blocking warning before a run starts, instead
+of silently capturing whatever happens to be at the stale coordinates. This
+does not find the board on a new screen automatically (item 1 in Planned,
+below, is still the real fix) - it only makes the *symptom* of a stale
+region ("board not found", no obvious reason) traceable to its actual cause.
+See the [`[Unreleased]` CHANGELOG entry](../CHANGELOG.md).
+**部分進展，`speed-optimization` 分支（尚未合併回 `main`）：** 擷取範圍
+現在會記住「上次真的被重新校準」那一刻的主螢幕尺寸，跟目前螢幕尺寸不
+一樣時，執行前會跳出不擋執行的警告，而不是安靜地繼續抓那組可能早就
+失效的座標。這不是自動在新螢幕上找到棋盤（下面「計畫」的第 1 項才是
+真正的修法）——它只是讓「擷取範圍失效」這個症狀（「找不到棋盤」、
+看不出原因）能被追溯到真正的原因。見
+[`[尚未發布]` 的 CHANGELOG 條目](../CHANGELOG.md)。
 
 ### Planned
 
@@ -421,6 +468,129 @@ Blocked on having the right screenshot, not on any code.
 | **Try DOM-free page-zoom detection** | Recognition degrades below 500 px. The app already warns; it could instead detect the zoom level and suggest a specific `Ctrl` `+` count |
 | **A sixth puzzle** | [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-sixth-puzzle) documents the six steps. Nothing in `core/` or `automation/`'s plumbing needs to change |
 | **Broaden CI** | `.github/workflows/tests.yml` already runs the suites on Windows and Ubuntu across three Python versions. Worth adding a build job that produces the .exe |
+
+---
+
+## 7. Zip's drag can outrun the page and draw the wrong path
+
+*(Found on `speed-optimization`, not yet on `main`.)*
+
+### The problem
+
+A real 2026-08-14 session: `solve_image` computed the correct answer, the
+drag executed (49 interpolated points), and LinkedIn's own page rejected it -
+a visible red banner reading "哎呀！您必須按照數字的順序。" (Oops, you must
+follow the numbers in order), with most of the board filled in a pattern that
+does not follow the 1→13 sequence. The answer was right; what actually got
+drawn on the page was not.
+
+`drag_step_delay` at the "fastest" tier is 0.007s. A 13-number Zip path
+interpolated into 49 points completes in roughly 49 × 0.007 ≈ 0.34s of raw
+step delay - fast enough that the page's own per-cell hover/dragover
+handling plausibly cannot keep up on a long, winding path, even though the
+same speed tier handles shorter drags (and every other puzzle's clicks)
+without incident.
+
+### Why it matters
+
+Zip has no post-fill verification by design (`verify.py`'s own docstring:
+its answer is a drawn path, not something the recognisers read back), so
+this class of failure is invisible to the program. It fills, reports done,
+and moves on - the only way this was caught at all was a human watching the
+screen recording. A retry of the same puzzle at normal speed succeeded
+cleanly (`board gone` in 2.10s, versus 16.26s of the page stuck mid-transition
+after the failed attempt) - one data point suggesting the drag speed is the
+actual variable, not the puzzle or the page being unusually slow that day,
+but one data point is not a measurement.
+
+### Planned
+
+1. **Measure, not guess.** Reproduce with a scripted/stubbed drag at
+   several `drag_step_delay` values against a real Zip board of comparable
+   length (13 numbers), and find where the failure stops reproducing - the
+   same "measure before touching a speed constant" discipline every other
+   timing constant in this branch has been held to.
+2. **Consider scaling delay with path length**, not just puzzle type - a
+   3-number Zip and a 13-number Zip currently get the same per-step delay;
+   the failure so far has only been seen on the longer one.
+3. **Whatever the fix, it must not regress `03-CALIBRATION.md`'s existing
+   speed-tier measurements** for the other four puzzles, which were
+   real-play-validated at the current values.
+
+Blocked on collecting more real Zip failures/successes across a range of
+path lengths before changing a shared timing constant - one incident is a
+lead, not yet a calibration.
+
+---
+
+## 8. Sudoku, Zip and Patches' digit templates and thresholds are shared, not per-puzzle
+
+*(Found on `speed-optimization`, not yet on `main`.)*
+
+### The problem
+
+A real 2026-08-14 Patches failure: a clearly legible "6" badge scored 0.9722
+against the "6" template - comfortably above `MIN_SCORE=0.90` - but was
+still rejected, because "5" scored 0.9573, a margin of 0.0148 against a
+required `max(MIN_MARGIN, MIN_RELATIVE_MARGIN * (1 - best_score))` of
+0.0223. `classify_glyph` correctly refused to guess - that part worked
+exactly as designed - but the label was thrown away for the whole round.
+
+`core/digits.py`'s templates are already organised by digit, not by puzzle -
+`_load_templates()` accepts contributions from any source and
+`classify_glyph` always takes the best-scoring variant per digit, so adding
+more real templates is close to risk-free by construction. The genuinely
+shared, genuinely risky part is the three threshold constants
+(`MIN_SCORE`, `MIN_MARGIN`, `MIN_RELATIVE_MARGIN`) - one global value each,
+applied to Sudoku's, Zip's and Patches' classification decisions alike.
+Loosening them to let this Patches "6" through would loosen them for
+Sudoku and Zip too, with no way to measure the blast radius from inside
+Patches' own test fixtures.
+
+### Why it matters
+
+Today's specific case degrades safely (an unreadable-but-not-wrong label,
+same as item 5's 0/7 gap) - but every future attempt to sharpen Patches'
+digit reading runs into the same wall: any threshold change is a change to
+all three puzzles' acceptance bar, whether intended or not.
+
+### Planned
+
+1. **Split templates and thresholds into three independent, per-puzzle
+   sets.** Templates already need no more than reorganising by puzzle
+   (currently flat, digit-keyed); thresholds need `classify_glyph` and
+   `read_number` (`core/digits.py`) to accept a puzzle identity, with
+   `sudoku.py` / `zip_path.py` / `patches.py` each passing their own -
+   contained to those files plus `tools/calibrate_digits.py`, nothing in
+   `detect_type`, grid detection, or any other puzzle's logic.
+2. **Seed the new Sudoku and Zip pools from the CURRENT shared set**, so the
+   split itself changes nothing observable for either - a pure refactor,
+   verified with the existing fixtures before any new data goes in.
+3. **Collect real Patches "5" and "6" badge captures** (today's failing
+   round is one) and re-measure the pairwise template distances for Patches
+   specifically, the same protocol `MIN_MARGIN`'s own docstring already
+   used for the shared set. **A collection mechanism for this now exists**:
+   every successful Sudoku, Zip or Patches solve saves its pristine
+   pre-fill capture to `calibration_candidates/` (`ui/app.py`'s
+   `_harvest_raw_board_capture`, added on `speed-optimization` after item
+   7/8 were first recorded) - still needs a human to review, crop and
+   label before anything reaches `tools/calibrate_digits.py`, but the
+   "there is nowhere real data accumulates on an ordinary day" gap this
+   item used to describe is closed.
+4. **Only then consider loosening Patches' own threshold** - never the
+   shared ones - backed by that measurement, exactly the way every other
+   threshold in this project has been changed.
+5. **Cheaper thing worth trying first, independent of the above:** Patches
+   never passes `allowed=` to `classify_glyph`, unlike Sudoku (which
+   already restricts candidates to `1..n` and measurably widens its
+   margins by doing so - see `MIN_MARGIN`'s own docstring). A Patches label
+   is bounded by the board's cell count; narrowing candidates the same way
+   might widen today's 6-vs-5 margin with no template or threshold changes
+   at all, and is worth measuring before the larger split.
+
+Not started - recorded for when more real Patches digit failures have been
+collected, per the user's explicit call to defer rather than change a
+shared threshold on one data point.
 
 ---
 

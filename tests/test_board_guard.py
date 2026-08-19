@@ -626,6 +626,69 @@ def test_guard_survives_a_real_mid_drag_patches_capture():
     print("  guard survives a real mid-drag Patches capture OK")
 
 
+def test_guard_survives_two_full_width_rows_of_a_real_patches_fill():
+    """The false abort a user actually hit on 2026-08-06, reproduced from a
+    screen recording and a diagnostic frame the guard itself saved.
+    2026-08-06 使用者實際碰到的誤判中止，從螢幕錄影跟守衛自己存下的
+    診斷畫面重現。
+
+    A real 7x7 puzzle solved into just 6 rectangles, 4 of them full-width
+    rows - unlike every other Patches fixture in this file (10-14 rects,
+    none full-width). With only 2 of those 6 rows filled, detect_grid_size
+    (with the mask_saturated fallback) failed 3 checks in a row and the old
+    tolerance of 2 aborted a plan that was still correctly in progress; the
+    user went on to solve the same board by hand with no problem. See
+    PATCHES_FAILURE_TOLERANCE's own comment for the full measurement,
+    including that even the PRISTINE frame (0 filled) failed to locate on
+    1 of 20 near-identical re-captures - this puzzle's margin was thin
+    before anything was drawn at all.
+    一個真實的 7x7 題目解出來只有 6 塊矩形，其中 4 塊是貫穿全寬的整列——
+    跟這個檔案裡其他每一張 Patches 測試圖都不一樣（10~14 塊，沒有任何一塊
+    貫穿全寬）。那 6 塊裡只填了 2 塊，`detect_grid_size`（含遮色備援）就
+    連續 3 次檢查失敗，舊的容忍值 2 把一個其實還在正常進行的計畫中止了；
+    使用者後來手動接著解完，完全沒問題。完整量測依據見
+    `PATCHES_FAILURE_TOLERANCE` 自己的註解，包含連「完全空白」的畫面，
+    對 20 次幾乎相同的重新擷取都有 1 次定位失敗——這道題目的容錯空間，
+    在還沒開始畫任何東西之前就已經很薄。
+    """
+    from linkedin_games_solver.automation.board_watch import (
+        BoardWatch,
+        PATCHES_FAILURE_TOLERANCE,
+        locate_board,
+    )
+
+    pristine = read_image(FIXTURES / "pristine_patches_browser.png")
+    filled = read_image(FIXTURES / "patches_two_full_rows_filled.png")
+    assert pristine is not None and filled is not None, "missing fixture / 缺少測試圖"
+
+    # The bug in one line: the REAL failing frame, checked directly.
+    # 一行重現這個 bug：直接對真實失敗的那張畫面檢查。
+    assert locate_board(filled, 7) is None, (
+        "this fixture started locating - either detect_grid_size or the mask "
+        "changed; re-measure PATCHES_FAILURE_TOLERANCE before assuming this "
+        "is fixed / 這張圖開始定位得到了——detect_grid_size 或遮色邏輯有變動；"
+        "重新量測 PATCHES_FAILURE_TOLERANCE 之前先不要假設這已經修好"
+    )
+
+    # End to end: a real Patches plan (arm on the pristine frame, then every
+    # check sees the same persistently-failing frame) must survive exactly
+    # the number of checks this real puzzle needed (6), not fewer.
+    # 端到端：一次真實的拼塊計畫（在空白畫面上武裝，之後每次檢查都看到
+    # 同一張持續失敗的畫面）必須撐過這道真實題目需要的次數（6），不能更少。
+    n_checks = 6
+    watch = BoardWatch(mapper=_mapper(7), n=7, grab=lambda *a: filled, locate=locate_board,
+                       failure_tolerance=PATCHES_FAILURE_TOLERANCE, min_interval=0.0)
+    assert watch.arm(pristine), "arm() must succeed on the pristine frame / arm() 在空白畫面上必須成功"
+    for i in range(n_checks):
+        assert watch.still_there(), (
+            f"guard aborted at check {i + 1}/{n_checks} - PATCHES_FAILURE_TOLERANCE "
+            f"no longer covers this real puzzle's full plan / "
+            f"守衛在第 {i + 1}/{n_checks} 次檢查就中止——PATCHES_FAILURE_TOLERANCE "
+            f"已經不夠讓這道真實題目跑完整條計畫"
+        )
+    print("  guard survives two full-width rows of a real Patches fill OK")
+
+
 def test_guard_still_fails_late_in_the_same_capture():
     """Known remaining gap: masking does not reach late-stage fill. Not fixed;
     documented so a future change is judged against a real number.
@@ -754,6 +817,253 @@ def test_patches_tolerates_persistent_failure_up_to_the_measured_limit():
     print("  Patches tolerates persistent failure up to the measured limit OK")
 
 
+def test_content_check_survives_todays_real_patches_failure():
+    """The 2026-08-09 real failure, replayed end to end: an 8x8 Patches
+    board whose fills erased the grid lines for good - locate failed 7
+    STRAIGHT times on an unmoved board (session log run_20260809_153638_479,
+    reproduced identically twice), exceeding PATCHES_FAILURE_TOLERANCE=6 and
+    aborting a correct fill. With the reference-content check, the same
+    sequence must now survive indefinitely: content matching is affirmative
+    evidence the board is still ours.
+    2026-08-09 的真實失敗，端到端重播：一個 8x8 拼塊棋盤，填色把格線永久
+    抹掉——定位在一個沒動過的棋盤上「連續」失敗 7 次（執行記錄
+    run_20260809_153638_479，完全相同地重現兩次），超過
+    PATCHES_FAILURE_TOLERANCE=6、把一次正確的填答中止了。加上參考內容
+    比對之後，同樣的序列現在必須撐得過去：內容吻合是「棋盤還是我們的」
+    的正面證據。
+    """
+    from linkedin_games_solver.automation.board_watch import (
+        PATCHES_FAILURE_TOLERANCE, locate_board,
+    )
+
+    pristine = read_image(FIXTURES / "pristine_patches_8x8_20260809.png")
+    abort_frame = read_image(FIXTURES / "patches_8x8_top_rows_filled_20260809.png")
+    assert pristine is not None and abort_frame is not None, "missing fixture / 缺少測試圖"
+
+    # Premises, asserted not assumed: the abort frame genuinely fails locate
+    # (today's bug), and a watch WITHOUT the content check still aborts -
+    # so if the test below passes, the content check is what saved it.
+    # 前提用斷言驗證而不是假設：中止畫面真的會讓定位失敗（今天的 bug），
+    # 而「沒有」內容比對的 watch 依然會中止——所以下面的測試若通過，
+    # 救回它的就是內容比對。
+    assert locate_board(abort_frame, 8) is None, \
+        "the abort frame started locating - re-measure before trusting this test / 中止畫面開始定位得到了，先重新量測"
+    blind = BoardWatch(mapper=_mapper(8), n=8, min_interval=0.0,
+                       grab=lambda *a: abort_frame,
+                       failure_tolerance=PATCHES_FAILURE_TOLERANCE)
+    assert blind.arm(pristine)
+    survived = sum(1 for _ in range(PATCHES_FAILURE_TOLERANCE + 1) if blind.still_there())
+    assert survived == PATCHES_FAILURE_TOLERANCE, \
+        "the blind-tolerance premise changed - re-measure / 盲目容忍的前提變了，先重新量測"
+
+    watch = BoardWatch(mapper=_mapper(8), n=8, min_interval=0.0,
+                       grab=lambda *a: abort_frame,
+                       failure_tolerance=PATCHES_FAILURE_TOLERANCE,
+                       use_content_check=True)
+    assert watch.arm(pristine)
+    for i in range(12):   # comfortably past today's 7-failure run 遠超過今天的連續 7 次
+        assert watch.still_there(), (
+            f"aborted at check {i + 1} even though the reference content matches / "
+            f"參考內容明明吻合，卻在第 {i + 1} 次檢查中止"
+        )
+    print("  content check survives today's real Patches failure OK")
+
+
+def test_unaffirmed_frames_keep_the_original_tolerance_bound():
+    """Frames the content check cannot affirm - noise, and flat gray at ANY
+    level including the adversarial 225..244 band that scored a perfect 1.0
+    against an earlier revision of this check - must leave the ORIGINAL
+    tolerance counting untouched: tolerate 6, abort on the 7th, exactly as
+    the shipped pre-change guard did. The affirmative-only contract means
+    no replacement scenario is ever handled WORSE than before.
+    內容比對無法認證的畫面——雜訊、以及「任何」灰階的整片單色（包含曾讓
+    前一版檢查拿到滿分 1.0 的對抗性 225~244 區間）——必須讓「原本的」
+    容忍計數原封不動：容忍 6 次、第 7 次中止，跟改動前的正式版完全一樣。
+    只做正面認證的契約，代表沒有任何被替換情境會被處理得比以前差。
+    """
+    from linkedin_games_solver.automation.board_watch import (
+        PATCHES_FAILURE_TOLERANCE, reference_content_matches,
+    )
+
+    pristine = read_image(FIXTURES / "pristine_patches_8x8_20260809.png")
+
+    # The review's flat-gray sweep, pinned: no uniform level may be affirmed.
+    # 審查的整片灰掃描，固化下來：任何均勻灰階都不得被認證。
+    affirmed = [v for v in range(0, 256, 5) if reference_content_matches(
+        pristine, np.full_like(pristine, v))]
+    affirmed += [v for v in range(225, 246) if reference_content_matches(
+        pristine, np.full_like(pristine, v))]
+    assert not affirmed, f"flat gray levels wrongly affirmed / 被錯誤認證的整片灰階: {affirmed}"
+
+    noise = np.random.RandomState(0).randint(0, 255, pristine.shape).astype(np.uint8)
+    assert reference_content_matches(pristine, noise) is False
+
+    for frame in (np.full_like(pristine, 245), np.full_like(pristine, 235), noise):
+        watch = BoardWatch(mapper=_mapper(8), n=8, min_interval=0.0,
+                           grab=lambda *a, _f=frame: _f,
+                           failure_tolerance=PATCHES_FAILURE_TOLERANCE,
+                           use_content_check=True)
+        assert watch.arm(pristine)
+        for i in range(PATCHES_FAILURE_TOLERANCE):
+            assert watch.still_there(), f"aborted during tolerance at {i + 1} / 容忍期間第 {i + 1} 次就中止"
+        assert watch.still_there() is False, \
+            "did not abort once tolerance ran out / 容忍用盡後沒有中止"
+    print("  unaffirmed frames keep the original tolerance bound OK")
+
+
+def test_replacements_and_scrims_are_never_affirmed():
+    """Every canonical replacement scenario, PLUS the adversarial review's
+    two strongest attacks, must fail affirmation - an affirmed impostor
+    would reset the counter forever and disable the guard entirely.
+    每一種既有的替換情境，加上對抗性審查最強的兩個攻擊，都必須無法通過
+    認證——被認證的冒牌貨會永遠重置計數，等於整個保護被關掉。
+
+    Attack 1 (grid self-similarity): a DIFFERENT real 8x8 Patches board
+    (fullscreen_patches.png), scaled into the reference rect and painted
+    with saturated fills so locate fails - scored 0.7602 against the
+    earlier 0.75 threshold. Attack 2 (scrims/dims): a white scrim of
+    opacity a compresses the masked content's contrast by exactly (1-a),
+    measured 0.750/0.500 at 25%/50% on the mss-vs-mss pair below - the
+    CONTENT_CONTRAST_KEEP=0.85 gate must decline them, restoring the old
+    tolerance-bounded behaviour the review showed the earlier revision had
+    silently removed. The scrim pair uses the attempt-1 abort frame as the
+    reference because production references are mss grabs like the checks -
+    the video-sourced pristine fixture is softer than mss and would
+    understate a scrim's contrast loss.
+    攻擊一（網格自相似）：另一塊「真實的」8x8 拼塊棋盤
+    （fullscreen_patches.png），縮放進參考矩形並塗上飽和填色讓定位失敗——
+    對先前 0.75 的門檻拿到 0.7602。攻擊二（遮罩/調暗）：濃度 a 的白色
+    遮罩會把遮罩內內容的對比精確壓成 (1-a) 倍，下面這組 mss 對 mss 配對
+    實測 25%／50% 是 0.750／0.500——CONTENT_CONTRAST_KEEP=0.85 必須拒絕
+    認證，恢復審查指出前一版悄悄弄丟的「舊容忍上限」行為。遮罩配對用
+    第一次中止的畫面當參考，因為正式運作的參考跟檢查一樣都是 mss 擷取——
+    影片來源的空白測試圖比 mss 軟，會低估遮罩造成的對比損失。
+    """
+    import cv2
+    from linkedin_games_solver.automation.board_watch import (
+        locate_board, reference_content_matches,
+    )
+
+    pristine = read_image(FIXTURES / "pristine_patches_8x8_20260809.png")
+    abort_frame = read_image(FIXTURES / "patches_8x8_top_rows_filled_20260809.png")
+    mss_reference = read_image(FIXTURES / "patches_8x8_top_rows_filled_20260809_attempt1.png")
+    tango = read_image(FIXTURES / "live_tango.png")
+    side = pristine.shape[0]
+
+    # Premise: the mss-vs-mss pair itself affirms (baseline contrast 1.0),
+    # so a declined scrim below can only be the contrast gate's doing.
+    # 前提：mss 對 mss 配對本身認證通過（對比基準 1.0），所以下面遮罩被
+    # 拒絕，只可能是對比守門的功勞。
+    assert reference_content_matches(mss_reference, abort_frame) is True, \
+        "the mss baseline pair no longer affirms - re-measure / mss 基準配對不再通過認證，先重新量測"
+
+    # Attack 1: the grid-self-similar impostor, rebuilt exactly as the
+    # review built it, premises asserted.
+    # 攻擊一：網格自相似冒牌貨，照審查的作法重建，前提用斷言驗證。
+    other_full = read_image(FIXTURES / "fullscreen_patches.png")
+    from linkedin_games_solver.puzzles import solve_image
+    other_result = solve_image(other_full)
+    assert other_result.ok and other_result.grid.n == 8, "impostor premise broke / 冒牌貨前提失效"
+    ox, oy, ow, oh = other_result.grid.board_bbox
+    impostor = cv2.resize(other_full[oy:oy + oh, ox:ox + ow], (side, side))
+    impostor[52:104, :] = (60, 60, 200)      # saturated fills so locate fails
+    impostor[208:260, :] = (200, 120, 40)    # 飽和填色，讓定位失敗
+    assert locate_board(impostor, 8) is None, "impostor still locates - repaint it / 冒牌貨還定位得到，重新塗色"
+    assert reference_content_matches(pristine, impostor) is False, \
+        "a different 8x8 patches board was affirmed / 另一塊 8x8 拼塊棋盤被認證了"
+
+    # Attack 2: scrims/dims over the REAL mid-fill frame (locate already
+    # fails there), judged against the mss reference - see the docstring.
+    # 攻擊二：真實填答中畫面（定位本來就失敗）蓋上遮罩/調暗，
+    # 對 mss 參考畫面判定——理由見文件字串。
+    for alpha in (0.25, 0.5):
+        scrim = cv2.addWeighted(abort_frame, 1 - alpha,
+                                np.full_like(abort_frame, 255), alpha, 0)
+        assert reference_content_matches(mss_reference, scrim) is False, \
+            f"a {int(alpha * 100)}% scrimmed board was affirmed / 蓋了 {int(alpha * 100)}% 遮罩的棋盤被認證了"
+    dim = (abort_frame.astype(np.float64) * 0.8).astype(np.uint8)
+    assert reference_content_matches(mss_reference, dim) is False, \
+        "a x0.8 dimmed board was affirmed / 被調暗 20% 的棋盤被認證了"
+
+    # The canonical replacement set from test_guard_detects_replacement_scenarios.
+    # 既有替換情境測試用的那一組畫面。
+    small = cv2.resize(pristine, None, fx=0.8, fy=0.8)
+    shrunk = np.full_like(pristine, 250)
+    off = (side - small.shape[0]) // 2
+    shrunk[off:off + small.shape[0], off:off + small.shape[1]] = small
+    for label, frame in [
+        ("different game (tango)", cv2.resize(tango, (side, side))),
+        ("shrunk to 80%", shrunk),
+        ("flat dark", np.full_like(pristine, 40)),
+    ]:
+        assert reference_content_matches(pristine, frame) is False, \
+            f"{label} was affirmed / {label} 被認證了"
+    print("  replacements and scrims are never affirmed OK")
+
+
+def test_production_config_still_survives_the_20260806_incident():
+    """The 2026-08-06 real false abort (browser 7x7, two full-width rows
+    filled, ~1% board-scale drift between captures) must STILL survive its
+    measured 6-failure window under the PRODUCTION Patches configuration
+    (content check enabled). The review proved an earlier revision aborted
+    this pair on check #1 via its immediate-abort verdict - the
+    affirmative-only contract must never do that: the pair scores ~0.23
+    (unaffirmable), so it runs on the plain tolerance path, which
+    tolerance=6 covers exactly as it has since 2026-08-07.
+    2026-08-06 的真實誤判中止（瀏覽器 7x7、兩整列已填、兩次擷取之間棋盤
+    有約 1% 的縮放漂移）在「正式」拼塊設定（內容比對開啟）下，必須仍然
+    撐過它實測需要的 6 次失敗窗。審查證明前一版的立即中止判決會讓這組
+    配對在第 1 次檢查就被錯殺——只做正面認證的契約絕不能這樣：這組配對
+    分數約 0.23（無法認證），所以走純容忍路徑，而 tolerance=6 從
+    2026-08-07 起本來就涵蓋它。
+    """
+    from linkedin_games_solver.automation.board_watch import PATCHES_FAILURE_TOLERANCE
+    from linkedin_games_solver.puzzles import solve_image
+
+    pb_full = read_image(FIXTURES / "pristine_patches_browser.png")
+    tf_full = read_image(FIXTURES / "patches_two_full_rows_filled.png")
+    result = solve_image(pb_full)
+    assert result.ok, result.error
+    bx, by, bw, bh = result.grid.board_bbox
+    armed_crop = pb_full[by:by + bh, bx:bx + bw]
+    filled_crop = tf_full[by:by + bh, bx:bx + bw]   # SAME absolute rect 同一塊矩形
+
+    watch = BoardWatch(mapper=_mapper(result.grid.n), n=result.grid.n,
+                       min_interval=0.0, grab=lambda *a: filled_crop,
+                       failure_tolerance=PATCHES_FAILURE_TOLERANCE,
+                       use_content_check=True)
+    assert watch.arm(armed_crop)
+    for i in range(6):   # the incident's measured window 該事件實測需要的窗
+        assert watch.still_there(), (
+            f"the 2026-08-06 false abort is back at check {i + 1} / "
+            f"2026-08-06 的誤判中止在第 {i + 1} 次檢查又出現了"
+        )
+    print("  production config still survives the 2026-08-06 incident OK")
+
+
+def test_attach_enables_content_check_only_for_patches():
+    """attach() must turn the content check on for Patches (with the armed
+    frame stored as the reference) and leave every other puzzle on the
+    exact original path.
+    attach() 必須只對拼塊開啟內容比對（並把武裝畫面存成參考），
+    其他每一款謎題都走完全原本的路徑。
+    """
+    image, result, mapper, plan, crop = _plan_for("S__104316936_0.jpg")   # patches
+    driver = InputDriver(dry_run=True)
+    watch = board_watch.attach(driver, mapper, result, image)
+    assert watch.armed
+    assert watch.use_content_check is True, "patches did not get the content check / 拼塊沒拿到內容比對"
+    assert watch.reference is not None, "reference frame was not stored / 參考畫面沒有被保存"
+    assert watch.reference.shape == crop.shape
+
+    image_q, result_q, mapper_q, _, _ = _plan_for("live_queens_3.png")
+    driver_q = InputDriver(dry_run=True)
+    watch_q = board_watch.attach(driver_q, mapper_q, result_q, image_q)
+    assert watch_q.use_content_check is False, "a non-patches puzzle got the content check / 非拼塊謎題拿到了內容比對"
+    assert watch_q.reference is None
+    print("  attach enables the content check only for Patches OK")
+
+
 def _mapper(n):
     """Same synthetic n x n board tests/test_automation.py uses, duplicated
     here so this file has no cross-file test dependency.
@@ -795,6 +1105,12 @@ if __name__ == "__main__":
     test_rate_limit_bounds_the_cost_without_hiding_a_change()
     test_a_drag_is_never_interrupted_by_the_guard()
     test_guard_survives_a_real_mid_drag_patches_capture()
+    test_guard_survives_two_full_width_rows_of_a_real_patches_fill()
     test_guard_still_fails_late_in_the_same_capture()
     test_patches_tolerates_persistent_failure_up_to_the_measured_limit()
+    test_content_check_survives_todays_real_patches_failure()
+    test_unaffirmed_frames_keep_the_original_tolerance_bound()
+    test_replacements_and_scrims_are_never_affirmed()
+    test_production_config_still_survives_the_20260806_incident()
+    test_attach_enables_content_check_only_for_patches()
     print("\nAll passed / 全部通過")

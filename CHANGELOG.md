@@ -3,6 +3,534 @@
 Notable changes. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 重要變更紀錄。格式大致依照 Keep a Changelog。
 
+## [Unreleased] — `speed-optimization` branch, not yet merged to `main`
+## [尚未發布] —— `speed-optimization` 分支，尚未合併回 `main`
+
+**Not a numbered release.** This branch exists to work on solve speed and
+reliability without touching the stable, daily-verified `main` branch. Every
+item below is real-world-tested on this branch but has not yet gone through
+`main`'s merge process. Two multi-day rounds of real play surfaced the fixes
+below; three items were caught and reworked by an independent adversarial
+review before shipping (see the Patches guard entry).
+**不是編號版本。** 這個分支專門用來做解題速度與穩定性的改動，不動到穩定、
+每天都用真實遊玩驗證過的 `main` 分支。以下每一項都在這個分支上做過真實
+遊玩測試，但還沒走過 `main` 的合併流程。兩輪跨日的真實遊玩找出了下面
+這些修正；其中三項在上線前被獨立的對抗性審查抓到問題並重做過
+（見 Patches 保護那一條）。
+
+### Fixed — a guard abort silently ended continuous mode instead of moving on to the next puzzle 修正：守衛中止會讓連續模式悄悄停下來，而不是繼續下一題
+
+- **A real 2026-08-17 session solved three puzzles cleanly, then round 4
+  misread a stale, already-solved board as a fresh puzzle. The mid-plan
+  guard correctly rejected it - but continuous mode then silently stopped
+  instead of moving on, right as the user was opening the real next puzzle,
+  wasting the time it took them to notice and press Start again.** Root
+  cause: a guard abort latches the driver's `stop_requested` flag
+  (`InputDriver._check_abort`'s "latch, so nothing restarts it" - this
+  exists so a click cannot slip through after the guard rejects it).
+  `wait_for_board_gone()`, called right after `_round()` returns `"guard"`,
+  runs on that SAME driver instance - the next round's genuinely fresh one
+  is not built until the top of the next loop iteration - and reads that
+  exact latched flag as its `should_continue` check, so it returns
+  instantly (0 polls) and the loop's `if not wait_for_board_gone(...):
+  break` ends the WHOLE continuous run. This directly contradicted the
+  loop's own documented intent (`_round`'s docstring: "guard" is meant to
+  let continuous mode move on to the next puzzle, since a guard abort
+  usually just means the completion screen replaced the board). Fixed by
+  resetting the latch on that same driver instance the moment `"guard"`
+  comes back, before `wait_for_board_gone` runs - never on `"done"`, where
+  a latched `stop_requested` would mean the user pressed Stop mid-fill and
+  `wait_for_board_gone` should honour it (that path already returns
+  `"stop"` above and never reaches this code). Verified as a genuine fix,
+  not a plausible-looking one: the new regression test was run against the
+  code WITHOUT the fix first and confirmed it fails exactly as the real
+  incident did (`{'round': 1}` - the loop never reached round 2), then
+  passes with the fix restored.
+  **一次真實的 2026-08-17 遊玩乾淨解完三題後，第 4 輪誤讀了一個已經解完、
+  過期的棋盤當成新題目。填答中途的保護正確地拒絕了它——但連續模式接著
+  卻悄悄停了下來，而不是繼續下一題，剛好停在使用者正要打開下一題真正
+  題目的那一刻，浪費的是使用者發現、重新按下開始的那段時間。** 根本
+  原因：守衛中止會鎖住 driver 的 `stop_requested` 旗標
+  （`InputDriver._check_abort` 的「鎖定，不會被重啟」——這個設計是為了
+  確保保護拒絕之後不會再滑進一個動作）。`_round()` 回傳 `"guard"` 之後
+  立刻呼叫的 `wait_for_board_gone()`，用的是「同一個」driver 實例——
+  下一輪真正全新的實例要到下一次迴圈開頭才會建立——讀的正是那個已經
+  鎖住的旗標當作 `should_continue`，所以會立刻回傳（0 次輪詢），讓迴圈的
+  `if not wait_for_board_gone(...): break` 把整個連續流程結束掉。這直接
+  違背了迴圈自己文件寫的意圖（`_round` 的說明：`"guard"` 就是要讓連續
+  模式繼續下一題，因為守衛中止通常只代表完成畫面把棋盤換掉了）。修正
+  方式：在 `"guard"` 一回來、`wait_for_board_gone` 執行之前，就在同一個
+  driver 實例上重設這個鎖定——絕不對 `"done"` 這麼做，因為那種情況下
+  鎖住的 `stop_requested` 代表使用者在填答途中真的按了停止，
+  `wait_for_board_gone` 就該尊重它（那條路徑早就在上面被 `"stop"` 攔截，
+  永遠不會走到這裡）。驗證方式不只是「看起來合理」：新增的回歸測試先在
+  沒有這個修正的程式碼上跑過一次，確認它會像真實事故一樣失敗
+  （`{'round': 1}`——迴圈從未走到第 2 輪），修正補回去之後才通過。
+
+### Added — auto-harvest a "puzzle" / "answer" capture pair for every digit puzzle, not just Sudoku's unreadable cells 新增：自動存下三款數字題目的「題目／答案」成對畫面，不只數獨讀不回來的格子
+
+- **Every successful Sudoku, Zip or Patches solve now saves the exact,
+  pre-fill frame `solve_image` read - real material for a future
+  per-puzzle digit-template split (see the ROADMAP "shared thresholds"
+  item), not just the narrow got=None case the existing Sudoku-only
+  harvester (below) already covered.** Prompted by the observation that the
+  project's real digit-recognition data is thin and grows only when a
+  failure happens to occur and get saved - there was no path that
+  accumulated GOOD, clean examples on an ordinary successful day. The saved
+  frame is the puzzle's OWN rendering of its OWN digits (Sudoku's givens,
+  Zip's dot numbers, Patches' size labels) captured before any of our own
+  clicks or drags touch the board, so unlike the existing harvester below it
+  is not limited to one cell that happened to fail readback - a human
+  reviewing it later can crop and label every digit on the board. Screen
+  mode only (image mode already has its source file on disk); Queens and
+  Tango are skipped, since neither ever calls into `core/digits.py`. Saved
+  to the same `calibration_candidates/` folder as the existing harvester,
+  under the same rule: never fed into the digit templates automatically,
+  only reviewed by a human before anything reaches
+  `tools/calibrate_digits.py`.
+  **現在每一次 Sudoku、Zip 或 Patches 求解成功，都會存下 `solve_image`
+  當時實際讀到、填答前的那一張畫面——這是未來把三款題目數字範本各自拆分
+  獨立（見 ROADMAP「共用門檻」那一項）需要的真實素材，範圍比下面既有的
+  數獨限定收集（只收 got=None 那一種情況）更廣。** 起因是觀察到專案目前
+  真實的數字辨識資料很薄，而且只有在剛好發生失敗、又剛好被存下來時才會
+  變多——平常解題成功的日子完全沒有管道去累積「乾淨的正確範例」。存下的
+  畫面是題目自己畫出來的自己的數字（Sudoku 提示數字、Zip 圓點編號、
+  Patches 大小標籤），在我們自己的任何點擊或拖曳碰到棋盤之前擷取，所以
+  跟下面既有的收集機制不同，不會被限制在「剛好讀不回來的那一格」——
+  之後人工檢視時可以把整個棋盤上的每一個數字都裁切出來標記。只在螢幕
+  模式生效（圖片模式的來源檔案本來就已經在磁碟上）；跳過皇后與雙子星，
+  因為它們從來不會呼叫 `core/digits.py`。存進跟既有收集機制同一個
+  `calibration_candidates/` 資料夾，遵守同一條規則：絕不自動餵進數字
+  範本，一定要先有人看過，才會進到 `tools/calibrate_digits.py`。
+
+- **Each raw capture above is now paired with the computed-answer
+  overlay, so both "puzzle" and "answer" for the same round are saved
+  together.** Deliberately the overlay `render_overlay` already computes
+  for the on-screen preview - drawn on the pixels already in memory - not
+  a fresh post-fill screen re-capture. A real re-capture was considered
+  and rejected: Zip and Patches currently skip ALL post-fill verification
+  specifically to avoid the ~0.95s redraw-wait + re-capture cost
+  `verify.supports`'s own measurement documents (see ROADMAP item 3) -
+  adding one here for calibration purposes would quietly undo that saving
+  for two of the three puzzles this exists to help, while buying little:
+  Zip's drawn path and Patches' fill colour cover the very digits a
+  post-fill capture would otherwise be useful for. The overlay costs
+  nothing extra - already computed, no new capture or screen-mode
+  dependency needed to write it to disk.
+  **上面的每一張原始畫面，現在都會配上一張算出來的答案疊圖，讓同一輪
+  的「題目」跟「答案」成對存在一起。** 刻意用 `render_overlay` 本來就
+  已經為了畫面預覽算好的疊圖——畫在已經在記憶體裡的像素上——不是填答
+  完成後對網頁重新截一次螢幕。曾經考慮過真的重新截圖，但否決了：
+  Zip 與 Patches 現在完全跳過填答後的驗證，就是為了避開
+  `verify.supports` 自己量測記錄下來的那約 0.95 秒「等重畫＋重新擷取」
+  成本（見 ROADMAP 第三項）——為了校準用途在這裡加一次擷取，等於悄悄
+  把這個省下來的成本，在這個功能原本要幫助的三款題目裡的兩款上又加
+  回去，而且換到的價值有限：Zip 畫出來的路徑、Patches 填上的顏色，
+  剛好會蓋住填答後截圖原本該有用的那些數字。疊圖不用多花任何成本——
+  本來就已經算好了，寫進磁碟不需要任何新的擷取，也不依賴螢幕模式。
+
+### Added — park the mouse off the board before every solve, so :hover cannot tint a cell's colour 每次求解前先把滑鼠移出棋盤，避免 :hover 改變格子顏色
+
+- **A real 2026-08-12 Queens board failed with "colour grouping looks wrong"
+  - one region read as split into a 31-cell blob plus a disconnected
+  4-cell island, and a separate cell measured a third, different colour
+  again.** Correlated against the session recording: the OS cursor was
+  sitting directly on the board at the exact capture moment. LinkedIn's own
+  `:hover` styling darkens whatever cell is under the cursor, and
+  colour-based region reading (`queens.py`'s `read_regions`, by design -
+  see that module's own docstring) has no way to tell a hover-tinted cell
+  apart from a genuinely different region, because it groups purely by
+  measured colour. The board most likely inherited the cursor's resting
+  position from the PREVIOUS round's last click - continuous mode moves
+  straight from one puzzle to the next, and consecutive puzzles render in
+  similar screen coordinates.
+  Fixed at the source rather than by trying to detect hover after the fact:
+  `InputDriver.park(x, y)` (`input_driver.py` - the only file allowed to
+  move the mouse) moves the cursor without clicking, and `_round()`
+  (`ui/app.py`) now calls it - via a new `_park_mouse_clear_of_capture()`,
+  same "beside the capture rectangle, corner as last resort" logic as the
+  existing `_keep_window_clear_of_capture()` - and re-captures BEFORE
+  solve_image ever runs, on every round, in both continuous and single-shot
+  screen mode (a no-op in image mode, where there is no live mouse/screen).
+  The corner fallback is offset by `PARK_MARGIN_PX=5`, not `(0,0)` -
+  pyautogui's FAILSAFE aborts on the literal corner pixel, and parking
+  there to dodge a hover tint would trade one failure mode for a worse one.
+  Fullscreen capture has no safe position (the capture IS the whole
+  monitor) and is left as a documented, unaddressed residual, same as the
+  window-clearing feature's own fullscreen branch. New tests pin both the
+  positioning logic in isolation and that a real round actually uses it
+  (capture_fn called again, after parking, before solve_image - proven by
+  the call count, not by trusting the code path was taken).
+  **一次真實的 2026-08-12 Queens 棋盤失敗在「色塊分群結果不合理」——其中
+  一個色塊被讀成拆成 31 格的主體加上不相連的 4 格孤島，另外還有一格單獨
+  量到了第三種不同的顏色。** 對照螢幕錄影確認：擷取的那一刻，滑鼠游標
+  剛好停在棋盤上。LinkedIn 自己的 `:hover` 樣式會把游標底下那格的顏色
+  變深，而以顏色為準的色塊判讀（`queens.py` 的 `read_regions`，設計上
+  就是如此——見那個模組自己的文件字串）沒有辦法把「被 hover 改變深淺」
+  跟「真的是不同色塊」分開來，因為它單純照量到的顏色分群。這塊棋盤的
+  游標位置，最可能是從「上一輪」最後一次點擊繼承下來的——連續模式從
+  一題直接接到下一題，相鄰兩題常常畫在螢幕上很接近的座標。
+  修法從源頭下手，不是事後去偵測 hover：`InputDriver.park(x, y)`
+  （`input_driver.py`——唯一可以動滑鼠的檔案）只移動游標、不點擊，
+  `_round()`（`ui/app.py`）現在會呼叫它——透過新的
+  `_park_mouse_clear_of_capture()`，跟既有的 `_keep_window_clear_of_capture()`
+  同一套「靠在擷取矩形旁邊，角落是最後手段」邏輯——並且在 solve_image
+  真正開始跑「之前」重新擷取一次，每一輪都會做，連續模式跟單發模式的
+  螢幕模式都適用（圖片模式沒有真實的滑鼠／螢幕，直接跳過）。角落備案
+  偏移了 `PARK_MARGIN_PX=5`，不是 `(0,0)`——pyautogui 的 FAILSAFE 會在
+  那個角落像素本身中止，為了閃開 hover 卻真的停在那裡，等於拿一種失敗
+  換一種更糟的。全螢幕擷取沒有安全的位置（擷取範圍就是整個螢幕），
+  維持成一個有記錄下來、還沒處理的殘留限制，跟視窗清空功能自己的全螢幕
+  分支一樣。新增的測試同時釘住定位邏輯本身，以及「真的一輪求解確實有
+  用上它」（用 capture_fn 被呼叫的次數證明有在停放之後重新擷取，
+  不是單純相信程式碼路徑有被走到）。
+
+### Fixed — Patches never detected while waiting, however long the wait 拼塊等待再久都偵測不到
+
+- **`wait_for_board()`'s cheap presence check only ever tried 1x scale, and
+  some Patches boards' own outer border is too faint for that to ever find at
+  native resolution - no amount of waiting fixes it.** Diagnosed from a real
+  2026-08-10 session: the log showed 68s of continuous polling (353 polls)
+  with zero detections while a screen recording of the same region confirmed
+  the real Patches board was genuinely on screen, unattended, the whole time.
+  Root-caused by saving the EXACT bytes `BoardWatch`'s own capture path
+  produces (the "測範圍"/Test-region button) rather than trusting a screen
+  recording of the same region - the two are not the same capture, and only
+  the real one showed the bug: `find_board_bbox` at 1x found nothing
+  board-sized at all (largest contour 7,980px² against the 15%-of-frame
+  67,200px² threshold - the fixed-size Canny+dilate kernels were only
+  catching the individual number badges, not the board's own faint outer
+  line), while the identical bytes at 1.75x locate cleanly. This is the exact
+  same class of failure `puzzles/__init__.py`'s `_locate_board` already
+  named in its own docstring ("pre-scaling if its faint border is missed at
+  1x") - it had simply never been ported into this module's separate cheap
+  check. Fixed by retrying at `BORDER_RETRY_SCALE = 1.75` (same value as
+  `_PRESCALE_STEPS[1]`) whenever the 1x check finds nothing. Cost, measured
+  on the real failing capture: 1x alone averages 30.0ms when nothing is
+  present; the added retry brings the worst case to 150.9ms - still under
+  `POLL_INTERVAL`'s own budget, and never paid once a board (at either
+  scale) is actually present. New regression test
+  (`test_a_faint_bordered_board_is_found_via_the_retry_scale`) pins the real
+  failing capture (`tests/fixtures/patches_faint_border_20260810.png`) end
+  to end through `wait_for_board()`.
+  **`wait_for_board()` 的便宜存在檢查一直只試 1 倍縮放，而某些拼塊棋盤自己
+  的外框在原始擷取解析度下太淡，不管等多久都找不到——這不是時間問題。**
+  從一次真實 2026-08-10 的執行診斷出來：log 顯示連續輪詢 68 秒（353 次）
+  完全沒偵測到，而同一範圍的螢幕錄影確認 Patches 棋盤整段時間確實都在
+  畫面上、沒人動過它。真正找到根因的方法，是存下 `BoardWatch` 自己擷取
+  路徑真正產生的位元組（面板上的「測範圍」按鈕），而不是信任同一範圍的
+  螢幕錄影——兩者不是同一次擷取，只有真正的那次才顯示出問題：
+  `find_board_bbox` 在 1 倍下完全找不到任何棋盤大小的東西（最大輪廓只有
+  7,980 平方像素，門檻是畫面 15%＝67,200——固定尺寸的 Canny+dilate 核只抓
+  到一顆顆數字標籤，抓不到棋盤本身那圈很淡的外框線），而同一份位元組在
+  1.75 倍下乾淨定位成功。這跟 `puzzles/__init__.py` 的 `_locate_board`
+  自己文件字串早就取過名字的問題是同一類（「淡色邊框在原尺寸抓不到時
+  先放大再找」）——只是一直沒有搬進這個模組獨立的便宜檢查裡。修法：
+  1 倍檢查找不到時，用 `BORDER_RETRY_SCALE = 1.75`（跟 `_PRESCALE_STEPS[1]`
+  同一個值）重試一次。成本，對著真實的失敗擷取實測：只用 1 倍在畫面上
+  什麼都沒有時平均 30.0 毫秒；加上這次重試後最壞情況變成 150.9 毫秒——
+  仍在 `POLL_INTERVAL` 自己的預算內，而且只要任一倍率真的找到棋盤就不會
+  付這筆成本。新增回歸測試
+  （`test_a_faint_bordered_board_is_found_via_the_retry_scale`）把這張真實
+  失敗擷取（`tests/fixtures/patches_faint_border_20260810.png`）整個穿過
+  `wait_for_board()` 釘住。
+
+### Fixed — Zip misdetected as Tango, costing 5.8s per occurrence Zip 被誤判成 Tango，每次白燒 5.8 秒
+
+- **`ZIP_DARK_RATIO` (0.05) missed a genuine Zip board by 0.0006 - a hair
+  under threshold - sending it into the colour/hue checks, where its own
+  path (97.2% blue) read as Tango.** Diagnosed from a real 2026-08-11
+  five-puzzle session where every puzzle eventually solved correctly, but a
+  user-supplied per-round timing table showed Zip alone taking 5.8s to
+  compute an answer that normally takes under half a second. The session
+  log showed the same signature as the earlier Sudoku-as-Tango bug: 12
+  straight tango-ladder attempts (all "multiple solutions" or "no
+  solution") before a fallback-type sweep eventually reached zip - and that
+  5.8s was the ENTIRE gap that day between "puzzle detected" and the first
+  mouse action, matching the user's own video-timed estimate almost
+  exactly. Root-caused by extracting the exact frame from the session
+  recording at the moment `solve_image` first ran on it (not a proxy
+  screenshot) and measuring directly: dark-pixel ratio 0.0494 against the
+  OLD `ZIP_DARK_RATIO=0.05`. Lowered to 0.038: 1.3x margin below the
+  measured 0.0494, and 1.3x margin above 0.0293, the highest dark-ratio
+  value among every other real fixture on file (including heavily-filled
+  Patches boards). Same class of fragility as the Sudoku fix above, just a
+  different board falling through a different one of `detect_type`'s
+  checks - confirmed via a full re-run of every fixture that this change
+  causes zero regressions. This only changes which type is tried first;
+  every puzzle module still requires its own unique-solution/sanity guard.
+  New regression test (`test_a_faint_walled_zip_board_is_not_misread_as_tango`)
+  pins the real near-miss capture
+  (`tests/fixtures/zip_faint_walls_20260811.png`).
+  **`ZIP_DARK_RATIO`（0.05）以 0.0006 之差，毫釐之差沒接住一個真的 Zip
+  棋盤，讓它落進彩色／色相檢查，被自己的路徑（97.2% 藍色）讀成
+  Tango。** 從一次真實的 2026-08-11 五題全部答對的執行診斷出來：使用者
+  提供的每輪時間表顯示，唯獨 Zip 求解花了 5.8 秒才算出答案——平常不到
+  半秒。執行記錄顯示的特徵跟先前 Sudoku 被誤判成 Tango 的問題一模一樣：
+  連續 12 次 tango 階梯嘗試（全部「多組解」或「無解」）才靠備援類型全掃
+  找到 zip——而那 5.8 秒正好是那天「偵測到題目」到「滑鼠第一次動作」
+  之間的全部空檔，跟使用者自己用影片量出來的估計幾乎完全吻合。找到根因
+  的方法：從螢幕錄影截出 `solve_image` 第一次對它出手那一刻的確切畫面
+  （不是替代品），直接實測：深色像素比例 0.0494，對上舊門檻
+  `ZIP_DARK_RATIO=0.05`。降到 0.038：低於量到的 0.0494 有 1.3 倍邊界，
+  高於目前所有其他真實測試圖裡最高的深色比例值 0.0293（包括填了很多的
+  Patches 盤面）也有 1.3 倍邊界。跟上面 Sudoku 那項修正是同一類脆弱，
+  只是另一個棋盤從 `detect_type` 另一道檢查的縫隙漏過去——把每一張測試圖
+  重新跑過一次確認這個改動零迴歸。這裡只改變「先試哪個類型」；每個謎題
+  模組仍然各自要求解唯一／合理性守門。新增回歸測試
+  （`test_a_faint_walled_zip_board_is_not_misread_as_tango`）釘住這次真實
+  的差點誤判擷取（`tests/fixtures/zip_faint_walls_20260811.png`）。
+
+### Fixed — Mini Sudoku misdetected as Tango, costing 6-9s per occurrence 迷你數獨被誤判成 Tango，每次白燒 6~9 秒
+
+- **`detect_type`'s `NO_COLOR_RATIO` (0.006) gave a genuine Mini Sudoku board
+  only a 1.6x safety margin before falling into the Tango branch.** Measured
+  on the only live Sudoku fixture on file (`live_mini_sudoku_browser.png`):
+  coloured-pixel ratio 0.00366 (sub-box shading), and that colour is itself
+  88.7% orange/blue - over `TANGO_HUE_RATIO`'s 0.75 cutoff - so crossing the
+  ratio threshold sent it straight into "tango" with no further check.
+  Confirmed against two real 2026-08-10 production runs
+  (`run_20260810_181407_416.log`, `run_20260810_185005_381.log`): the same
+  Sudoku board detected as tango, burned the full tango ladder (~16
+  crop/scale attempts, all "multiple solutions" or "board not found") plus a
+  queens attempt, and only resolved correctly ~6-9s later via the
+  fallback-type sweep - while the real board sat on screen the whole time.
+  Raised to 0.01: ~2.7x margin above the measured sudoku value, ~2.6x margin
+  below the smallest correctly-located non-sudoku fixture (0.02559). This
+  only changes which type is tried FIRST - every puzzle module still
+  requires its own unique-solution/sanity guard, so a wrong guess still
+  fails cleanly rather than inventing an answer; this is a speed fix, not a
+  loosened correctness gate. New regression test
+  (`test_mini_sudoku_survives_extra_colour_noise`) synthetically reproduces
+  the capture-variance class of failure and confirms it survives under the
+  new threshold.
+  **`detect_type` 的 `NO_COLOR_RATIO`（0.006）只給真的 Mini Sudoku 盤面
+  1.6 倍安全邊界，一跨過就會掉進 Tango 分支。** 對目前唯一的真實瀏覽器
+  Sudoku 測試圖（`live_mini_sudoku_browser.png`）實測：彩色像素比例
+  0.00366（子九宮格底色），而這個顏色本身有 88.7% 落在橘／藍色相——
+  超過 `TANGO_HUE_RATIO` 的 0.75 門檻——所以比例一旦跨過門檻就會直接被當成
+  「tango」，不會再做任何檢查。對照兩筆真實 2026-08-10 執行記錄
+  （`run_20260810_181407_416.log`、`run_20260810_185005_381.log`）確認：
+  同一個 Sudoku 盤面被判成 tango，燒完整條 tango 階梯（約 16 種裁切／縮放
+  組合，全部「找到多組解」或「偵測不到棋盤」）加一次 queens 嘗試，要等
+  備援類型全掃過、約 6~9 秒後才靠備援機制解對——而真正的棋盤其實整段
+  時間都在畫面上。提高到 0.01：量到的 sudoku 數值上方有約 2.7 倍邊界，
+  下方離「正確定位到棋盤」的最小非 sudoku 測試圖值（0.02559）還有約
+  2.6 倍邊界。這裡只改變「先試哪個類型」——每個謎題模組仍然各自要求
+  解唯一／合理性守門，猜錯一樣會乾淨地失敗而不是編答案；這是速度修正，
+  不是放寬正確性門檻。新增的回歸測試
+  （`test_mini_sudoku_survives_extra_colour_noise`）合成重現了這種
+  「擷取誤差」等級的失敗，並確認在新門檻下能撐過去。
+
+### Added — save the capture a solve fully failed on, for later diagnosis 求解完全失敗時存下當時的擷取畫面供事後排查
+
+- **A 2026-08-10 Patches failure ("28 label(s) unreadable ... tiling is
+  ambiguous", every crop/scale in the ladder) could not be root-caused
+  afterwards, because nothing had kept the actual bytes the recogniser saw** -
+  a hand screenshot taken around the same time solved cleanly through the
+  full pipeline, proving it was not the same capture. A solve that exhausts
+  every `MAX_SOLVE_ATTEMPTS` retry now saves the LAST attempted capture (the
+  exact image the failing `result` came from) to `captures_dir()` as
+  `solve_failed_<puzzle>_<epoch_ms>.png` and logs where it went - the same
+  idea as the existing guard `boardwatch_stop_*.png` save, applied to a full
+  recognition failure instead of a mid-fill abort. A diagnostic save can
+  never break the failure-handling path itself, so it is wrapped the same
+  way the guard's save is (best-effort, swallows its own exceptions). New
+  test: `test_solve_failed_frame_is_saved_for_diagnosis`.
+  **2026-08-10 有一次 Patches 失敗（「28 個標籤讀不出來…切法不唯一」，
+  階梯裡每個裁切／縮放都試過）事後完全查不出根因，因為沒有任何東西留住
+  辨識器當時實際看到的位元組**——差不多同時間手動截的圖卻能透過完整流程
+  乾淨解出來，證明根本不是同一張擷取畫面。現在只要求解把
+  `MAX_SOLVE_ATTEMPTS` 次重試都用盡，就會把「最後一次嘗試」用的擷取畫面
+  （也就是那次失敗 `result` 實際來自的那張圖）存進 `captures_dir()`，
+  檔名是 `solve_failed_<puzzle>_<epoch_ms>.png`，並在記錄裡寫出存去哪裡——
+  跟既有守衛的 `boardwatch_stop_*.png` 存檔同一個想法，套用在「整個辨識
+  都失敗」而不是「填答中途中止」。診斷用的存檔絕不能弄壞失敗處理流程
+  本身，所以包法跟守衛的存檔一樣（盡力而為、自己吞掉例外）。
+  新增測試：`test_solve_failed_frame_is_saved_for_diagnosis`。
+
+### Fixed — Patches false-aborting mid-fill, again 拼塊填答中途又誤判中止
+
+- **A real 8x8 Patches fill was wrongly aborted after only 4 of 16 rectangles,
+  reproduced identically twice on the same board.** `detect_grid_size`
+  (the guard's structural re-check) failed 7 consecutive times once enough of
+  the top rows were covered by the puzzle's own fill colour, exceeding
+  `PATCHES_FAILURE_TOLERANCE=6` - a stricter, more easily triggered version of
+  the exact false abort 1.2.0's masking fallback and 6-check tolerance were
+  built to bound. Confirmed against the screen recording that the board never
+  moved; the guard's own structural check had simply run out of information to
+  work with, because our own fills permanently erase the interior grid lines
+  it depends on.
+  **一次真實的 8x8 拼塊填答，只畫完 16 塊裡的 4 塊就被誤判中止，在同一個
+  棋盤上完全相同地重現了兩次。** `detect_grid_size`（保護自己的結構性重新
+  檢查）在頂端幾列被自己的填色蓋住足夠面積之後，連續失敗 7 次，超過
+  `PATCHES_FAILURE_TOLERANCE=6`——這是 1.2.0 的遮色備援與 6 次容忍原本要
+  界定住的那個誤判，一個更嚴重、更容易觸發的版本。對照螢幕錄影確認棋盤
+  完全沒有移動過；保護自己的結構性檢查只是沒有資訊可用了，因為我們自己的
+  填色會永久抹掉它依賴的內部格線。
+
+- **Fixed with a reference-content check, not a bigger tolerance number.**
+  When the structural locator fails, `board_watch.py` (Patches only) now
+  compares the parts of the board NOT covered by our own fills against the
+  frame the plan was armed on - affirming the board is still ours without
+  needing to re-derive its grid at all. Real measurement first: `find_board_bbox`
+  (the board's outer contour) survives on every heavily-filled real fixture
+  tested, including today's exact failure frame, even though the interior
+  grid-line check does not - because our fills are drawn inside cells, never
+  over the board's own outer edge.
+  **修法是參考內容比對，不是把容忍次數調更大。** 結構性定位器失敗時，
+  `board_watch.py`（僅拼塊）現在會把「沒被我們自己填色蓋住」的部分，
+  拿去跟計畫武裝當下的畫面比對——不需要重新推算格線，就能確認棋盤還是
+  我們的。先做了真實量測：`find_board_bbox`（棋盤的外框輪廓）在每一張
+  測過的、填得很滿的真實測試圖上都還找得到，包含今天這次失敗當下的畫面，
+  即使內部格線檢查完全失敗——因為我們的填色永遠畫在格子「裡面」，
+  不會蓋到棋盤自己的外框。
+
+- **The first design was wrong, and an independent adversarial review caught
+  it before it shipped.** That version scored a 0-1 confidence and let the
+  content check ABORT immediately on a mismatch (faster than the 6-check
+  tolerance for a genuine replacement). Four independent reviewers, briefed
+  only on the diff and told to refute it, found: (a) a uniform gray frame in
+  a narrow brightness band scored a perfect 1.0 and disabled the guard
+  permanently; (b) worse, replayed against the REAL 2026-08-06 incident
+  fixture (the one `PATCHES_FAILURE_TOLERANCE=6` exists for), the immediate-
+  abort verdict killed that correct fill on the very first check, because
+  that pair has a real ~1% scale drift between captures that a small
+  translation search cannot compensate. Rebuilt around a different contract:
+  the check can only ever AFFIRM ("content matches, keep going") or DECLINE
+  ("could not confirm, fall through to the untouched original tolerance
+  path") - it never aborts anything itself. Under that contract every
+  scenario is provably no worse than the pre-change guard, because the worst
+  the new code can do is decline, which is the old path unchanged. Re-review
+  after the rewrite found no further safety issue; two of its hardening
+  suggestions (treat an unexpected exception inside the check as a decline,
+  not a crash; document the measured boundary of the affirmation gate) were
+  folded in.
+  **第一版設計是錯的，在上線前被一次獨立的對抗性審查抓到。** 那一版會給
+  0~1 的信心分數，並且讓內容比對在不吻合時「立刻中止」（比真的替換情境
+  原本 6 次的容忍還快）。四位只看得到程式差異、被要求去推翻它的獨立
+  審查者發現：(a) 落在特定亮度區間的整片灰階畫面拿滿分 1.0，把保護永久
+  關掉；(b) 更糟的是，重播 2026-08-06 那次真實事件的測試圖（正是
+  `PATCHES_FAILURE_TOLERANCE=6` 存在的理由）時，立即中止判決在「第一次」
+  檢查就把那次正確的填答錯殺了，因為那組畫面兩次擷取之間有約 1% 的真實
+  縮放漂移，小範圍的平移搜尋補償不了。改成另一種契約重做：這個檢查
+  只可能「認證」（內容吻合，繼續）或「拒絕認證」（無法確認，落回原封
+  不動的舊容忍路徑）——它自己絕不中止任何事。在這個契約下，每一種情境
+  都可證明不比修改前的保護差，因為新程式碼最壞的結果就是拒絕認證，
+  而那正是舊路徑本身。重做後的複審沒有再找到安全問題；審查提出的兩個
+  強化建議（比對內部出現預期外的例外時視同拒絕認證、不當機；把認證關卡
+  實測到的邊界記進文件）都已採納。
+
+- **Real-world confirmed the same day.** Re-run against the exact puzzle that
+  failed that morning: the guard's structural check failed the same way, but
+  the content check affirmed the board 11 times in a row where it used to
+  need (and eventually exceed) the tolerance counter, and the fill completed
+  - visually confirmed against the LinkedIn puzzle list showing Patches as
+  solved, and one of the 16 checks along the way genuinely could not be
+  affirmed and correctly fell through to (and was covered by) the original
+  tolerance mechanism, evidence the two layers work together as designed.
+  **當天就用真實情境確認過。** 拿當天早上失敗的那道題目重跑一次：保護的
+  結構性檢查一樣照舊失敗，但內容比對連續 11 次認證棋盤沒問題（這些以前
+  都要靠、而且最終會超過容忍計數），填答順利完成——對照 LinkedIn 的
+  謎題清單顯示 Patches 已完成，過程中確實有一次真的無法被認證，正確地
+  落回（並且被撐住）原本的容忍機制，證明兩層機制真的照設計搭配運作。
+
+### Added — repeated-failure alert 新增：連續失敗提醒
+
+- **Continuous mode used to fail silently.** If recognition exhausted its
+  retries, the status text changed but - with the window minimised, which
+  continuous mode does by default - nothing on screen showed it, and the loop
+  would proceed to wait for a board that structurally never disappears (since
+  nothing made the user navigate away from the failed puzzle), silently
+  wasting the rest of the sitting. Continuous mode now restores the window,
+  plays a system alert sound, turns the status line red, and stops the
+  session on the very first fully-retried failure (three fresh-capture
+  attempts already exhausted, not a single-frame fluke) rather than spinning
+  unattended.
+  **連續模式以前失敗時完全無聲無息。** 如果辨識用盡重試次數，狀態文字會
+  換，但視窗預設是縮到最小的，畫面上什麼都看不到，迴圈接著會去等一個
+  結構上不會消失的棋盤（沒有任何動作讓使用者切離那個失敗的題目），整輪
+  剩下的時間就這樣安靜地浪費掉。連續模式現在會在第一次「完整重試過仍然
+  失敗」（已經耗盡三次新擷取嘗試，不是單張影格的偶發問題）時，還原視窗、
+  播放系統提示音、把狀態列變成紅色，並且停止整個連續模式，而不是繼續
+  無人看管地空轉。
+- **The failure message now says whether retrying would have helped.** If all
+  retry attempts (each on a fresh screen capture) produced the exact same
+  error, that is evidence of a persistent problem rather than a rendering-
+  timing fluke, and the log/alert now says so explicitly instead of leaving
+  the user to assume "try again" is the fix when it was already tried three
+  times, silently.
+  **失敗訊息現在會說明「再試一次」有沒有意義。** 如果每一次重試（各自用
+  新擷取的畫面）都得到完全一樣的錯誤，這就是持續性問題而不是渲染時機
+  偶發問題的證據，現在記錄檔／提醒訊息會明講出來，而不是讓使用者以為
+  「再試一次」有機會解決，但其實背後已經默默試過三次了。
+
+### Added — screen-resolution-change warning 新增：螢幕解析度改變警告
+
+- **A saved capture region silently went stale if the screen changed.** The
+  region is a fixed rectangle of absolute screen pixels, calibrated once and
+  reused forever; switching monitors, changing resolution, or changing
+  Windows display scaling all invalidate it with no signal beyond a generic
+  "board not found". The app now remembers the primary monitor's size at the
+  moment the region was last actually recalibrated (not on every save - that
+  would silently re-baseline the warning against a region that was never
+  re-verified for the new screen) and warns, without blocking, when the
+  current size disagrees.
+  **螢幕換了之後，存起來的擷取範圍會悄悄失效。** 擷取範圍是一個固定的
+  絕對螢幕像素矩形，只在校準當下決定一次、之後一直沿用；換螢幕、換
+  解析度、改 Windows 顯示縮放比例都會讓它失效，而且除了一句籠統的
+  「找不到棋盤」之外沒有任何提示。程式現在會記住擷取範圍「上次真的被
+  重新校準」那一刻的主螢幕尺寸（不是每次存檔都記——那樣會讓警告悄悄
+  用一個「其實從來沒有針對新螢幕重新驗證過」的範圍當基準），目前尺寸
+  對不上時會提醒（不會擋住執行）。
+
+### Added — Sudoku digit-calibration candidate harvesting 新增：數獨數字校準候選收集
+
+- **A cell we filled ourselves, but could not read back confidently, is now
+  saved as a future calibration candidate.** After a fill, Sudoku's verify
+  pass already re-reads every cell; when a target cell reads as unreadable
+  (not misread - genuinely unreadable) the digit it should hold is exactly
+  what our own solver chose and the driver clicked/typed, which is the same
+  standard of ground truth `tools/calibrate_digits.py`'s hand-verified tables
+  already use. Saved to a separate `calibration_candidates/` folder, never
+  the user's own `img/` captures folder, and never fed into the digit
+  templates automatically - only a human deliberately running the
+  calibration tool after looking at what was saved can do that, per this
+  project's core rule against changing a threshold or template without
+  looking at real evidence first. Explicitly does NOT harvest the puzzle's
+  own printed givens (read by OCR, so a misread given's "ground truth" would
+  be circular) or a cell read as a confidently WRONG digit (that ground
+  truth is itself suspect - it could be a genuine misread or a dropped
+  click).
+  **一個我們自己填的、但讀不回來的格子，現在會被存成未來校準的候選資料。**
+  填答之後，數獨的檢查補點步驟本來就會重讀每一格；當某個目標格讀不出來
+  時（不是讀錯——是真的讀不出來），它應該要是的數字，就是我們自己的
+  求解器選中、driver 親自點擊/打字打上去的那個，跟 `tools/calibrate_digits.py`
+  人工核對過的真值表是同一個等級的可信度。存進獨立的
+  `calibration_candidates/` 資料夾，不是使用者自己的 `img/` 存圖資料夾，
+  也絕不會自動餵進數字範本——只有人工看過存下的東西、刻意手動執行校準
+  工具才會生效，遵守這個專案「沒看過真實證據不能改動門檻或範本」的核心
+  規則。刻意不收集題目原本印的提示數字（那是 OCR 讀出來的，一個讀錯的
+  提示，其「真值」會是循環論證）、也不收集讀成「確信但錯誤」數字的格子
+  （那個真值本身可疑——可能是真的誤讀，也可能是點擊沒生效）。
+
+### Testing 測試
+
+Test suites: 10 → 11 (`test_board_wait.py` added earlier this branch).
+`test_board_guard.py` grew from 21 to 26 cases, five of them pinning the
+adversarial review's counter-examples down as permanent regression tests
+(a uniform-gray frame at any brightness, a different same-size Patches board
+- the strongest attack found, a scrim/dim over the failing frame, and the
+real 2026-08-06 incident replayed under the shipped production configuration).
+All suites pass, `pyflakes` clean, both executables rebuilt and smoke-tested
+after every round.
+測試檔：10 → 11（`test_board_wait.py` 是這個分支較早新增的）。
+`test_board_guard.py` 從 21 個案例增加到 26 個，其中 5 個把對抗性審查的
+反例釘成永久回歸測試（任何亮度的整片灰畫面、另一塊同尺寸拼塊棋盤——
+量到最強的攻擊、蓋在失敗畫面上的遮罩/調暗、以及在正式上線設定下重播的
+2026-08-06 真實事件）。全部測試組都通過，`pyflakes` 乾淨，每一輪都重新
+打包過兩個執行檔並煙霧測試過。
+
 ## [1.3.0] — 2026-08-05
 
 **Upgrade from 1.2.0.** Two rounds of work. First, a rigorous audit-and-fix
