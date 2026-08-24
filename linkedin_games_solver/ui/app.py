@@ -750,12 +750,50 @@ class SolverApp:
             return
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
+        # Try all four sides of the region, not just right/below - a region
+        # sitting close to the screen's own top-left corner can leave no room
+        # on the right or below while still leaving room on the left or above.
+        # Bug this fixes: the old code checked only right/below, and its last
+        # resort was an UNCHECKED (0,0) - real capture on a 1024x768 CI
+        # display (region (200,200,640,700), a 400x470 window: none of
+        # right/below/left/above fit) landed the window at (0,0), which still
+        # overlapped the region - the exact failure this function exists to
+        # prevent, silently reintroduced by its own fallback. Confirmed this
+        # is not reachable on a real, normal-sized monitor (right almost
+        # always fits), which is why it went unnoticed until CI's smaller
+        # virtual display exposed it.
+        # 檢查擷取範圍的全部四個方向，不是只有右邊/下面——範圍如果剛好貼近
+        # 螢幕自己的左上角，右邊、下面可能都放不下，左邊、上面卻還有空間。
+        # 這裡修的 bug：舊程式碼只檢查右邊/下面，最後一步完全沒檢查就用
+        # (0,0)——真實情境是 CI 用 1024x768 的畫面（範圍
+        # (200,200,640,700)、視窗 400x470：右邊/下面/左邊/上面全部放不下）
+        # 落到 (0,0) 之後還是跟範圍重疊——正是這個函式存在的目的要防止的
+        # 那個情況，卻被它自己的備援悄悄重新引入了。確認過在真實、正常
+        # 尺寸的螢幕上走不到這裡（右邊幾乎永遠放得下），這就是為什麼
+        # 一直到 CI 用比較小的虛擬畫面才被發現。
         if left + w + ww <= screen_w:
             new_x, new_y = left + w + 10, top
         elif top + h + wh <= screen_h:
             new_x, new_y = left, top + h + 10
+        elif left - ww >= 0:
+            new_x, new_y = left - ww - 10, top
+        elif top - wh >= 0:
+            new_x, new_y = left, top - wh - 10
         else:
-            new_x, new_y = 0, 0
+            # Screen too small to fit the window beside the region on any
+            # side - there is no honest visible position left. Iconify
+            # instead of presenting a position that lies about being clear,
+            # same principle the fullscreen branch above already uses.
+            # 螢幕小到視窗放在範圍任何一邊都放不下——沒有誠實的可視位置
+            # 剩下了。改成最小化，不要呈現一個「假裝躲開了」的位置，跟
+            # 上面全螢幕分支已經在用的是同一個原則。
+            if not self._minimized_for_wait:
+                self.root.iconify()
+                self._minimized_for_wait = True
+                action_log.log("WARN", f"app window cannot fit beside the "
+                                f"capture region ({left},{top},{w},{h}) on "
+                                f"a {screen_w}x{screen_h} screen - iconified")
+            return
         self.root.geometry(f"+{new_x}+{new_y}")
         action_log.log("WARN", f"app window overlapped the capture region "
                         f"({left},{top},{w},{h}) - moved to ({new_x},{new_y})")
