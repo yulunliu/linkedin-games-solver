@@ -19,171 +19,39 @@ that nobody — including future me — has to rediscover them.
 | [3](#3-verify-and-retry-does-not-cover-zip-or-patches) | No verification for Zip and Patches | A drag the page missed is not detected or retried | medium |
 | [4](#4-error-messages-ignore-the-language-setting) | Errors are not translated | English users see Chinese in error text | low, but touches many files |
 | [5](#5-the-0-and-7-templates-have-never-seen-a-real-board) | 0 and 7 templates are font-derived | Untested; would fail rather than misread | needs a screenshot |
-| [6](#6-defects-found-by-the-extreme-and-abnormal-audit) | 17 defects from the extreme/abnormal audit | Several put the mouse or the saved answer in the wrong place | see the section |
+| [7](#7-zips-drag-can-outrun-the-page-and-draw-the-wrong-path) | Zip's drag can outrun the page | A wrong path can be drawn and reported as success | needs measurement |
+| [8](#8-sudoku-zip-and-patches-digit-templates-and-thresholds-are-shared-not-per-puzzle) | Digit templates/thresholds shared across 3 puzzles | Tuning one puzzle's recognition risks the other two | moderate |
 
 ---
 
-## 6. Defects found by the extreme-and-abnormal audit
+## 6. Defects found by the extreme-and-abnormal audit — fixed
 
 A systematic audit of six attack surfaces — malformed image input, abnormal GUI
 operation, the automation path, solver edge cases, hostile environments, and
-threading — produced 21 defects that survived independent re-verification. Four
-were fixed in 1.1.0. **These seventeen are open.** They are listed here in full
-so that nobody has to rediscover them, ranked by what would stop someone playing
-five puzzles in one sitting with automatic mouse control.
+threading — produced 21 defects that survived independent re-verification.
+Four were fixed in 1.1.0; the other seventeen (S1, W1-W3, C1-C2, T1, R1-R10)
+were fixed in the 1.3.0 audit-fix pass (2026-08-05) — see that
+[CHANGELOG entry](../CHANGELOG.md) for the full list and technical detail on
+each. Re-confirmed directly against the code and its tests on 2026-08-24, not
+just assumed from the changelog: every fix is still in place. The one item
+worth a standing note rather than a clean "fixed" is R1
+(`locate_board` cannot find a Zip board once its path is drawn) — its
+underlying claim is still literally true, but nothing calls `locate_board` on
+a drawn-in Zip board today, so it is dormant rather than active. It would
+matter again the moment item 3's Planned #1 (reading the Zip path back) is
+built - see the note there.
 
 對六個攻擊面做的系統性稽核 —— 畸形影像輸入、異常介面操作、自動化路徑、
 求解器邊界、惡劣環境、並行狀況 —— 產出 21 個經獨立複驗仍成立的缺陷。
-1.1.0 修了四個，**這十七個還開著**，完整列出讓人不必重新發現一次。
-
-### Silent wrong answers 安靜的錯誤答案
-
-**S1. `self.result` is not cleared when the image behind it is replaced.**
-`_on_pick_image` and `_on_test_region` both replace `self.shot` without clearing
-`self.result`, and `_on_save` only checks that a result exists. Pick puzzle A,
-solve, pick puzzle B, press Save: the file is A's answer drawn on B's
-screenshot, offered under B's filename, with the dialog saying "Saved". In
-screen mode both captures come through the same region, so the stale symbols sit
-dead-centre in the new cells and look plausible. This matters more than it
-sounds: the saved image is the project's documented bug-report channel.
-*Fix:* clear `result`/`mapper`/`plan` at the top of `_run()` and at the end of
-both handlers; stamp the result with the identity of the image it came from and
-have Save refuse when they disagree.
-
-### Wrong mouse actions 錯誤的滑鼠動作
-
-**W1. A board that MOVES passes both the guard and `verify()`.**
-`still_there()` asks whether *a* board is present, never whether it is where we
-left it, and the verifiers compare cells by grid *index*, which is
-translation-invariant. Measured on a 9x9 with 89px cells shifted down 80px:
-guard says present, `verify` says `board_changed=False`, and the retry plan then
-clicks a pixel that now belongs to a different cell. Swept -120 to +300px and
-`verify` never noticed at any offset. Reachable by page scroll, window move or
-resize, or LinkedIn's card growing — during a 9-21s fill.
-*Fix:* the crop is grabbed at the *expected* rectangle, so the located board
-must sit at ~(0,0) with the expected size; reject beyond ~0.3 cell. Compare the
-fresh `board_bbox` against `result.grid.board_bbox` in each verifier.
-
-**W2. `ui/cli.py --go` has no board guard at all.**
-The entire `board_watch` protection exists only in the GUI. Measured against a
-scripted screen where the board is replaced after 3 actions: the GUI path
-stopped after 3 of 28, the CLI path ran all 28, 25 of them onto the replaced
-board. `--go` is the closest thing the project has to "five puzzles fully
-automatically", and it is the one path that runs blind.
-*Fix:* move the wiring into a shared `board_watch.attach(driver, mapper, result,
-image)` so a third caller cannot forget it.
-
-**W3. Closing the window mid-fill kills the worker before `mouseUp`.**
-The worker is a daemon thread and `WM_DELETE_WINDOW` neither stops nor joins it,
-so `drag_path`'s `finally: mouseUp()` does not run. Traced with a fake
-pyautogui: MOUSE_DOWN 1, MOUSE_UP 0, and the trace still shows no MOUSE_UP after
-the process exits. Pressing Stop instead gives a clean down/up pair, so this is
-specific to the close path. The physical stuck-button outcome was reasoned, not
-observed — but the mechanism is sound.
-*Fix:* on close, `driver.stop()`, join with a timeout, then destroy. Wrap
-`_ui()` against `RuntimeError`/`TclError` — the worker's own error handler
-currently raises the same error again after the window is gone.
-
-### Crashes 當掉
-
-**C1. The GUI cannot start without `mss`, even in image mode.**
-`_apply_settings` calls `default_region()` on every first run because
-`DEFAULTS["region"]` is None, and that reaches `import mss`. README and
-`pyproject` both state image mode needs neither `mss` nor `pyautogui`, and a
-test claims to enforce it — but that test only *imports* the module, and
-importing is fine; constructing the app is what breaks. **The test is a false
-safety signal.**
-*Fix:* wrap `primary_monitor()` in `default_region()` and fall back to a fixed
-rectangle; extend the test to actually construct `SolverApp`.
-
-**C2. A wrong-typed `region` in the settings file stops the GUI starting.**
-`settings.load()` filters keys but never validates types, and `_apply_settings`
-then does `str(int(v))` over whatever came back. Eight different shapes were
-tried and each raises. In the shipped windowed .exe this is "double-click, and
-nothing happens". Reachable because `fullscreen` has no UI at all, so
-hand-editing the settings file is the only way to use a documented feature.
-*Fix:* coerce `region` to exactly four ints or drop it, inside the existing
-`try` in `load()`.
-
-### Slow or confusing 慢或困惑
-
-**T1. No wall-clock budget, and Stop cannot interrupt a solve.**
-`solve_image` has no time limit and no cancellation. A 4K screen grab takes
-29-49s; 8000x8000 takes 238-312s. Stop pressed during a solve leaves the status
-reading "Stopping..." for 19-22s. Nothing hangs indefinitely and every case
-returned an accurate `ok=False`, so this is slow rather than broken — but on a
-timed game, silence is indistinguishable from a hang.
-*Fix:* downscale once up front rather than on every rung, give `solve_image` a
-`should_continue` callback, and report which rung is running.
-
-### The remaining ten
-
-None of these can produce a wrong answer or a click on the wrong cell. They lose
-work, lose settings, or explain themselves badly.
-
-| # | Defect | What you would see |
-|---|---|---|
-| R1 | **`locate_board` cannot find a Zip board once the path is drawn.** Measured on a 7x7, 808px board: pristine locates, a line through ≥6 of 49 cells does not. Connectivity is the cause, not ink — a dot in every path cell still locates. **2026-08-04 update:** confirmed this does *not* reach the mid-plan guard in real play — `ZipPlayer` issues the entire path as ONE `drag_path` call, which asks the guard exactly once, *before* any drawing starts. The stale part of this entry is the post-fill `verify()`/retry path, which does call `locate_board` on the drawn-in board and would still hit this. Confirm against one real mid-drag capture before rewriting the locator; the trail in the repro was simulated | Zip fills correctly (the mid-drag interruption bug is fixed, see 1.1.0, and does not apply here anyway per the update above); the *post-fill* verify/retry check may misfire. Not confirmed against a real capture yet |
-| R2 | **`write_image()` raises where it documents returning `False`** | GUI Save appears to do nothing; CLI `--out` aborts a `--go` run *after* solving but *before* any click |
-| R3 | **One unparseable region field silently substitutes the default region** — and then permanently overwrites the calibrated one on save | Your calibrated capture region is gone and nothing said so |
-| R4 | **Stop pressed during the capture window is discarded** | You press Stop, the fill starts anyway |
-| R5 | **Sudoku's box-shape fallback returns a box that does not tile the board** — bare `IndexError` for n = 5, 7, 10, 11. Caught by `_solve_as`, so nothing crashes | An unhelpful error instead of "that board size is not supported" |
-| R6 | **`read_image()` violates its contract for directories and locked files** | `--image <a directory>` gives a raw `PermissionError` instead of a message |
-| R7 | **The "zoom in with `Ctrl` `+`" hint is appended to failures unrelated to board size** | You zoom in repeatedly against a problem that is not about zoom |
-| R8 | **`--region` with a zero or negative dimension escapes as a raw `mss.ScreenShotError`** | A traceback instead of "width and height must be positive" |
-| R9 | **pyautogui's fail-safe surfaces as a raw traceback and the word "Error"** | The documented escape hatch — slam the mouse into a corner — looks like a crash |
-| R10 | **`argparse` output is written before stdout is reconfigured** | `PuzzleSolverCLI.exe --help` crashes on a non-UTF-8 console. Any other bad flag is fine — it prints the usage block and exits 2 |
-
-### Found in real use after 1.1.0, not by the audit
-
-A user's own screen recording of a real Patches fill, played back through the
-actual detection code frame by frame, surfaced a defect none of the 21 audit
-findings above had covered: the fill was stopping early, not because the
-board had changed, but because the guard's own re-check could not survive the
-puzzle's own drawn answer. Fixed in 1.2.0, with a documented residual gap
-rather than a full fix — see the [1.2.0 changelog entry](../CHANGELOG.md) for
-the measured evidence.
-
-- **Patches fills stopped early: `detect_grid_size` cannot survive its own
-  puzzle's drawn fill.** A drawn patch's pastel colour reads as "mostly dark"
-  in grayscale over a wide span, breaking the assumption that only thin grid
-  lines are dark. Reproduced directly on a real mid-drag capture.
-  *Fixed* with a masking fallback in `board_watch.locate_board` (pixels above
-  HSV saturation 50 replaced with white before a second attempt) — recovers
-  roughly the first two-thirds of a fill.
-- **The masking fix does not reach the last stretch of a fill.** Past roughly
-  two-thirds filled, a patch's own internal grid line can share masking's
-  saturation threshold with its surrounding fill. A more aggressive fix
-  (verify only the outer border, skip re-deriving grid size) was tried,
-  measured, and reverted the same day: it also let random noise and a
-  different puzzle at the same size read as "still our board". *Mitigated*,
-  not fixed: `PatchesPlayer` now runs its last two rectangles with the
-  mid-plan check off — a small, bounded, and documented reopening of the risk
-  the guard exists to close, not a silent one.
-  **Superseded on the `speed-optimization` branch (not yet merged to
-  `main`):** a real 8x8 Patches fill (2026-08-09) showed this gap is bigger
-  than "the last two rectangles" — 7 consecutive structural-check failures,
-  well past the position-based mitigation above. Fixed properly this time
-  with a reference-content check rather than another position-based
-  carve-out: when the structural check fails, the parts of the board NOT
-  covered by our own fills are compared against the frame the plan was armed
-  on. The naive first version of this repeated the exact "random noise reads
-  as our board" mistake described above and was caught by an independent
-  adversarial review before shipping — see the
-  [`[Unreleased]` CHANGELOG entry](../CHANGELOG.md) for the full story,
-  including why the fix had to be re-designed around an affirm-or-decline
-  contract that can only make the guard's judgement more lenient toward a
-  board proven to still be ours, never less strict toward one that is not.
-  **在 `speed-optimization` 分支上已經取代（尚未合併回 `main`）：** 一次
-  真實的 8x8 拼塊填答（2026-08-09）顯示這個缺口比「最後兩塊矩形」大得多
-  ——結構性檢查連續失敗 7 次，遠超過上面那個位置判斷法能撐住的範圍。
-  這次改用參考內容比對真正修好，不是再做一個位置判斷的特例：結構性檢查
-  失敗時，把棋盤上「沒被我們填色蓋住」的部分拿去跟計畫武裝當下的畫面
-  比對。這個做法的第一版天真地重演了上面那個「雜訊被讀成我們的棋盤」的
-  錯誤，在上線前被一次獨立的對抗性審查抓到——完整過程見
-  [`[尚未發布]` 的 CHANGELOG 條目](../CHANGELOG.md)，包含為什麼修法最後
-  要改成「只能認證、不能判死」的契約——這種契約只可能讓保護對「證實還是
-  我們的棋盤」更寬容，絕不會讓它對「證實不是」變得更不嚴格。
+1.1.0 修了四個；另外十七個（S1、W1-W3、C1-C2、T1、R1-R10）在 1.3.0 的
+稽核修正輪（2026-08-05）修好了——完整清單與技術細節見那則 CHANGELOG
+條目。2026-08-24 直接對照程式碼與測試重新核對過，不是只憑 CHANGELOG
+就假設沒問題：每一項修正都還在。唯一值得保留一則備註、而不是單純畫掉的
+是 R1（Zip 路徑畫出來之後 `locate_board` 就找不到棋盤了）——它描述的
+問題現在依然真實存在，只是目前沒有任何程式碼路徑會對「已經畫出路徑」
+的 Zip 棋盤呼叫 `locate_board`，所以是休眠而非活躍的風險。等第 3 項
+「計畫」的第 1 點（把 Zip 路徑讀回來）真的動工時，它就會重新變得
+重要——見那裡的備註。
 
 ---
 
@@ -217,30 +85,28 @@ UI for anything else.
   primary display; there is no search across displays.
 - **Windows display scaling is unhandled.** At 125 % or 150 % DPI scaling, `mss`
   and `pyautogui` can disagree about what a "pixel" is, so the capture is right
-  and the clicks land slightly off. Still true on `speed-optimization` as of
-  2026-08-09 - the item just below only detects that the *screen* changed, not
-  a DPI-scaling mismatch on an otherwise unchanged screen. Not yet investigated
-  on real hardware.
-  `speed-optimization` 分支到 2026-08-09 為止依然如此——下面那一項只能
-  偵測「螢幕本身變了」，偵測不到「螢幕沒變、但 DPI 縮放不一致」這種情況。
-  還沒有在真實有縮放設定的硬體上驗證過。
+  and the clicks land slightly off. The item just below only detects that the
+  *screen* changed, not a DPI-scaling mismatch on an otherwise unchanged
+  screen. Not yet investigated on real hardware.
+  在 125% 或 150% DPI 縮放下，`mss` 跟 `pyautogui` 對「一個像素」的認知可能
+  不一致，導致擷取沒問題但點擊稍微偏掉。下面那一項只能偵測「螢幕本身
+  變了」，偵測不到「螢幕沒變、但 DPI 縮放不一致」這種情況。還沒有在真實
+  有縮放設定的硬體上驗證過。
 
-**Partial progress, `speed-optimization` branch (not yet merged to `main`):**
-the region is now stamped with the primary monitor's size at the moment it
-was last actually recalibrated, and a mismatch against the current monitor
-size is now surfaced as a non-blocking warning before a run starts, instead
-of silently capturing whatever happens to be at the stale coordinates. This
-does not find the board on a new screen automatically (item 1 in Planned,
-below, is still the real fix) - it only makes the *symptom* of a stale
-region ("board not found", no obvious reason) traceable to its actual cause.
-See the [`[Unreleased]` CHANGELOG entry](../CHANGELOG.md).
-**部分進展，`speed-optimization` 分支（尚未合併回 `main`）：** 擷取範圍
-現在會記住「上次真的被重新校準」那一刻的主螢幕尺寸，跟目前螢幕尺寸不
-一樣時，執行前會跳出不擋執行的警告，而不是安靜地繼續抓那組可能早就
-失效的座標。這不是自動在新螢幕上找到棋盤（下面「計畫」的第 1 項才是
-真正的修法）——它只是讓「擷取範圍失效」這個症狀（「找不到棋盤」、
-看不出原因）能被追溯到真正的原因。見
-[`[尚未發布]` 的 CHANGELOG 條目](../CHANGELOG.md)。
+**Already shipped, on `main`:** the region is now stamped with the primary
+monitor's size at the moment it was last actually recalibrated, and a
+mismatch against the current monitor size is now surfaced as a non-blocking
+warning before a run starts, instead of silently capturing whatever happens
+to be at the stale coordinates. This does not find the board on a new screen
+automatically (item 1 in Planned, below, is still the real fix) - it only
+makes the *symptom* of a stale region ("board not found", no obvious reason)
+traceable to its actual cause. See the [1.3.0 CHANGELOG entry](../CHANGELOG.md).
+**已經上線，在 `main` 裡：** 擷取範圍現在會記住「上次真的被重新校準」
+那一刻的主螢幕尺寸，跟目前螢幕尺寸不一樣時，執行前會跳出不擋執行的
+警告，而不是安靜地繼續抓那組可能早就失效的座標。這不是自動在新螢幕上
+找到棋盤（下面「計畫」的第 1 項才是真正的修法）——它只是讓「擷取範圍
+失效」這個症狀（「找不到棋盤」、看不出原因）能被追溯到真正的原因。見
+[1.3.0 的 CHANGELOG 條目](../CHANGELOG.md)。
 
 ### Planned
 
@@ -318,11 +184,6 @@ Three things are genuinely tied to the phone the fixtures came from:
    detector — largest quadrilateral contour with a near-square aspect ratio and
    internal grid structure — would find the board directly and make the crop
    ladder a fallback rather than a requirement.
-3. **Say *which* glyph was unreadable.** Recognition now refuses to guess an
-   ambiguous digit, but the resulting message is generic. "Unreadable digit at
-   label (3,4)" would tell the user exactly where to look and exactly what to
-   send in a bug report. The information exists at the point of failure; it is
-   simply not carried out.
 4. **Collect fixtures from other devices.** Everything above is guesswork
    without test images from an Android phone, an iPad, and a non-Retina desktop.
    `tests/test_recognition.py` is structured to make adding a fixture cheap, and
@@ -332,7 +193,13 @@ Three things are genuinely tied to the phone the fixtures came from:
 Done since the first draft of this document 這份文件初稿之後已完成:
 `tools/calibrate_digits.py` is now shipped, and digits 0 and 7 are baked into
 the source instead of being rendered from a Windows font at import time — see
-[CHANGELOG.md](../CHANGELOG.md).
+[CHANGELOG.md](../CHANGELOG.md). Planned #3 above (say *which* glyph was
+unreadable) is also done: both `patches.py` and `zip_path.py` now report the
+exact label/cell coordinates in their failure messages, confirmed on `main`
+on 2026-08-24.
+這份文件初稿之後已完成的還有：上面原本的第 3 項計畫（說出*哪個*字形
+讀不出來）也做完了——`patches.py` 與 `zip_path.py` 現在都會在失敗訊息裡
+報出確切的標籤/格子座標，2026-08-24 對照 `main` 確認過。
 
 ---
 
@@ -365,14 +232,25 @@ safety net that the rest of the design leans on is simply absent.
 1. **Read back the Zip path.** The drawn path is a thick coloured line; sampling
    the boundary between each pair of adjacent cells says whether the segment was
    drawn. Comparing that to the intended path gives both a correctness check and
-   the point at which the drag broke down.
+   the point at which the drag broke down. **Watch out for item 6's R1 note**:
+   `locate_board` cannot find a Zip board once its path is drawn, so whatever
+   this verify path uses to confirm the board is still the right one cannot be
+   a straight call to `locate_board` on the drawn-in board - it needs the same
+   kind of content-aware check the mid-plan Patches guard already uses, not a
+   fresh geometric re-derivation.
 2. **Read back the Patches tiling.** Completed rectangles are drawn with a
    visible border; the existing label detector already locates each badge, so
    checking that each one sits inside a rectangle of the right size is close to
    what `find_labels` already does.
 3. **At minimum, detect board-changed for all five.** Even without per-cell
    verification, noticing that the board is gone is cheap and would let Zip and
-   Patches stop cleanly rather than just running out of actions.
+   Patches stop cleanly rather than just running out of actions. **Partially
+   already true**: the mid-plan `board_watch` guard already covers all five
+   puzzles, Zip and Patches included, for board-changed detection *during* a
+   fill - confirmed on `main` on 2026-08-24. What is still fully missing is the
+   *post-fill* check this item is really about: nothing re-reads Zip's or
+   Patches' result after the drag/fill finishes, which is a different
+   mechanism than the mid-plan guard and is not covered by it.
 
 Item 3 is small and should be done first.
 
@@ -459,7 +337,7 @@ Blocked on having the right screenshot, not on any code.
 
 ---
 
-## 6. Smaller things worth doing
+## Smaller things worth doing
 
 | Item | Why |
 |---|---|
@@ -472,8 +350,6 @@ Blocked on having the right screenshot, not on any code.
 ---
 
 ## 7. Zip's drag can outrun the page and draw the wrong path
-
-*(Found on `speed-optimization`, not yet on `main`.)*
 
 ### The problem
 
@@ -524,8 +400,6 @@ lead, not yet a calibration.
 ---
 
 ## 8. Sudoku, Zip and Patches' digit templates and thresholds are shared, not per-puzzle
-
-*(Found on `speed-optimization`, not yet on `main`.)*
 
 ### The problem
 
@@ -619,3 +493,4 @@ shared threshold on one data point.
 - [DESIGN.md](DESIGN.md) — why it is built this way
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module by module
 - [USAGE.md](USAGE.md) — step by step
+- [EVOLUTION.md](EVOLUTION.md) — what has been built so far, by theme

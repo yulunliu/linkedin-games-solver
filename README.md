@@ -192,7 +192,8 @@ linkedin-games-solver/
     ├── DESIGN.md                  why it is built this way
     ├── ARCHITECTURE.md            module by module
     ├── USAGE.md                   step by step
-    └── ROADMAP.md                 what is next
+    ├── ROADMAP.md                 what is next
+    └── EVOLUTION.md               what has been built so far, by theme
 ```
 
 Every source file is commented in **English and 中文 together**, paragraph by

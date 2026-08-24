@@ -182,7 +182,8 @@ linkedin-games-solver/
     ├── DESIGN.zh-TW.md            為什麼這樣設計
     ├── ARCHITECTURE.zh-TW.md      逐模組說明
     ├── USAGE.zh-TW.md             逐步操作說明
-    └── ROADMAP.zh-TW.md           接下來要做什麼
+    ├── ROADMAP.zh-TW.md           接下來要做什麼
+    └── EVOLUTION.zh-TW.md         目前為止依主題整理的開發歷程
 ```
 
 每一個原始碼檔案都是**中英文並列**的註解，以段落為單位，

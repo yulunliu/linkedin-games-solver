@@ -475,3 +475,4 @@ t("btn_solve")        # "自動解答"
 - [ARCHITECTURE.zh-TW.md](ARCHITECTURE.zh-TW.md) —— 逐模組說明
 - [USAGE.zh-TW.md](USAGE.zh-TW.md) —— 逐步操作說明
 - [ROADMAP.zh-TW.md](ROADMAP.zh-TW.md) —— 接下來要做什麼
+- [EVOLUTION.zh-TW.md](EVOLUTION.zh-TW.md) —— 目前為止依主題整理的開發歷程

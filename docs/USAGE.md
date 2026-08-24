@@ -251,3 +251,4 @@ All three suites are offline and none of them moves the mouse.
 - [DESIGN.md](DESIGN.md) — why it is built this way
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module by module
 - [ROADMAP.md](ROADMAP.md) — what is next
+- [EVOLUTION.md](EVOLUTION.md) — what has been built so far, by theme
