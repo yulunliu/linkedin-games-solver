@@ -174,6 +174,7 @@ linkedin-games-solver/
 │   │   └── tango.py queens.py sudoku.py zip_path.py patches.py
 │   ├── automation/               everything that touches the real screen
 │   │   ├── capture.py             screen capture
+│   │   ├── board_wait.py          wait for a puzzle to appear (and leave)
 │   │   ├── mapper.py              board cell -> screen pixel
 │   │   ├── input_driver.py        the only file that moves the mouse
 │   │   ├── players.py             turn an answer into a click plan
@@ -188,6 +189,9 @@ linkedin-games-solver/
 │   ├── test_recognition.py        real screenshots
 │   ├── test_automation.py         click plans, dry run only
 │   └── run_all.py
+├── tools/                        developer utilities, not needed to just run the app
+│   ├── calibrate_digits.py        regenerate digit templates from your own screenshots
+│   └── log_summary.py             summarize a session's action log before reading it in full
 └── docs/
     ├── DESIGN.md                  why it is built this way
     ├── ARCHITECTURE.md            module by module
@@ -207,7 +211,7 @@ paragraph, with the tricky lines called out individually.
 python tests/run_all.py
 ```
 
-Ten suites, all offline, no mouse movement:
+Eleven suites, all offline, no mouse movement:
 
 - **`test_compat.py`** — that the declared Python 3.9 support is real. Checks
   every file parses at the minimum version and that no PEP 604 union is
@@ -226,6 +230,9 @@ Ten suites, all offline, no mouse movement:
 - **`test_board_guard.py`** — that the mid-plan guard never fires on a real
   board in any state, does stop when the board is replaced, and never interrupts
   a drag in flight.
+- **`test_board_wait.py`** — the watch-then-fire flow that waits for a puzzle
+  to appear (and for it to leave, between rounds), scripted frame by frame with
+  no real screen or mouse involved.
 - **`test_automation.py`** — click plans in dry run: resuming a half-finished
   board, clearing misplaced crowns, drag interpolation, and that image mode runs
   without the screen-mode packages installed.

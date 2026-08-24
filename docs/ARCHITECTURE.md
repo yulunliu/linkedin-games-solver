@@ -32,6 +32,8 @@ graph TB
     end
     subgraph auto["automation/ — the real screen"]
         CAP[capture.py]
+        WAIT[board_wait.py]
+        WATCH[board_watch.py]
         MAP[mapper.py]
         DRV[input_driver.py]
         PLY[players.py]
@@ -53,6 +55,12 @@ graph TB
     PLY --> MAP
     VER --> REG
     CAP --> MAP
+    APP --> WAIT
+    CLI --> WAIT
+    WAIT --> CAP
+    APP --> WATCH
+    CLI --> WATCH
+    DRV --> WATCH
 ```
 
 Dependencies only ever point **down and left**. `core/` imports nothing from the
@@ -228,12 +236,42 @@ loaded file as a shot at origin `(0, 0)` — that is how image mode reuses the
 whole pipeline unchanged, and also why a file's coordinates can never drive the
 mouse.
 
+### `board_wait.py`
+
+```python
+wait_for_board(capture_fn, should_continue=None) -> ScreenShot | None
+wait_for_board_gone(capture_fn, should_continue=None) -> bool
+```
+
+Polls until a puzzle appears, and — between continuous-mode rounds — until
+the previous one has left the screen, so the next round's detection can never
+be re-triggered by its own leftover board still sitting in the capture
+region. Both are cancellable through `should_continue`, the same pattern
+`solve_image` uses for its own retry ladder.
+
 ### `mapper.py`
 
 `BoardMapper` converts a board cell to a screen pixel, adding the capture
 origin. Deliberately trivial and deliberately separate: it is the only place
 where board space becomes screen space, so tests can substitute a fake grid and
 get predictable coordinates.
+
+### `board_watch.py`
+
+```python
+attach(driver, mapper, result, image) -> BoardWatch
+```
+
+Arms the mid-plan guard `input_driver.py`'s `_check_abort` asks between every
+action: "is this still our board?" A structural recheck (cheap — this is not
+a full re-solve), with a content-comparison fallback for Patches specifically,
+where the puzzle's own drawn fill can defeat the structural grid-line check
+partway through. That fallback can only ever *affirm* ("still ours, keep
+going") or *decline* ("could not confirm, fall back to the plain structural
+check") — never abort anything itself, so it can only make the guard more
+lenient toward a board proven to still be ours, never less strict toward one
+that is not. See [DESIGN.md](DESIGN.md) for the real incident and the
+adversarial review that shaped this contract.
 
 ### `input_driver.py`
 

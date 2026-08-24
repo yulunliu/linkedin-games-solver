@@ -27,7 +27,7 @@ In practice this means every recognition change needs one of:
 python tests/run_all.py
 ```
 
-All four suites must pass. They are offline and none of them moves the mouse,
+All eleven suites must pass. They are offline and none of them moves the mouse,
 so they are safe to run anywhere.
 
 ```bash
@@ -120,7 +120,7 @@ Six steps, listed in
 python tests/run_all.py
 ```
 
-四組測試都必須通過。它們全部離線、也不會動滑鼠，在任何地方跑都安全。
+十一組測試都必須通過。它們全部離線、也不會動滑鼠，在任何地方跑都安全。
 
 ```bash
 python -m pyflakes linkedin_games_solver tools tests

@@ -46,21 +46,91 @@ SYMBOL_EMOJI = {SUN: "\U0001f7e0", MOON: "\U0001f319"}
 DEFAULT_GRID_SIZE = 6
 
 # --- Cell appearance thresholds 格內外觀門檻 -------------------------------
+#: Measured on 2 real fixtures (16 sun/moon cells, 56 empty cells): empty-cell
+#: background saturation is 0 on both, real icon saturation is 137.8~209.3 -
+#: the threshold sits in the middle of a wide, untouched gap.
+#: 對 2 張真實測試圖實測（16 個太陽/月亮格、56 個空格）：空格背景飽和度在
+#: 兩張圖上都是 0，真正的圖示飽和度是 137.8~209.3——門檻就落在這個完全
+#: 沒有任何真實資料落入的寬闊區間中間。
 SATURATION_ICON_THRESHOLD = 60
+#: Same fixtures: an empty cell's icon-coloured pixel ratio is 0.0000~0.0002,
+#: a real sun/moon cell's is 0.1051~0.2367 - roughly 500x apart at the nearest
+#: edge, so 0.05 has enormous margin on both sides.
+#: 同一批測試圖：空格的圖示色像素比例是 0.0000~0.0002，真正太陽/月亮格是
+#: 0.1051~0.2367——兩者最接近處也差了約 500 倍，0.05 兩邊都留有巨大邊界。
 ICON_MIN_PIXEL_RATIO = 0.05
+#: Real sun icons across both fixtures measure a mean hue of 17.8~18.2 - a
+#: tight cluster, not spread across the range. The wide (5, 35) band is
+#: deliberate slack for lighting/compression variance beyond these two
+#: captures, not itself a measured extreme.
+#: 兩張真實測試圖裡太陽圖示量到的平均色相是 17.8~18.2——集中在很窄的範圍，
+#: 不是散佈整個區間。(5, 35) 這個較寬的區間是刻意留給這兩張擷取圖之外、
+#: 光線或壓縮造成的變化空間，不是量到的極端值本身。
 ORANGE_HUE_RANGE = (5, 35)
+#: Real moon icons measure 107.6~112.5 - same story as ORANGE_HUE_RANGE
+#: above: a tight real cluster inside a deliberately wider tolerance band.
+#: 真正的月亮圖示量到 107.6~112.5——跟上面 ORANGE_HUE_RANGE 一樣：真實
+#: 資料集中在窄範圍內，門檻區間刻意留得比較寬。
 BLUE_HUE_RANGE = (95, 135)
 #: Given cells have a very pale lavender background: V ~248 vs white 255.
 #: The margin is tiny, so this threshold has to sit close to pure white.
 #: 題目給定格的底色是很淡的淡紫：V 約 248，白色是 255。
 #: 差距很小，所以門檻必須貼近純白。
 GIVEN_BG_VALUE_MAX = 253
+#: Crops this fraction off each cell edge before reading, so the board's own
+#: grid line never bleeds into the sampled region. Not a fitted statistic -
+#: a geometric safety margin, kept small enough that it never once clipped
+#: into a real icon across every cell checked (16 sun/moon + 56 empty, 0
+#: misclassifications).
+#: 讀格子前先從四邊裁掉這個比例，避免棋盤自己的格線滲進取樣範圍。這不是
+#: 統計量出來的門檻，是幾何上的安全邊界——刻意留得夠小，在檢查過的每一格
+#: （16 個太陽/月亮格＋56 個空格）都沒有切到真正的圖示，零誤判。
 CELL_MARGIN_RATIO = 0.08
 
 # --- Edge mark thresholds =/x 符號門檻 -------------------------------------
+#: Size (as a fraction of the adjacent cell's width/height) of the square
+#: sampled at each cell boundary to look for a "=" / "x" mark. A geometric
+#: sampling size, not a fitted threshold - verified against all 4 real marks
+#: on a live fixture (3 "=", 1 "x"): every one was fully captured with no
+#: contamination from a neighbouring mark.
+#: 在每個格子交界取樣、尋找 "=" / "x" 符號的正方形區塊大小（相對於相鄰
+#: 格子寬/高的比例）。這是幾何取樣大小，不是統計門檻——用一張真實測試圖
+#: 上全部 4 個真實符號（3 個 "="、1 個 "x"）驗證過：每一個都被完整取到，
+#: 沒有被鄰近符號干擾。
 PATCH_SIZE_RATIO = 0.3
+#: Measured on the 4 real marks above: foreground (mark-coloured) area is
+#: 11.6% of the patch for "=", 17.7% for "x" - both several times above this
+#: 3% floor, which exists to reject small noise contours rather than mark
+#: strokes themselves.
+#: 對上面那 4 個真實符號實測：前景（符號顏色）面積佔取樣區塊的比例，
+#: "=" 是 11.6%、"x" 是 17.7%——都是這個 3% 下限的好幾倍。這個下限存在
+#: 是為了濾掉雜訊小輪廓，不是用來卡符號筆畫本身。
 FOREGROUND_MIN_AREA_RATIO = 0.03
+#: Measured on the same 4 real marks: the "=" bars' aspect ratio is 5.0~5.5,
+#: the "x" mark's single merged contour is 1.0 (square) - 1.8 sits cleanly
+#: between the two with margin on both sides.
+#: 對同樣 4 個真實符號實測："=" 那兩條橫槓的長寬比是 5.0~5.5，"x" 合併成
+#: 一塊的輪廓長寬比是 1.0（接近正方形）——1.8 乾淨地落在兩者中間，
+#: 兩邊都有邊界。
 EQUAL_ASPECT_RATIO_THRESHOLD = 1.8
+#: GRIDLINE_SPAN_RATIO / GRIDLINE_THICKNESS_RATIO together decide whether a
+#: SINGLE contour spanning the patch is just the board's own grid line, not
+#: a mark. The one real single-contour case in fixture data (the "x" mark at
+#: (3,0) in S__104316931.jpg, before its two strokes merge into one blob)
+#: measured span=thickness=0.42 - safely under the 0.75 span floor, so it is
+#: correctly NOT mistaken for a grid line. No real board's actual grid line
+#: was faint enough to register as its own contour in the fixtures checked,
+#: so the positive case (a genuine grid line correctly caught here) has not
+#: been observed directly yet - this stays a defensive fallback, not
+#: something measured on both sides.
+#: GRIDLINE_SPAN_RATIO／GRIDLINE_THICKNESS_RATIO 兩個一起決定：貫穿整個
+#: 取樣區塊的「單一」輪廓，是不是棋盤自己的格線而不是符號。測試資料裡
+#: 唯一真實的單一輪廓案例（S__104316931.jpg 裡 (3,0) 的 "x" 符號，兩條筆畫
+#: 合併成一塊之前）量到 span=thickness=0.42——安全地低於 0.75 這個 span
+#: 下限，正確地沒有被誤判成格線。目前手上的測試圖裡，沒有任何棋盤自己的
+#: 格線淡到會被單獨偵測成一個輪廓，所以「真的格線被正確擋下來」這個正面
+#: 案例還沒有被直接觀察到——這兩個門檻目前還是防禦性的備援，還沒有
+#: 兩邊都量測過。
 GRIDLINE_SPAN_RATIO = 0.75
 GRIDLINE_THICKNESS_RATIO = 0.3
 #: A pixel must be this much darker than the local background to count as a mark.

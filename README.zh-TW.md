@@ -164,6 +164,7 @@ linkedin-games-solver/
 │   │   └── tango.py queens.py sudoku.py zip_path.py patches.py
 │   ├── automation/               所有會碰到真實螢幕的東西
 │   │   ├── capture.py             螢幕擷取
+│   │   ├── board_wait.py          等待題目出現（以及離開）
 │   │   ├── mapper.py              棋盤格 -> 螢幕像素
 │   │   ├── input_driver.py        唯一會移動滑鼠的檔案
 │   │   ├── players.py             把答案轉成點擊計畫
@@ -178,6 +179,9 @@ linkedin-games-solver/
 │   ├── test_recognition.py        真實截圖
 │   ├── test_automation.py         點擊計畫，只做預演
 │   └── run_all.py
+├── tools/                        開發用工具，單純執行程式不需要它們
+│   ├── calibrate_digits.py        用自己的截圖重新產生數字範本
+│   └── log_summary.py             在讀完整份記錄檔之前，先看一次摘要
 └── docs/
     ├── DESIGN.zh-TW.md            為什麼這樣設計
     ├── ARCHITECTURE.zh-TW.md      逐模組說明
@@ -197,7 +201,7 @@ linkedin-games-solver/
 python tests/run_all.py
 ```
 
-十組測試，全部離線、完全不動滑鼠：
+十一組測試，全部離線、完全不動滑鼠：
 
 - **`test_compat.py`** —— 驗證「宣稱支援 Python 3.9」是真的。逐檔在最低版本下
   解析，並確認沒有任何會在執行期被求值的 PEP 604 型別聯集。
@@ -213,6 +217,8 @@ python tests/run_all.py
   真值是人工看著圖讀出來的。
 - **`test_board_guard.py`** —— 驗證填答中的保護：對任何狀態的真實棋盤都不誤觸發、
   棋盤被換掉時確實會停、而且絕不打斷進行中的拖曳。
+- **`test_board_wait.py`** —— 「先監看、題目出現才動作」的等待流程（兩輪之間
+  也要等題目離開），用腳本化的一張張影格模擬，完全不碰真實螢幕或滑鼠。
 - **`test_automation.py`** —— 預演模式下的點擊計畫：接續填一半的盤面、
   清掉放錯的皇冠、拖曳插值，以及「圖片模式沒裝螢幕套件也能跑」。
 - **`test_settings.py`** —— 設定檔裡不合法的擷取範圍會被丟掉、不會傳到

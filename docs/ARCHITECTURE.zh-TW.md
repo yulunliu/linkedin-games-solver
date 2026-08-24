@@ -32,6 +32,8 @@ graph TB
     end
     subgraph auto["automation/ — 真實螢幕"]
         CAP[capture.py]
+        WAIT[board_wait.py]
+        WATCH[board_watch.py]
         MAP[mapper.py]
         DRV[input_driver.py]
         PLY[players.py]
@@ -53,6 +55,12 @@ graph TB
     PLY --> MAP
     VER --> REG
     CAP --> MAP
+    APP --> WAIT
+    CLI --> WAIT
+    WAIT --> CAP
+    APP --> WATCH
+    CLI --> WATCH
+    DRV --> WATCH
 ```
 
 相依關係永遠只**往下、往左**。`core/` 不 import 專案裡的任何東西。
@@ -220,11 +228,38 @@ capture_screen()  capture_region(l, t, w, h)  default_region()  from_file_image(
 圖片模式就是靠這招原封不動地重用整條流程，
 這同時也解釋了為什麼檔案的座標永遠不能拿來驅動滑鼠。
 
+### `board_wait.py`
+
+```python
+wait_for_board(capture_fn, should_continue=None) -> ScreenShot | None
+wait_for_board_gone(capture_fn, should_continue=None) -> bool
+```
+
+輪詢直到題目出現；連續模式兩輪之間，則輪詢直到上一題真的離開畫面——
+這樣下一輪的偵測，才不會被還留在擷取範圍裡的自己的舊棋盤重新觸發。
+兩者都能透過 `should_continue` 取消，跟 `solve_image` 自己重試階梯
+用的是同一套模式。
+
 ### `mapper.py`
 
 `BoardMapper` 把棋盤格轉成螢幕像素，加上擷取原點。
 刻意做得很簡單、也刻意獨立成一個檔案：它是唯一一個「棋盤空間變成螢幕空間」
 的地方，所以測試可以塞一個假棋盤進去，得到可預測的座標。
+
+### `board_watch.py`
+
+```python
+attach(driver, mapper, result, image) -> BoardWatch
+```
+
+掛上 `input_driver.py` 的 `_check_abort` 在每個動作之間都會問的那個
+填答中途保護：「這還是我們的棋盤嗎？」是結構性重新檢查（成本低——
+不是重新完整求解一次），**專門對 Patches** 額外加了一道內容比對備援，
+因為這款題目自己畫出來的填色，中途可能會打敗結構性格線檢查。那道備援
+只可能「認證」（還是我們的，繼續）或「拒絕認證」（無法確認，退回原本
+單純的結構性檢查）——絕不會自己中止任何事，所以它只可能讓保護對
+「證實還是我們的棋盤」更寬容，絕不會讓它對「證實不是」變得更不嚴格。
+真實事故與塑造出這個契約的對抗性審查，見 [DESIGN.zh-TW.md](DESIGN.zh-TW.md)。
 
 ### `input_driver.py`
 

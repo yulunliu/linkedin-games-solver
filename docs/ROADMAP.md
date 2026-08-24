@@ -29,11 +29,14 @@ that nobody — including future me — has to rediscover them.
 A systematic audit of six attack surfaces — malformed image input, abnormal GUI
 operation, the automation path, solver edge cases, hostile environments, and
 threading — produced 21 defects that survived independent re-verification.
-Four were fixed in 1.1.0; the other seventeen (S1, W1-W3, C1-C2, T1, R1-R10)
-were fixed in the 1.3.0 audit-fix pass (2026-08-05) — see that
-[CHANGELOG entry](../CHANGELOG.md) for the full list and technical detail on
-each. Re-confirmed directly against the code and its tests on 2026-08-24, not
-just assumed from the changelog: every fix is still in place. The one item
+Four were fixed in 1.1.0; the other seventeen (S1, W1-W3, C1-C2, T1, R1-R10 -
+labels used only within this document's own history, not in CHANGELOG.md
+itself) were fixed in the 1.3.0 audit-fix pass (2026-08-05) — see that
+[CHANGELOG entry](../CHANGELOG.md), which describes the same fixes
+narratively (not under these labels - do not search the changelog for "S1"
+or "R3", search for what each one actually does instead). Re-confirmed
+directly against the code and its tests on 2026-08-24, not just assumed from
+the changelog: every fix is still in place. The one item
 worth a standing note rather than a clean "fixed" is R1
 (`locate_board` cannot find a Zip board once its path is drawn) — its
 underlying claim is still literally true, but nothing calls `locate_board` on
@@ -184,7 +187,7 @@ Three things are genuinely tied to the phone the fixtures came from:
    detector — largest quadrilateral contour with a near-square aspect ratio and
    internal grid structure — would find the board directly and make the crop
    ladder a fallback rather than a requirement.
-4. **Collect fixtures from other devices.** Everything above is guesswork
+3. **Collect fixtures from other devices.** Everything above is guesswork
    without test images from an Android phone, an iPad, and a non-Retina desktop.
    `tests/test_recognition.py` is structured to make adding a fixture cheap, and
    `tools/calibrate_digits.py` turns a new device's screenshots into templates
@@ -193,13 +196,15 @@ Three things are genuinely tied to the phone the fixtures came from:
 Done since the first draft of this document 這份文件初稿之後已完成:
 `tools/calibrate_digits.py` is now shipped, and digits 0 and 7 are baked into
 the source instead of being rendered from a Windows font at import time — see
-[CHANGELOG.md](../CHANGELOG.md). Planned #3 above (say *which* glyph was
-unreadable) is also done: both `patches.py` and `zip_path.py` now report the
+[CHANGELOG.md](../CHANGELOG.md). One item originally in this Planned list —
+saying *which* glyph was unreadable — is also done and has been removed from
+the numbered list above: both `patches.py` and `zip_path.py` now report the
 exact label/cell coordinates in their failure messages, confirmed on `main`
 on 2026-08-24.
-這份文件初稿之後已完成的還有：上面原本的第 3 項計畫（說出*哪個*字形
-讀不出來）也做完了——`patches.py` 與 `zip_path.py` 現在都會在失敗訊息裡
-報出確切的標籤/格子座標，2026-08-24 對照 `main` 確認過。
+這份文件初稿之後已完成的還有：這份「計畫」清單裡原本有一項——說出
+*哪個*字形讀不出來——也做完了，已經從上面的編號清單移除：`patches.py`
+與 `zip_path.py` 現在都會在失敗訊息裡報出確切的標籤/格子座標，
+2026-08-24 對照 `main` 確認過。
 
 ---
 
