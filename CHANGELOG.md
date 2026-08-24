@@ -3,20 +3,66 @@
 Notable changes. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 重要變更紀錄。格式大致依照 Keep a Changelog。
 
-## [Unreleased] — `speed-optimization` branch, not yet merged to `main`
-## [尚未發布] —— `speed-optimization` 分支，尚未合併回 `main`
+## [1.4.0] — 2026-08-19
 
-**Not a numbered release.** This branch exists to work on solve speed and
-reliability without touching the stable, daily-verified `main` branch. Every
-item below is real-world-tested on this branch but has not yet gone through
-`main`'s merge process. Two multi-day rounds of real play surfaced the fixes
-below; three items were caught and reworked by an independent adversarial
-review before shipping (see the Patches guard entry).
-**不是編號版本。** 這個分支專門用來做解題速度與穩定性的改動，不動到穩定、
-每天都用真實遊玩驗證過的 `main` 分支。以下每一項都在這個分支上做過真實
-遊玩測試，但還沒走過 `main` 的合併流程。兩輪跨日的真實遊玩找出了下面
-這些修正；其中三項在上線前被獨立的對抗性審查抓到問題並重做過
-（見 Patches 保護那一條）。
+**Upgrade from 1.3.0.** Started as a separate `speed-optimization` branch,
+built and real-play-tested over many days without touching the stable
+`main` branch, then merged in whole once it had proven itself stable in
+daily use. Two multi-day rounds of real play surfaced the fixes below;
+three items were caught and reworked by an independent adversarial review
+before shipping (see the Patches guard entry). After the merge, a follow-up
+cleanup pass (2026-08-24) added a shared training-data location, confirmed
+every item on the long-standing audit-defect list was actually fixed, and
+added a themed history document — see the last few entries below.
+**建議從 1.3.0 升級。** 原本是獨立的 `speed-optimization` 分支，經過許多天
+的建置與真實遊玩測試、不動到穩定的 `main`，等它在每天的真實使用中證明
+穩定之後才整批合併進來。兩輪跨日的真實遊玩找出了下面這些修正；其中三項
+在上線前被獨立的對抗性審查抓到問題並重做過（見 Patches 保護那一條）。
+合併之後又做了一輪收尾整理（2026-08-24）：新增共用的訓練資料位置、
+核對確認稽核缺陷清單上的每一項都真的修好了、新增一份分類式的歷史文件——
+見下面最後幾條。
+
+### Added — a shared training-data location and a project-wide cleanup pass, after the merge 新增：合併之後的共用訓練資料位置與一輪全專案整理
+
+- **Log files and captures can now live in one shared folder across several
+  local checkouts of this project**, instead of each one accumulating its
+  own separate `dist/logs/` and `dist/img/`. `core/action_log.py` and
+  `ui/settings.py` both check an optional `LGS_DATA_DIR` environment
+  variable first; unset, which is the case for every ordinary user of the
+  published exe, behaviour is completely unchanged. Verified end to end
+  after rebuilding both exes with the variable set: a real solve run's log
+  genuinely landed in the shared folder, not the project's own `dist/logs/`.
+  **記錄檔跟擷取畫面現在可以讓本機好幾份 checkout 共用同一個資料夾**，
+  不用各自累積一份獨立的 `dist/logs/`、`dist/img/`。`core/action_log.py`
+  跟 `ui/settings.py` 都會先檢查一個可選的 `LGS_DATA_DIR` 環境變數；
+  沒設定的話——已發布 exe 的每一個一般使用者都是這樣——行為完全不變。
+  重新編譯兩個 exe 並設定這個變數後端對端驗證過：真的求解一次，log 確實
+  出現在共用資料夾，不是專案自己的 `dist/logs/`。
+- **The entire seventeen-item audit-defect list (section 6 of
+  [ROADMAP.md](docs/ROADMAP.md)) was re-verified directly against the
+  current code and tests, not assumed from old notes, and confirmed
+  entirely fixed** (most in 1.3.0, the rest merged in with this branch) —
+  the section was rewritten from a long defect-by-defect list into a short
+  closed-out summary, keeping only one still-accurate residual caveat
+  (folded into ROADMAP item 3, where it will matter again). Several other
+  ROADMAP entries had gone stale in the same way - still describing
+  themselves as living on an unmerged branch after the merge had already
+  happened - and were corrected.
+  **ROADMAP.md 第 6 節那份十七項稽核缺陷清單，直接對照目前的程式碼與
+  測試重新核對過，不是憑舊筆記假設，確認全部都已修好**（大多在 1.3.0，
+  其餘隨這個分支合併進來）——那一節從逐項條列的長清單，改寫成一段簡短
+  的收尾摘要，只留下一則依然成立的殘留備註（摺進 ROADMAP 第三項，那裡
+  之後會再度用到）。另外幾個 ROADMAP 條目也有同一種「合併之後還在講
+  自己活在還沒合併的分支上」的過時措辭，一併修正。
+- **A new [EVOLUTION.md](docs/EVOLUTION.md) document groups the project's
+  entire history by theme** — recognition accuracy, automation safety,
+  speed, UX, diagnostics, reliability — instead of by version number, as a
+  faster way to get a sense of the project's shape than reading every dated
+  CHANGELOG entry in order.
+  **新增的 [EVOLUTION.md](docs/EVOLUTION.md) 依主題（辨識準確度、自動化
+  安全機制、速度、使用者體驗、診斷工具、穩定性）整理整個專案的歷史**，
+  不是照版本編號——比照順序讀完每一則帶日期的 CHANGELOG 條目，
+  更快抓到這個專案的樣貌。
 
 ### Fixed — a guard abort silently ended continuous mode instead of moving on to the next puzzle 修正：守衛中止會讓連續模式悄悄停下來，而不是繼續下一題
 
@@ -522,14 +568,24 @@ adversarial review's counter-examples down as permanent regression tests
 (a uniform-gray frame at any brightness, a different same-size Patches board
 - the strongest attack found, a scrim/dim over the failing frame, and the
 real 2026-08-06 incident replayed under the shipped production configuration).
-All suites pass, `pyflakes` clean, both executables rebuilt and smoke-tested
-after every round.
+Later additions on the same branch include a regression test for the
+guard-abort fix that was confirmed to fail against the code without the fix
+before confirming it passes with the fix restored, tests for the digit-puzzle
+capture-pair harvesting, and tests for the `LGS_DATA_DIR` override. At the
+point this version was formalized: 11 suites, 120 individual cases, all
+passing; `pyflakes` clean; both executables rebuilt from the merged code and
+smoke-tested, including an end-to-end check that a real solve's log lands in
+the `LGS_DATA_DIR` folder when the variable is set.
 測試檔：10 → 11（`test_board_wait.py` 是這個分支較早新增的）。
 `test_board_guard.py` 從 21 個案例增加到 26 個，其中 5 個把對抗性審查的
 反例釘成永久回歸測試（任何亮度的整片灰畫面、另一塊同尺寸拼塊棋盤——
 量到最強的攻擊、蓋在失敗畫面上的遮罩/調暗、以及在正式上線設定下重播的
-2026-08-06 真實事件）。全部測試組都通過，`pyflakes` 乾淨，每一輪都重新
-打包過兩個執行檔並煙霧測試過。
+2026-08-06 真實事件）。同一個分支後續新增的還有：守衛中止修正的回歸
+測試（先確認沒有修正時真的會失敗，修正補回去才通過）、數字題目成對
+截圖收集的測試、以及 `LGS_DATA_DIR` 覆寫的測試。這個版本正式定案時：
+11 組測試檔、120 個個別案例，全部通過；`pyflakes` 乾淨；兩個執行檔都從
+合併後的程式碼重新打包並煙霧測試過，包含端對端確認設定
+`LGS_DATA_DIR` 後真實求解的 log 確實會寫進那個資料夾。
 
 ## [1.3.0] — 2026-08-05
 
