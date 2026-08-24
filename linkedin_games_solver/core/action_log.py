@@ -71,6 +71,7 @@ than raising into the middle of a mouse-driving loop.
 from __future__ import annotations
 
 import datetime
+import os
 import sys
 import threading
 from pathlib import Path
@@ -82,6 +83,22 @@ from pathlib import Path
 #: 就放在那裡（這樣一次執行的記錄才會跟它來自的專案放在一起），否則退回
 #: 家目錄。
 LOG_DIRNAME = "logs"
+
+#: Optional override, checked first by _resolve_dir(). Unset for every
+#: ordinary user of the published exe - the default "next to the program"
+#: behaviour below is completely unchanged for them. This exists only so a
+#: developer running multiple local checkouts/worktrees of this project can
+#: point every one of them at ONE shared folder instead of each accumulating
+#: its own separate dist/logs/ - set once, locally (e.g. via `setx
+#: LGS_DATA_DIR ...` on Windows), never committed to source control or baked
+#: into the shipped exe.
+#: 可選的覆寫，_resolve_dir() 會先檢查它。已發布 exe 的一般使用者都不會
+#:設定這個，對他們來說下面「程式旁邊優先」的預設行為完全不變。這個變數
+#: 存在的唯一理由，是讓在本機同時開著這個專案好幾份 checkout/worktree 的
+#: 開發者，能讓每一份都指向「同一個」共用資料夾，而不是各自累積一份獨立的
+#: dist/logs/——只在本機設定一次（例如 Windows 上用 `setx LGS_DATA_DIR
+#: ...`），不會進版控，也不會被打包進發布的 exe 裡。
+LOG_DIR_ENV_VAR = "LGS_DATA_DIR"
 
 #: Overridable by tests (and, if ever needed, by a caller) so a run's log
 #: never lands in a real user's folder during a test. None means "compute the
@@ -99,6 +116,11 @@ _path: Path | None = None
 def _resolve_dir() -> Path:
     if LOG_DIR is not None:
         return LOG_DIR
+    env_dir = os.environ.get(LOG_DIR_ENV_VAR)
+    if env_dir:
+        candidate = Path(env_dir) / LOG_DIRNAME
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
     else:

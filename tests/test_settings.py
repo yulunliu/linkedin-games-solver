@@ -9,12 +9,14 @@ in CI (including headless Ubuntu) exactly like every other suite.
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from linkedin_games_solver.core import action_log  # noqa: E402
 from linkedin_games_solver.ui import settings as settings_store  # noqa: E402
 
 
@@ -118,9 +120,77 @@ def test_region_monitor_size_round_trips_and_defaults_to_none():
     print("  region_monitor_size round-trips and defaults to None OK")
 
 
+def test_captures_dir_respects_the_shared_data_dir_env_var():
+    """
+    captures_dir() (and calibration_candidates_dir(), which is built on top
+    of it) must use LGS_DATA_DIR/img when that environment variable is set -
+    this is how several local checkouts/worktrees of this project can share
+    one folder instead of each accumulating its own dist/img/ - and must
+    fall back to the normal "next to the program" behaviour when it is not
+    set, which is what every ordinary user of the published exe gets.
+    captures_dir()（以及建立在它之上的 calibration_candidates_dir()）在
+    LGS_DATA_DIR 這個環境變數有設定時，必須使用 LGS_DATA_DIR/img——這就是
+    本機好幾份 checkout/worktree 能共用同一個資料夾、而不是各自累積一份
+    dist/img/ 的方式——沒有設定時則必須退回原本「程式旁邊」的行為，這正是
+    已發布 exe 的一般使用者會拿到的行為。
+    """
+    original_env = os.environ.get(action_log.LOG_DIR_ENV_VAR)
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ[action_log.LOG_DIR_ENV_VAR] = tmp
+        try:
+            captures = settings_store.captures_dir()
+            assert captures == Path(tmp) / "img", \
+                f"did not honour the env var / 沒有遵守環境變數: {captures!r}"
+            assert captures.is_dir(), "captures_dir() did not create the folder / 沒有建立資料夾"
+
+            candidates = settings_store.calibration_candidates_dir()
+            assert candidates == Path(tmp) / "img" / "calibration_candidates", \
+                f"did not build on the env var / 沒有建立在環境變數之上: {candidates!r}"
+            assert candidates.is_dir()
+        finally:
+            if original_env is None:
+                os.environ.pop(action_log.LOG_DIR_ENV_VAR, None)
+            else:
+                os.environ[action_log.LOG_DIR_ENV_VAR] = original_env
+    print("  captures_dir respects LGS_DATA_DIR, falls back when unset OK")
+
+
+def test_log_dir_respects_the_shared_data_dir_env_var():
+    """
+    Same override, same reasoning, for action_log._resolve_dir() -
+    core/action_log.py's own LOG_DIR global (used by other tests to
+    redirect logging into a scratch folder) must be None here so the
+    function actually reaches the env-var check instead of short-circuiting
+    on that override first.
+    跟上面同一個覆寫機制、同一個理由，套用在 action_log._resolve_dir() 上——
+    core/action_log.py 自己的 LOG_DIR 全域變數（其他測試會用它把記錄導向
+    暫存資料夾）這裡必須是 None，函式才會真的走到環境變數檢查，
+    而不是先被那個覆寫短路掉。
+    """
+    original_env = os.environ.get(action_log.LOG_DIR_ENV_VAR)
+    original_log_dir = action_log.LOG_DIR
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ[action_log.LOG_DIR_ENV_VAR] = tmp
+        action_log.LOG_DIR = None
+        try:
+            resolved = action_log._resolve_dir()
+            assert resolved == Path(tmp) / "logs", \
+                f"did not honour the env var / 沒有遵守環境變數: {resolved!r}"
+            assert resolved.is_dir()
+        finally:
+            if original_env is None:
+                os.environ.pop(action_log.LOG_DIR_ENV_VAR, None)
+            else:
+                os.environ[action_log.LOG_DIR_ENV_VAR] = original_env
+            action_log.LOG_DIR = original_log_dir
+    print("  action_log._resolve_dir respects LGS_DATA_DIR OK")
+
+
 if __name__ == "__main__":
     print("Settings tests / 設定檔測試")
     test_valid_region()
     test_load_drops_a_malformed_region_instead_of_passing_it_on()
     test_region_monitor_size_round_trips_and_defaults_to_none()
+    test_captures_dir_respects_the_shared_data_dir_env_var()
+    test_log_dir_respects_the_shared_data_dir_env_var()
     print("\nAll passed / 全部通過")

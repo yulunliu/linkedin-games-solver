@@ -11,6 +11,7 @@ works from a read-only folder and settings survive replacing the .exe.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -41,7 +42,23 @@ def captures_dir() -> Path:
     read-only folder, which is the same reasoning as SETTINGS_PATH above.
     優先放在程式旁邊（畫面就該跟它來自的專案放在一起）；程式位於唯讀資料夾時
     退回家目錄 —— 理由跟上面 SETTINGS_PATH 一樣。
+
+    Checks action_log.LOG_DIR_ENV_VAR first, same override and same reasoning
+    as action_log._resolve_dir() - unset for every ordinary user of the
+    published exe (default behaviour above is unchanged for them), only set
+    locally by a developer who wants several checkouts/worktrees of this
+    project to share one folder instead of each accumulating its own.
+    先檢查 action_log.LOG_DIR_ENV_VAR，跟 action_log._resolve_dir() 同一個
+    覆寫、同一個理由——已發布 exe 的一般使用者都不會設定（對他們來說上面的
+    預設行為不變），只有想讓本機好幾份 checkout/worktree 共用同一個資料夾、
+    而不是各自累積一份的開發者，才會在本機設定它。
     """
+    env_dir = os.environ.get(action_log.LOG_DIR_ENV_VAR)
+    if env_dir:
+        candidate = Path(env_dir) / CAPTURES_DIRNAME
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
     else:
