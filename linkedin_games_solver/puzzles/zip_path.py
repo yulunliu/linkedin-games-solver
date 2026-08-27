@@ -88,7 +88,7 @@ def _enclosed_holes(component: np.ndarray) -> np.ndarray:
     return padded[1:-1, 1:-1] > 0
 
 
-def find_dots(image: np.ndarray, grid: BoardGrid):
+def find_dots(image: np.ndarray, grid: BoardGrid, debug_masks: dict | None = None):
     """Locate the numbered dots and read their numbers.
     找出編號圓點並讀出號碼。
 
@@ -99,6 +99,23 @@ def find_dots(image: np.ndarray, grid: BoardGrid):
     回傳 (dots, unread)。`unread` 把「號碼讀不出來的圓盤」的位置，
     對應到它顯示了幾個數字字形。那個位數是 solve() 用來推論「它一定是哪個號碼」
     的依據，見 _resolve_unread()。
+
+    `debug_masks`, if given, is filled in with {(row, col): mask} for every
+    disc found - the same raw bitmap read_number() classifies from, BEFORE
+    classification. Every ordinary caller leaves this None (zero cost - the
+    dict write only happens when a caller asks for it). It exists solely so
+    tools/calibrate_digits.py's from_zip_dots() can turn real Zip captures
+    into digit templates via the SAME extraction this function actually uses,
+    instead of a second, drifting reimplementation - this mirrors how
+    puzzles/patches.py's PatchLabel.glyphs already does the same job for
+    Patches labels.
+    `debug_masks`（如果有給）會被填入 {(row, col): mask} —— 跟 read_number()
+    拿去分類的、分類「之前」的同一份原始點陣圖。一般呼叫端都不會給這個參數
+    （成本是零——只有呼叫端主動要，才會寫進這個字典）。它存在的唯一理由是讓
+    tools/calibrate_digits.py 的 from_zip_dots() 能用這個函式「真正在用」的
+    同一套抽取邏輯，把真實的 Zip 截圖轉成數字範本，而不是另外寫一份會慢慢
+    跟正式邏輯不同步的重複實作——這跟 puzzles/patches.py 的
+    PatchLabel.glyphs 對 Patches 標籤做的事完全一樣。
     """
     x0, y0, w0, h0 = grid.board_bbox
     cell = (w0 / grid.n + h0 / grid.n) / 2
@@ -138,6 +155,8 @@ def find_dots(image: np.ndarray, grid: BoardGrid):
         # 修正後 12 個圓盤的第一名數字全部正確。
         holes = _enclosed_holes(component) & (window == 0)
         mask = holes.astype(np.uint8)
+        if debug_masks is not None:
+            debug_masks[(row, col)] = mask
         value = digit_ocr.read_number(mask)
         if value is not None:
             dots[(row, col)] = value

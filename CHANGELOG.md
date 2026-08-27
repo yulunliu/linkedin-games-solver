@@ -3,6 +3,96 @@
 Notable changes. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 重要變更紀錄。格式大致依照 Keep a Changelog。
 
+## [Unreleased]
+
+Not yet tagged as a numbered release - real-play testing is still ongoing
+and more adjustments may follow before this is confirmed stable.
+還沒標上版本號——真實遊玩測試仍在進行中，確認穩定之前可能還會再調整。
+
+### Fixed — digit recognition: Zip gets its own calibration source for the first time, and a real live misread is fixed 數字辨識：Zip 第一次有了自己的校準來源，並修好一個真實存在的誤判
+
+- **Zip never had its own digit-template source** - every Zip number was
+  classified using templates borrowed entirely from Sudoku, Patches and
+  system fonts, never checked against Zip's own widget rendering. Added
+  three real Zip boards as a dedicated source and regenerated the shared
+  digit templates from them.
+  **Zip 從來沒有專屬的數字範本來源**——每一個 Zip 數字，全部是跟 Sudoku、
+  Patches、系統字型借來的範本做分類，從來沒有用 Zip 自己元件畫出來的數字
+  驗證過。新增三張真實 Zip 棋盤作為專屬來源，並用它們重新產生共用的數字
+  範本。
+- That gap was real, not theoretical: a real captured Zip board had an "8"
+  scoring 0.9845 against the borrowed templates with runner-up "6" at
+  0.9659 - a margin of 0.0186, under the safety threshold of 0.020. The
+  recognizer correctly refused to guess rather than risk a wrong answer,
+  but the puzzle came back unreadable. Now reads correctly.
+  這個缺口不是理論上的：一張真實存下的 Zip 棋盤，「8」對借來的範本只拿到
+  0.9845 分，第二名「6」拿到 0.9659 分，差距 0.0186，低於安全門檻
+  0.020。辨識器正確地拒絕用猜的，避免冒險猜錯，但代價是這題讀不出來。
+  現在已經能正確讀出。
+- **Digits "0" and "7" had zero real screenshot samples anywhere in the
+  project** - both were classified purely from system-font renders, a
+  documented risk (a machine with different fonts once misread a real "7"
+  as "2"). Added real samples for both from Patches and Zip captures found
+  in a deep review of every stored gameplay recording and screenshot; also
+  added several more real samples for digits 1, 3, 4, 5, 6, 8, 9 from the
+  same review, roughly tripling the shared template pool from 31 to 93
+  distinct real glyphs.
+  **數字「0」與「7」在整個專案裡完全沒有任何真實截圖樣本**——兩者的分類
+  完全依賴系統字型算繪，這是文件裡早就記載過的風險（曾有一台字型不同的
+  機器把真實的「7」讀成「2」）。深度複查過全部存下的真實遊玩錄影與截圖後，
+  從 Patches 與 Zip 的真實截圖補上這兩個數字的樣本；同一輪複查也替數字
+  1、3、4、5、6、8、9 補上更多真實樣本，共用範本池從 31 個不重複字形
+  增加到 93 個。
+- Measured effect on the built-in font-substitution stress test (simulates
+  a machine with different fonts): recognized 72/100 glyphs correctly under
+  foreign fonts (was 68/100) and 75/100 with no system fonts at all (was
+  60/100) - with zero wrong answers in either case, before or after.
+  對內建的字型替換壓力測試（模擬字型不同的機器）量測到的效果：換成外國
+  字型時能正確辨識 72/100 個字形（原本 68/100），完全沒有系統字型時能
+  正確辨識 75/100 個（原本 60/100）——兩種情境下修改前後都是 0 個誤判。
+
+### Fixed — a comprehensive independent review found and fixed 10 real defects, none of them previously known 一次獨立的全面複查找出並修好 10 個先前未知的真實缺陷
+
+- Tango's solver had no time limit - the only puzzle type missing one.
+  Tango 的求解器沒有時間上限——是唯一少了這個保護的題型。
+- Recomputing a board's scale mid-solve could silently detect and answer a
+  *different* puzzle type than the one just solved, in auto-detect mode.
+  在自動偵測模式下，重新計算棋盤尺度時，可能會悄悄偵測並回答成「跟剛才
+  不同的」題目類型。
+- Two places read Tkinter UI state directly from a background worker
+  thread, against the app's own thread-safety rule.
+  有兩處在背景工作執行緒裡直接讀取 Tkinter 介面狀態，違反這個程式自己的
+  執行緒安全規則。
+- The "should the window be minimized" flag tracked whether it had *ever*
+  been minimized this run, not whether it currently was - so restoring the
+  window by hand once would stop it from ever being moved clear again.
+  「要不要最小化視窗」的旗標，記的是這次執行「曾不曾」被最小化過，不是
+  「現在是不是」——所以只要使用者手動還原視窗一次，之後就再也不會被
+  自動移開了。
+- Sudoku's per-digit keystroke delay bypassed the slowdown multiplier that
+  every other action already respects, so it didn't get slower on the
+  slower speed settings.
+  數獨每輸入一個數字的按鍵間隔，繞過了其他每個動作都會套用的減速倍率，
+  在比較慢的速度檔位下並不會跟著變慢。
+- Patches never actually used its own documented ability to split two
+  touching digits glued together (e.g. "12") at low resolution - the
+  capability existed elsewhere in the codebase but was never wired in.
+  Patches 從來沒有真正用上文件裡早就承諾的能力——在低解析度下把黏在一起
+  的兩個數字（例如「12」）切開；這個能力在別的地方存在，但從來沒有真的
+  接上。
+- A failed settings save used to fail completely silently, unlike every
+  other failure path in the same file.
+  設定檔存檔失敗以前會完全悄悄發生，跟同一個檔案裡其他每一個失敗路徑的
+  做法都不一致。
+- The Save button stayed clickable throughout a run despite the result it
+  would save being written non-atomically by a background thread - a
+  previously-fixed race condition of the same shape.
+  存檔按鈕在整場執行期間都能按，即使它要存的結果是背景執行緒非原子性寫入
+  的——跟先前修過的一個競態問題同一種形狀。
+- Several stale comments claiming incorrect ownership of configuration
+  values were corrected.
+  幾處聲稱設定值由錯誤地方管理的過時註解已更正。
+
 ## [1.4.0] — 2026-08-19
 
 **Upgrade from 1.3.0.** Started as a separate `speed-optimization` branch,

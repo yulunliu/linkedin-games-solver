@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from linkedin_games_solver.core import detect_type, read_image  # noqa: E402
 from linkedin_games_solver.core.detect_type import _board_roi  # noqa: E402
+from linkedin_games_solver.core.digit_templates import APP_TEMPLATES  # noqa: E402
 from linkedin_games_solver.puzzles import patches, queens, solve_image  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -217,6 +218,95 @@ def test_live_tango_matches_screen():
     print("  live tango matches the screen OK")
 
 
+def test_patches_splits_a_wide_merged_digit_component():
+    """
+    Bug this guards: see patches._split_wide_boxes' own docstring for the
+    full story - core/digits.py's module docstring promises multi-digit
+    Patches labels like "12" are handled by splitting a wide connected
+    component, but read_label_value never actually did this until
+    2026-08-26. Tests the extracted _split_wide_boxes() directly against
+    plain (x, y, w, h, index) tuples rather than a real capture, because the
+    behaviour is a pure geometric property (does a box wider than ~1.6x a
+    normal digit's width get cut into the right number of same-height
+    slices at the right x positions) that does not need - and should not
+    depend on - font rendering or classify_glyph's confidence gates.
+    這個測試守住的問題：完整故事見 patches._split_wide_boxes 自己的文件
+    字串——core/digits.py 的模組文件字串承諾過，Patches 多位數標籤（例如
+    「12」）會靠切割寬的連通元件來處理，但 read_label_value 一直到
+    2026-08-26 之前都沒有真的這樣做。這裡直接對著單純的
+    (x, y, w, h, index) 元組測試抽出來的 _split_wide_boxes()，不是對著
+    真實擷取畫面——因為這個行為是純粹的幾何性質（一個比正常數字寬約 1.6
+    倍以上的方框，會不會被切成正確片數、同樣高度、正確 x 位置的切片），
+    不需要、也不應該依賴字型算繪或 classify_glyph 的信心門檻。
+    """
+    # A normal single digit: width roughly 0.62x its own height (the ratio
+    # this whole mechanism is built around) - must NOT be split.
+    # 一個正常的單一數字：寬度大約是自己高度的 0.62 倍（整個機制建立在這個
+    # 比例上）——絕不能被切開。
+    single = [(10, 5, 25, 40, 7)]
+    assert patches._split_wide_boxes(single) == single, (
+        "a normal-width digit was split / 正常寬度的數字被切開了")
+
+    # A component roughly 2 digit-widths wide (two touching digits merged) -
+    # must split into exactly 2 slices, same y/height/index, contiguous and
+    # covering the original width exactly.
+    # 一個大約兩個數字寬的元件（兩個黏在一起的數字）——必須剛好切成兩片，
+    # y／高度／index 都相同，切片彼此相鄰且完整涵蓋原本的寬度。
+    merged = [(10, 5, 50, 40, 3)]  # 50 ~= 2 * (0.62 * 40) = 49.6
+    result = patches._split_wide_boxes(merged)
+    assert len(result) == 2, f"expected 2 slices for a merged '12'-style box, got {len(result)} / 預期切成 2 片，得到 {len(result)}"
+    (x0, y0, w0, h0, i0), (x1, y1, w1, h1, i1) = result
+    assert (y0, h0, i0) == (5, 40, 3) and (y1, h1, i1) == (5, 40, 3), (
+        f"y/height/index must be preserved on both slices / 兩片的 y／高度／index 都要保留: {result}")
+    assert x0 == 10, f"first slice must start where the original box started / 第一片要從原本的方框起點開始: {result}"
+    assert x0 + w0 == x1, f"slices must be contiguous, no gap or overlap / 切片必須相鄰，不能有縫隙或重疊: {result}"
+    assert x1 + w1 == 60, f"slices must exactly cover the original width (10..60) / 切片必須完整涵蓋原本的寬度: {result}"
+    print("  patches splits a wide merged digit component OK")
+
+
+def test_read_label_value_actually_calls_the_wide_box_splitter():
+    """
+    Complements test_patches_splits_a_wide_merged_digit_component: that test
+    proves the splitting MATH is correct in isolation; this one proves
+    read_label_value actually WIRES IT IN, by spying on
+    patches._split_wide_boxes while reading a real label from a real
+    fixture. Needed because none of the project's current real fixtures
+    happen to contain a genuinely merged two-digit badge (that failure mode
+    is rare enough that it has never been caught on camera), so no
+    end-to-end test can exercise the split producing a correct multi-digit
+    read - only that the call site exists and is reached.
+    補充 test_patches_splits_a_wide_merged_digit_component：那個測試證明
+    切割的「數學」本身在單獨測試下是對的；這個測試證明 read_label_value
+    真的有「接上」它——做法是在讀取一張真實測試圖的真實標籤時，
+    監視 patches._split_wide_boxes 有沒有被呼叫。需要這個測試是因為專案
+    目前的真實測試圖裡，剛好沒有一張真的出現兩個數字黏在一起的標籤
+    （這種失敗情況本來就很少見，從來沒被實際拍到過），所以沒有任何
+    端對端測試能驗證「切開之後真的讀出正確的多位數」——只能驗證
+    「呼叫點確實存在、確實會被執行到」。
+    """
+    image = _load("live_patches_browser.png")
+    grid = patches.build_grid(image)
+    labels = patches.find_labels(image, grid)
+    assert labels, "fixture has no labels - test setup is wrong / 測試圖沒有任何標籤，測試設計有誤"
+
+    calls = []
+    original = patches._split_wide_boxes
+
+    def spy(boxes):
+        calls.append(boxes)
+        return original(boxes)
+
+    patches._split_wide_boxes = spy
+    try:
+        for label in labels:
+            patches.read_label_value(image, label)
+    finally:
+        patches._split_wide_boxes = original
+
+    assert calls, "read_label_value never called _split_wide_boxes / read_label_value 從來沒有呼叫過 _split_wide_boxes"
+    print("  read_label_value actually calls the wide-box splitter OK")
+
+
 def test_live_patches_with_blank_labels():
     """
     Bug this guards: dashed labels are stacked translucent shapes whose white
@@ -248,6 +338,209 @@ def test_live_patches_with_blank_labels():
                 covered[(r, c)] = True
     assert len(covered) == n * n
     print("  live patches with blank labels OK")
+
+
+def test_live_patches_browser_reads_the_ambiguous_eight():
+    """
+    Bug this guards: a real 2026-08-25 session (log + a saved
+    solve_failed_patches_*.png capture) had the browser Patches widget's
+    "8" badge score 0.9735 against APP_TEMPLATES with "6" as the runner-up
+    at 0.9552 - a margin of 0.0183, under MIN_MARGIN (0.020). classify_glyph
+    correctly refused to guess (that is the safety margin working as
+    designed - see classify_glyph's own docstring), so every crop/scale in
+    solve_image's ladder reported the same "8" as unreadable and the puzzle
+    could not be solved. Not a logic bug in the gate - the browser widget's
+    own rendering of "8" simply was not close enough to the phone-app "8"
+    template, exactly like test_live_browser_mini_sudoku_reads_every_given's
+    "3" below. Fixed the same way: added a second, independent Patches
+    source (BROWSER_PATCHES_GIVENS in tools/calibrate_digits.py) and
+    regenerated core/digit_templates.py from it.
+    這個測試守住的問題：一次真實的 2026-08-25 執行（記錄檔 + 一張存下的
+    solve_failed_patches_*.png）顯示，瀏覽器版 Patches 元件的「8」標籤對
+    APP_TEMPLATES 只拿到 0.9735 分，第二名「6」拿到 0.9552 分——差距
+    0.0183，不到 MIN_MARGIN（0.020）。classify_glyph 正確地拒絕用猜的
+    （這正是安全邊界原本設計要做的事——見 classify_glyph 自己的文件
+    字串），於是 solve_image 階梯裡每一次裁切／縮放都把同一個「8」讀成
+    讀不出來，整題無法解出。不是安全邊界的邏輯錯誤——純粹是瀏覽器元件
+    自己畫的「8」，跟手機 App 的「8」範本不夠像，跟下面
+    test_live_browser_mini_sudoku_reads_every_given 的「3」是同一種狀況。
+    修法也相同：在 tools/calibrate_digits.py 加入第二個獨立的 Patches
+    來源（BROWSER_PATCHES_GIVENS），並用它重新產生 core/digit_templates.py。
+    """
+    image = _load("live_patches_browser.png")
+    result = solve_image(image, puzzle_key="patches")
+    assert result.ok, result.error
+    labels = result.data["labels"]
+
+    numbered = {(lb.row, lb.col): lb.value for lb in labels if lb.value is not None}
+    assert numbered == {(1, 1): 6, (2, 3): 4, (3, 2): 9, (4, 4): 8}, numbered
+    blanks = {(lb.row, lb.col) for lb in labels if lb.value is None}
+    assert blanks == {(0, 0), (0, 4), (5, 1), (5, 5)}, blanks
+    print("  live patches browser reads the ambiguous eight OK")
+
+
+def test_live_patches_browser_2_reads_the_zero_and_seven():
+    """
+    Bug this guards: before 2026-08-27, digits "0" and "7" had ZERO real
+    APP_TEMPLATES samples anywhere in the project - every classification of
+    those two digits fell back entirely to FALLBACK_TEMPLATES (system-font
+    renders). core/digit_templates.py's own docstring already documents the
+    risk class this creates: a machine with different/missing fonts once
+    read a real "7" as "2". "0" is even harder to catch by inspection because
+    it can only ever appear as the leading digit of a two-digit value like
+    "10" - no Patches or Zip puzzle ever shows a bare "0" badge.
+    這個測試守住的問題：在 2026-08-27 之前，數字「0」與「7」在整個專案裡
+    完全沒有任何一張真實 APP_TEMPLATES 樣本——這兩個數字的每一次辨識都
+    完全依賴 FALLBACK_TEMPLATES（系統字型算繪）。core/digit_templates.py
+    自己的文件字串就已經記載了這種缺口會造成的風險：曾經有一台缺字型／
+    字型不同的機器把真實的「7」讀成「2」。「0」又更難光用肉眼檢查發現，
+    因為它只可能以兩位數（例如「10」）的十位數出現——沒有任何 Patches
+    或 Zip 題目會顯示單獨一個「0」的標籤。
+
+    Fixed by adding a third, independent Patches calibration source
+    (tools/calibrate_digits.py's BROWSER_PATCHES_GIVENS_2, harvested from a
+    clean frame in training-data/video/LinkedIn_20260812_加速版.mp4 at t=33s)
+    and regenerating core/digit_templates.py from it. This fixture is a crop
+    of that same frame, so this test is checking the exact real-world pixels
+    the new templates were calibrated from - not a synthetic stand-in.
+    修法：在 tools/calibrate_digits.py 加入第三個獨立的 Patches 校準來源
+    （BROWSER_PATCHES_GIVENS_2，取自 training-data/video/
+    LinkedIn_20260812_加速版.mp4 在 t=33s 的一個乾淨畫面），並用它重新
+    產生 core/digit_templates.py。這張測試圖就是那個畫面的裁切，所以這個
+    測試核對的就是新範本實際校準所用的那些真實像素，不是找替代品湊數。
+
+    (0, 3) is deliberately excluded from ground truth and asserted as a blank
+    below - a zoomed look at the raw capture showed it is one of this
+    project's OWN diagnostic overlays (a tiny circled annotation plus a mouse
+    cursor baked into the frame), not a real LinkedIn-rendered digit.
+    下面把 (0, 3) 歸類在 blanks 裡是刻意的——放大看過原始畫面後，那其實是
+    這個程式自己畫的診斷疊加圖層（一個小小的圈起來的註記，還有畫面裡的
+    滑鼠游標），不是 LinkedIn 真正畫出來的數字。
+    """
+    # The actual gap this fixes: APP_TEMPLATES used to have NO real samples
+    # at all for these two digits. Checked directly, not just via an
+    # end-to-end solve - a solve can pass on FALLBACK_TEMPLATES alone (as it
+    # did before this fix, on this very machine's own system fonts), so it
+    # would not have caught the missing-font risk this session's evidence
+    # (core/digit_templates.py's own docstring) documents.
+    # 這裡真正要修的缺口：APP_TEMPLATES 這兩個數字以前完全沒有任何真實樣本。
+    # 直接檢查這件事，而不是只做端到端求解——求解光靠 FALLBACK_TEMPLATES
+    # 也可能通過（改動前在這台機器自己的系統字型上就是如此），沒辦法真的
+    # 守住「缺字型的機器會讀錯」這個風險（見 core/digit_templates.py 自己
+    # 的文件字串所記載的證據）。
+    assert len(APP_TEMPLATES.get(0, [])) > 0, "digit 0 still has no real screenshot sample"
+    assert len(APP_TEMPLATES.get(7, [])) > 0, "digit 7 still has no real screenshot sample"
+
+    image = _load("live_patches_browser_2.png")
+    result = solve_image(image, puzzle_key="patches")
+    assert result.ok, result.error
+    labels = result.data["labels"]
+
+    numbered = {(lb.row, lb.col): lb.value for lb in labels if lb.value is not None}
+    assert numbered == {
+        (3, 1): 7, (3, 3): 10, (3, 5): 5,
+        (6, 0): 3, (6, 2): 5, (6, 4): 3, (6, 6): 3,
+    }, numbered
+    blanks = {(lb.row, lb.col) for lb in labels if lb.value is None}
+    assert blanks == {(1, 0), (1, 2), (0, 4), (0, 6)}, blanks
+    print("  live patches browser 2 reads the zero and seven OK")
+
+
+def test_live_patches_browser_stuck_session_still_reads_correctly():
+    """
+    Not a bug fix - a coverage/robustness addition. 2026-08-27's deep review of
+    training-data/ for training reference material (per the user's explicit
+    request to harvest every available real board regardless of whether it
+    solved) found a real Patches session that got stuck and STAYED stuck for
+    over a minute (img/Patches_20260810.png, _2.png, and four
+    solve_failed_patches_*.png spanning 20:28-20:30 on 2026-08-14 all show the
+    identical board, "卡關了嗎?" hint prompt still showing). Every label here
+    already classified correctly before this fixture was added - the value is
+    independent real samples from a puzzle that was hard for the PLAYER, not
+    for recognition, added via tools/calibrate_digits.py's
+    BROWSER_PATCHES_GIVENS_3.
+    不是修 bug——是覆蓋率／穩健性的補強。2026-08-27 為了收集訓練參考資料
+    （使用者明確要求：不管有沒有解成功，只要有的題目都收集起來）深度檢視
+    training-data/ 時，找到一次真的卡住、而且卡了超過一分鐘的真實 Patches
+    對局（img/Patches_20260810.png、_2.png，以及跨越 2026-08-14
+    20:28-20:30 的四張 solve_failed_patches_*.png 都是同一個盤面，
+    「卡關了嗎？」提示一直沒消失）。這裡每個標籤在加入這張固定資料之前就已經
+    分類正確——價值在於這是一組獨立的真實樣本，卡住的是「玩家」不是
+    「辨識」，透過 tools/calibrate_digits.py 的 BROWSER_PATCHES_GIVENS_3
+    加入。
+    """
+    image = _load("live_patches_browser_4.png")
+    result = solve_image(image, puzzle_key="patches")
+    assert result.ok, result.error
+    labels = result.data["labels"]
+    numbered = {(lb.row, lb.col): lb.value for lb in labels if lb.value is not None}
+    assert numbered == {
+        (0, 0): 2, (0, 1): 6, (1, 4): 5, (2, 3): 3,
+        (3, 2): 4, (4, 1): 8, (5, 4): 2, (5, 5): 6,
+    }, numbered
+    print("  live patches browser stuck session still reads correctly OK")
+
+
+def test_live_patches_browser_large_colourful_board_reads_correctly():
+    """
+    Not a bug fix - a coverage/robustness addition, same 2026-08-27 review as
+    test_live_patches_browser_stuck_session_still_reads_correctly above. This
+    fixture's original file was misleadingly named
+    img/Mini_Sudoku_20260809_1.png - confirmed by eye (and by solve_image()
+    succeeding here under puzzle_key="patches") that it is actually a large
+    8x8 Patches board with unusually rich colour variety in one single
+    capture, harvested via BROWSER_PATCHES_GIVENS_4.
+    不是修 bug——覆蓋率／穩健性補強，跟上面
+    test_live_patches_browser_stuck_session_still_reads_correctly 同一輪
+    2026-08-27 的檢視。這張固定資料的原始檔名誤植成
+    img/Mini_Sudoku_20260809_1.png——已用肉眼核對過（並且 solve_image() 在
+    puzzle_key="patches" 下確實成功求解），其實是一張顏色特別豐富的 8x8
+    Patches 大棋盤，透過 BROWSER_PATCHES_GIVENS_4 收集進來。
+    """
+    image = _load("live_patches_browser_5.png")
+    result = solve_image(image, puzzle_key="patches")
+    assert result.ok, result.error
+    labels = result.data["labels"]
+    numbered = {(lb.row, lb.col): lb.value for lb in labels if lb.value is not None}
+    assert numbered == {
+        (0, 0): 4, (0, 4): 8, (1, 3): 3, (2, 2): 3,
+        (3, 1): 2, (3, 3): 2, (3, 7): 4, (4, 0): 8,
+        (4, 4): 6, (4, 6): 6, (5, 5): 3, (6, 4): 3,
+        (7, 3): 4, (7, 7): 4,
+    }, numbered
+    blanks = {(lb.row, lb.col) for lb in labels if lb.value is None}
+    assert blanks == {(6, 6), (1, 1)}, blanks
+    print("  live patches browser large colourful board reads correctly OK")
+
+
+def test_live_patches_browser_four_sevens_reads_correctly():
+    """
+    Coverage addition, not a bug fix - same 2026-08-27 review as the two
+    tests above. LinkedIn_20260807_加速版.mp4 at t=36s happens to show digit
+    "7" in FOUR different badge colours on one real board (this same layout
+    was found stuck for ~100s before recovering, per that review, but every
+    label here already classified correctly - the stuck-ness was the player,
+    not recognition). Harvested via BROWSER_PATCHES_GIVENS_5 specifically to
+    reinforce "7", which - along with "0" - had zero real samples before
+    2026-08-27 and remains the thinnest-covered digit even after
+    BROWSER_PATCHES_GIVENS_2 added the first one.
+    覆蓋率補強，不是修 bug——跟上面兩個測試同一輪 2026-08-27 的檢視。
+    LinkedIn_20260807_加速版.mp4 在 t=36s 剛好有一張真實盤面，數字「7」
+    同時以四種不同標籤顏色出現（同一輪檢視也發現這個排列曾經卡關約 100 秒
+    才恢復，但這裡每個標籤本來就分類正確——卡住的是玩家，不是辨識）。
+    透過 BROWSER_PATCHES_GIVENS_5 收集進來，專門用來加強「7」——它跟「0」
+    是 2026-08-27 之前唯二完全沒有真實樣本的數字，就算 BROWSER_PATCHES_
+    GIVENS_2 補了第一個之後，仍然是所有數字裡真實樣本最少的。
+    """
+    image = _load("live_patches_browser_6.png")
+    result = solve_image(image, puzzle_key="patches")
+    assert result.ok, result.error
+    labels = result.data["labels"]
+    numbered = {(lb.row, lb.col): lb.value for lb in labels if lb.value is not None}
+    assert numbered == {(0, 1): 7, (1, 4): 7, (2, 0): 7, (6, 5): 7}, numbered
+    blanks = {(lb.row, lb.col) for lb in labels if lb.value is None}
+    assert blanks == {(4, 6), (5, 2)}, blanks
+    print("  live patches browser four sevens reads correctly OK")
 
 
 def test_live_browser_mini_sudoku_reads_every_given():
@@ -522,6 +815,85 @@ def test_board_position_survives_the_working_size_cap():
     print("  board position survives the working-size cap OK")
 
 
+def test_renormalise_never_lets_the_puzzle_type_change():
+    """
+    Bug this guards: a 2026-08-26 code review found _renormalise() (the
+    "redo recognition at the calibrated scale" step, run whenever a solve
+    succeeds at a scale far from TARGET_BOARD_PIXELS) called the internal
+    retry with the ORIGINAL caller-supplied puzzle_key, not
+    result.puzzle_key (the type that just succeeded). In the default
+    auto-detect path (puzzle_key=None, e.g. the GUI's "auto" dropdown),
+    that falsy value made the retry run detect_type() FRESH on the
+    rescaled image instead of reusing the type that already won -
+    detect_type is independently documented (this file's own
+    test_mini_sudoku_survives_extra_colour_noise) as fragile to exactly
+    the kind of perturbation a rescale is. A board that first solved as
+    one puzzle type could rescale into something detect_type reads as a
+    DIFFERENT type entirely; if that other type's own guards happen to
+    pass on the same pixels, the wrong puzzle's answer would silently
+    replace the right one, with no cross-check they are even the same
+    game. Fixed by forcing the retry to result.puzzle_key, never
+    re-detecting.
+    這個測試守住的問題：2026-08-26 的程式碼審查發現 _renormalise()
+    (「用校準尺度重做辨識」這一步，只要求解在離 TARGET_BOARD_PIXELS
+    很遠的尺度下成功就會執行）呼叫內部重試時，用的是呼叫端「原始」的
+    puzzle_key 參數，不是 result.puzzle_key（剛剛成功的那個類型）。在
+    預設的自動判斷路徑下（puzzle_key=None，例如 GUI 的「自動」下拉
+    選單），這個假值會讓重試對縮放後的影像重新跑一次 detect_type()，
+    而不是沿用已經成功的類型——detect_type 已經在本檔案自己的
+    test_mini_sudoku_survives_extra_colour_noise 裡被記錄過，對「縮放」
+    這種擾動本來就脆弱。一個原本判定成某種類型並解出來的棋盤，縮放後
+    可能被 detect_type 讀成完全不同的類型；如果那個類型自己的守門剛好
+    在同一批像素上通過，錯的題目答案就會悄悄取代對的，完全沒有核對過
+    是不是同一款遊戲。修法：強制重試沿用 result.puzzle_key，絕不重新
+    判斷。
+    """
+    import linkedin_games_solver.puzzles as puzzles_module
+    from linkedin_games_solver.core import BoardGrid
+    from linkedin_games_solver.puzzles import SolveResult
+
+    calls = []
+
+    def fake_attempt(image, puzzle_key, n_hint):
+        calls.append(puzzle_key)
+        if puzzle_key:
+            # Forced to a specific type - behaves correctly (mirrors real
+            # _attempt: an explicit puzzle_key is honoured exactly).
+            return SolveResult(ok=True, puzzle_key=puzzle_key,
+                                grid=BoardGrid(n=6, board_bbox=(0, 0, 794, 794), cell_boxes=[]))
+        # No type forced - simulates detect_type() misreading the rescaled
+        # image as a totally different puzzle whose OWN guards happen to
+        # pass. This is the exact bug: if _renormalise ever reaches this
+        # branch, it has already failed to pin the type down.
+        return SolveResult(ok=True, puzzle_key="queens",
+                            grid=BoardGrid(n=6, board_bbox=(0, 0, 794, 794), cell_boxes=[]))
+
+    original_attempt = puzzles_module._attempt
+    puzzles_module._attempt = fake_attempt
+    try:
+        sub = np.zeros((400, 400, 3), dtype="uint8")
+        # detected_width=400 at factor=1.0 is far from TARGET_BOARD_PIXELS
+        # (794), so ideal != factor by far more than the 15% tolerance -
+        # this guarantees the rescale-and-retry path actually runs.
+        original = SolveResult(ok=True, puzzle_key="tango",
+                                grid=BoardGrid(n=6, board_bbox=(0, 0, 400, 400), cell_boxes=[]))
+        _factor, final = puzzles_module._renormalise(sub, original, 1.0, None)
+    finally:
+        puzzles_module._attempt = original_attempt
+
+    assert calls, "the rescale-and-retry path never ran - test setup is wrong / 重算重試路徑根本沒有執行，測試設計有誤"
+    assert calls[-1] == "tango", (
+        f"_renormalise called _attempt with puzzle_key={calls[-1]!r} instead of "
+        f"the original result's type 'tango' / _renormalise 呼叫 _attempt 時傳的是 "
+        f"{calls[-1]!r}，不是原本結果的類型 'tango'"
+    )
+    assert final.puzzle_key == "tango", (
+        f"final result's puzzle_key silently changed to {final.puzzle_key!r} / "
+        f"最終結果的 puzzle_key 被悄悄換成了 {final.puzzle_key!r}"
+    )
+    print("  renormalise never lets the puzzle type change OK")
+
+
 def test_should_continue_cuts_a_failing_solve_short():
     """
     Bug this guards: solve_image had no time budget and no cancellation -
@@ -583,7 +955,14 @@ if __name__ == "__main__":
     test_all_five_puzzles_solve()
     test_live_queens_boards()
     test_live_tango_matches_screen()
+    test_patches_splits_a_wide_merged_digit_component()
+    test_read_label_value_actually_calls_the_wide_box_splitter()
     test_live_patches_with_blank_labels()
+    test_live_patches_browser_reads_the_ambiguous_eight()
+    test_live_patches_browser_2_reads_the_zero_and_seven()
+    test_live_patches_browser_stuck_session_still_reads_correctly()
+    test_live_patches_browser_large_colourful_board_reads_correctly()
+    test_live_patches_browser_four_sevens_reads_correctly()
     test_live_browser_mini_sudoku_reads_every_given()
     test_wrong_type_does_not_fake_success()
     test_zoom_hint_is_not_appended_to_a_comfortably_large_borderless_board()
@@ -591,5 +970,6 @@ if __name__ == "__main__":
     test_stops_when_board_changes()
     test_stops_when_the_board_shifts_without_disappearing()
     test_board_position_survives_the_working_size_cap()
+    test_renormalise_never_lets_the_puzzle_type_change()
     test_should_continue_cuts_a_failing_solve_short()
     print("\nAll passed / 全部通過")

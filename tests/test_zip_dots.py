@@ -166,11 +166,34 @@ def test_refuses_to_guess_when_more_than_one_numbering_works():
     dots, unread = zip_path.find_dots(image, grid)
     h_walls, v_walls = zip_path.find_walls(image, grid)
 
-    # Hide four single-digit numbers. Their digit counts no longer distinguish
-    # them, so several numberings fit and more than one is walkable.
-    # 藏起四個個位數。位數不再能區分它們，於是有多種編號成立，
-    # 而且不只一種走得出路徑。
-    hide = [p for p, v in sorted(dots.items(), key=lambda kv: kv[1]) if v < 10][:4]
+    # Hide FIVE single-digit numbers, not four. 2026-08-27 加入第三個 Patches
+    # 校準來源之後 (見 tools/calibrate_digits.py 的 BROWSER_PATCHES_GIVENS_2)，
+    # 這張圖上原本讀不出來的「8」(位於 (5,1)) 現在能正確讀出來了 —— 範本變準是
+    # 好事，但這個測試原本悄悄依賴著那個辨識缺口：真正的 find_dots() 留下
+    # 恰好一個 unread，加上這裡刻意藏起的四個，合計五個讀不出來的圓點，才會
+    # 觸發下面的「太多可能編號」。範本一旦補齊該缺口，unread 變成空字典，只藏
+    # 四個就不夠模稜兩可了 —— _resolve_unread 反而能唯一推出答案（這是
+    # 2026-08-27 測試回歸時實測到的：resolved 不再是 None）。
+    # 修法：不要依賴「這張圖剛好有一個讀不出來的圓點」這種會隨辨識準確度變動
+    # 的巧合，改成連同這一個也一起明確藏起來 —— 藏五個位數不大的數字，
+    # 效果與從前完全一樣（同樣落入 _MAX_ASSIGNMENTS 的「太多種」拒答分支），
+    # 但不再受未來範本品質改善影響。
+    #
+    # Hiding five single-digit numbers instead of four. Before the 2026-08-27
+    # calibration source was added (see tools/calibrate_digits.py's
+    # BROWSER_PATCHES_GIVENS_2), the real find_dots() on this image happened to
+    # leave exactly one dot ("8" at (5,1)) genuinely unread, which combined
+    # with the four hidden here to trip the "too many possible numberings"
+    # refusal below. Once the templates got better at reading real digits,
+    # that incidental gap closed and find_dots() left nothing unread - so
+    # hiding only four was no longer ambiguous enough, and _resolve_unread()
+    # deduced a full, unique answer instead of refusing (caught by this test
+    # actually failing after the 2026-08-27 template regen). Fixed by hiding
+    # the fifth dot explicitly instead of relying on this fixture happening to
+    # have an unreadable digit - same effect (still lands in the same
+    # _MAX_ASSIGNMENTS "too many" branch), but no longer coupled to how good
+    # digit recognition happens to be.
+    hide = [p for p, v in sorted(dots.items(), key=lambda kv: kv[1]) if v < 10][:5]
     thin = {p: v for p, v in dots.items() if p not in hide}
     blind = dict(unread)
     blind.update({p: 1 for p in hide})
@@ -203,6 +226,69 @@ def test_deduction_matches_the_hand_read_truth():
     print(f"  deduced {len(unread)} number(s), all matching the truth OK")
 
 
+#: Hand-read from tests/fixtures/live_zip_browser_2.png (originally
+#: training-data/img/calibration_candidates/zip_raw_1787401245336.png,
+#: auto-harvested on a real successful solve). Cross-checked against
+#: find_dots()'s own auto-detected positions - every disc matched by eye
+#: except (1, 3), which find_dots() reported as an unread single-glyph disc
+#: (see the bug this test guards, below).
+#: 人工從 tests/fixtures/live_zip_browser_2.png 讀出（原始檔案是
+#: training-data/img/calibration_candidates/zip_raw_1787401245336.png，
+#: 一次真實成功求解時自動存下）。跟 find_dots() 自己偵測到的位置互相核對過
+#: ——除了 (1, 3) 以外每一顆都跟人工讀出的一致，(1, 3) 被 find_dots() 回報成
+#: 一個讀不出來、只有一個字形的圓盤（見下面這個測試守住的問題）。
+LIVE_ZIP_2_TRUTH = {
+    (1, 1): 4, (1, 2): 3, (1, 3): 8, (1, 6): 9,
+    (2, 1): 5, (2, 2): 6, (2, 5): 7,
+    (3, 1): 1, (4, 6): 2,
+    (5, 2): 12, (5, 5): 13, (5, 6): 10,
+    (6, 1): 16, (6, 4): 15, (6, 5): 14, (6, 6): 11,
+}
+
+
+def test_live_zip_browser_2_reads_the_eight():
+    """
+    Bug this guards: before 2026-08-27, Zip had NO dedicated calibration
+    source at all - every Zip digit template was borrowed from Sudoku (1-6),
+    Patches (0-9) and system fonts (0, 7), never checked against Zip's own
+    widget rendering. Measured directly on this real capture before the fix:
+    the "8" at (1, 3) scored 0.9845 against those borrowed templates, but
+    runner-up "6" scored 0.9659 - a margin of 0.0186, under MIN_MARGIN
+    (0.020). classify_glyph correctly refused to guess (find_dots() reported
+    it as an unread, single-glyph disc) - the exact same failure shape as
+    BROWSER_PATCHES_GIVENS's "8 vs 6" case on 2026-08-25, just on Zip's own
+    widget instead of Patches'. This sat undetected in training-data/ the
+    whole time because nobody had run find_dots() against these real captures
+    before - Zip's one recorded real-world incident (2026-08-16) was a slow
+    retry that still finished correctly, never a hard misread, so nothing
+    forced the gap into the open.
+    這個測試守住的問題：在 2026-08-27 之前，Zip 完全沒有專屬的校準來源——
+    它的每一個數字範本，全部是跟 Sudoku（1-6）、Patches（0-9）、系統字型
+    （0、7）借來的，從來沒有用 Zip 自己元件畫出來的數字驗證過。修正前直接在
+    這張真實截圖上量過：(1, 3) 的「8」對這些借來的範本只拿到 0.9845 分，
+    第二名「6」拿到 0.9659 分——差距 0.0186，不到 MIN_MARGIN（0.020）。
+    classify_glyph 正確地拒絕用猜的（find_dots() 把它回報成讀不出來、只有
+    一個字形的圓盤）——跟 2026-08-25 BROWSER_PATCHES_GIVENS 那次「8 對 6」
+    完全同一種失敗形狀，只是這次是 Zip 自己的元件，不是 Patches 的。這個
+    缺口一直沒被發現，純粹是因為在這之前沒有人拿這些真實截圖真的跑過
+    find_dots()——Zip 唯一一次留下記錄的真實事故（2026-08-16）只是重試
+    多花了時間、最後答案還是對的，從來不是真的讀錯，所以沒有任何事情逼著
+    這個缺口浮上檯面。
+
+    Fixed by adding Zip's first dedicated calibration source
+    (tools/calibrate_digits.py's ZIP_SOURCES, three real boards) and
+    regenerating core/digit_templates.py from it.
+    修法：在 tools/calibrate_digits.py 加入 Zip 第一個專屬校準來源
+    （ZIP_SOURCES，三張真實棋盤），並用它重新產生 core/digit_templates.py。
+    """
+    image = read_image(FIXTURES / "live_zip_browser_2.png")
+    grid = build_grid(image)
+    dots, unread = zip_path.find_dots(image, grid)
+    assert dots == LIVE_ZIP_2_TRUTH, dots
+    assert not unread, f"still unreadable / 仍然讀不出來: {unread}"
+    print("  live zip browser 2 reads the eight OK")
+
+
 def test_other_zip_fixtures_still_read():
     """The changes must not break the boards that already worked.
     這些改動不能弄壞本來就正常的盤面。"""
@@ -221,5 +307,6 @@ if __name__ == "__main__":
     test_prefix_of_numbers_is_rejected()
     test_refuses_to_guess_when_more_than_one_numbering_works()
     test_deduction_matches_the_hand_read_truth()
+    test_live_zip_browser_2_reads_the_eight()
     test_other_zip_fixtures_still_read()
     print("\nAll passed / 全部通過")
