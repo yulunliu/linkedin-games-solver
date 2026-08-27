@@ -134,6 +134,58 @@ def find_labels(image: np.ndarray, grid: BoardGrid) -> list[PatchLabel]:
     return found
 
 
+def _split_wide_boxes(boxes: list[tuple[int, int, int, int, int]]) -> list[tuple[int, int, int, int, int]]:
+    """Split any unusually wide box into digit-width slices.
+    把異常寬的方框切成好幾片數字寬度的切片。
+
+    CAPABILITY GAP FOUND 2026-08-26 發現的缺口: core/digits.py's own module
+    docstring claims connected components support multi-digit values "such
+    as Patches' 12" via split_digit_glyphs' wide-component splitting - but
+    read_label_value (the only Patches caller) never called it, or
+    reimplemented the same idea. Two touching digit glyphs merged into one
+    connected component (a tight "12"/"16" badge at low capture resolution)
+    were read as a single mis-shaped glyph, which almost always just fails
+    MIN_SCORE/MIN_MARGIN (an explicit "unreadable" - safe, per this
+    project's own rule, but a real capability gap the docstring promised
+    was already covered). Fixed by porting split_digit_glyphs' own
+    technique (same 0.62 ratio) here as its own function, rather than
+    calling split_digit_glyphs directly: that function's own noise filter
+    is AREA-based (>=5% of total mask), while read_label_value needs its
+    HEIGHT-based filter first (applied by its caller, before this function
+    ever sees the boxes) to reject dashed-label gap fragments - see
+    read_label_value's own "KEY POINT" note - which split_digit_glyphs does
+    not do, so the two cannot simply share one call.
+    2026-08-26 發現的缺口：core/digits.py 自己的模組文件字串宣稱，連通
+    元件透過 split_digit_glyphs 的「寬元件切割」支援多位數（文件字串原文
+    舉的例子就是「Patches 的 12」）——但 read_label_value（唯一的 Patches
+    呼叫端）從來沒有呼叫過它，也沒有自己重做一份同樣的邏輯。兩個黏在
+    一起的數字字形合成一個連通元件（擷取解析度低時，很緊的「12」／「16」
+    標籤）會被當成一個形狀不對的單一字形讀取，幾乎都會直接沒通過
+    MIN_SCORE/MIN_MARGIN（回報「讀不出來」——依照這個專案自己的規則這是
+    安全的，但文件字串承諾過已經涵蓋的能力，實際上有缺口）。修法：把
+    split_digit_glyphs 自己的技巧（同樣的 0.62 比例）搬過來，獨立成自己
+    的函式，而不是直接呼叫 split_digit_glyphs——因為那個函式自己的雜訊
+    過濾是用「面積」（>= 總遮罩面積 5%），而 read_label_value 需要先做
+    「自己的」高度過濾（由呼叫端在這個函式看到 boxes 之前就做好）來擋掉
+    虛線標籤的縫隙碎片（見 read_label_value 自己的「KEY POINT」說明）——
+    split_digit_glyphs 沒有這一步，所以兩者沒辦法直接共用一次呼叫。
+    """
+    heights = [b[3] for b in boxes]
+    median_height = float(np.median(heights)) if heights else 0.0
+    sliced = []
+    for bx, by, bw, bh, index in boxes:
+        parts = max(1, int(round(bw / (median_height * 0.62)))) if median_height > 0 else 1
+        if parts <= 1:
+            sliced.append((bx, by, bw, bh, index))
+            continue
+        step = bw // parts
+        for i in range(parts):
+            x0 = bx + i * step
+            x1 = bx + bw if i == parts - 1 else bx + (i + 1) * step
+            sliced.append((x0, by, x1 - x0, bh, index))
+    return sliced
+
+
 def read_label_value(image: np.ndarray, label: PatchLabel) -> tuple[int | None, bool]:
     """Read a label's number. Returns (value, has_a_number).
     讀出標籤的數字。回傳 (數值, 是否真的有數字)。
@@ -172,6 +224,8 @@ def read_label_value(image: np.ndarray, label: PatchLabel) -> tuple[int | None, 
         return None, False  # no tall glyph -> this label has no number 沒有夠高的字形 -> 沒有數字
 
     boxes.sort(key=lambda b: b[0])
+    boxes = _split_wide_boxes(boxes)
+
     digits = []
     label.glyphs = []
     for bx, by, bw, bh, index in boxes:

@@ -91,23 +91,54 @@ POLL_INTERVAL = 0.15
 #: 連續幾次偵測成功才算數、才會真的採信棋盤出現了。
 #:
 #: HISTORY 沿革: this was 2, guarding against half-rendered transition
-#: frames. Two later changes made the second confirmation redundant and it
-#: went back to 1: (a) presence now requires the FULL grid to locate
+#: frames. Two later changes made the second confirmation seem redundant and
+#: it went to 1: (a) presence now requires the FULL grid to locate
 #: (build_grid incl. detect_grid_size - see _board_present), so the exact
 #: frame class that burned a real run (border drawn, interior not) can no
 #: longer pass at all; (b) if a frame passes the grid check but its
 #: icons/labels are still fading in, the solve fails cheaply against a
 #: readable grid and the caller's fresh-capture retry (ui/app.py
-#: MAX_SOLVE_ATTEMPTS) recovers it. With both nets in place the extra
-#: 0.15s poll bought nothing.
+#: MAX_SOLVE_ATTEMPTS) recovers it.
 #: 沿革：原本是 2，防的是切換中的半成品影格。後來兩個改動讓第二次確認
-#: 變成多餘的，於是改回 1：(a) 存在判定現在要求「完整棋盤」定位得到
+#: 看起來變成多餘，於是改成 1：(a) 存在判定現在要求「完整棋盤」定位得到
 #: （build_grid 含 detect_grid_size——見 _board_present），所以真的燒掉
 #: 一輪的那類影格（外框畫了、內部沒畫）根本過不了關；(b) 就算某一幀
 #: 過了格線檢查、圖示／標籤還在淡入，對著讀得到的格線求解會便宜地失敗，
 #: 呼叫端的新擷取重試（ui/app.py 的 MAX_SOLVE_ATTEMPTS）會把它救回來。
-#: 兩張網都在之後，多等的那 0.15 秒買不到任何東西。
-STABLE_POLLS = 1
+#:
+#: PUT BACK TO 2 2026-08-26 改回 2: those two nets do not cover a THIRD case
+#: - a transitional frame between two different puzzles whose grid lines
+#: are fully formed (passes net a) and whose content is not blank/fading
+#: but a genuine blend of the outgoing and incoming puzzle (so it does not
+#: fail cheaply either - net b never triggers). A real 2026-08-26 session
+#: captured exactly this during a Sudoku-to-Tango handoff: the single
+#: accepted poll read as neither cleanly, ran the full patches/tango/queens
+#: ladder (28-30 unreadable labels / "multiple solutions" / bad colour
+#: grouping), and only matched anything via the "other puzzle types"
+#: fallback sweep - a WRONG but internally-consistent sudoku plan. Nothing
+#: was ever clicked (BoardWatch's own first pre-click check found the real
+#: board had already moved on and aborted the whole plan), but the user saw
+#: roughly 12s of a fully-rendered Tango board with the app doing nothing -
+#: confirmed against the session log and the screen recording, both
+#: timestamped against the visible system clock. Requiring 2 consecutive
+#: polls (an extra POLL_INTERVAL, ~0.15s, paid only at each puzzle
+#: transition) makes it far less likely BOTH captures land on the same
+#: transitional instant.
+#: 改回 2：上面那兩張網接不住第三種情況——兩題切換之間的過場畫面，格線
+#: 完整成形（過了 a 網），內容也不是空白／淡入中，而是真的把「前一題」跟
+#: 「下一題」的內容混在一起（所以也不會便宜地失敗——b 網不會被觸發）。
+#: 一次真實的 2026-08-26 執行，在 Sudoku 換 Tango 的交接瞬間剛好拍到這種
+#: 畫面：唯一被採信的那次輪詢，兩種題型都讀不乾淨，跑完整條 patches／
+#: tango／queens 階梯（28-30 個標籤讀不出來／「找到多組解」／色塊分群
+#: 不合理），最後只靠「其他題型」的救援機制勉強配對成功——一個內部邏輯
+#: 自洽但完全錯誤的 sudoku 計畫。沒有真的點下去（BoardWatch 自己第一次
+#: 點擊前檢查就發現真實棋盤已經換掉，整組計畫作廢），但使用者眼中看到
+#: 的是一個已經渲染完成的太陽月亮棋盤，程式卻晾著它不動，長達約 12
+#: 秒——已對照執行記錄檔與螢幕錄影核對過，兩者都用畫面上可見的系統時鐘
+#: 校過時間。要求連續 2 次輪詢才算數（多付一次 POLL_INTERVAL，約 0.15
+#: 秒，且只在每次題目切換時付一次），可以大幅降低「兩次擷取剛好都拍到
+#: 同一個過場瞬間」的機率。
+STABLE_POLLS = 2
 
 #: Consecutive MISSES required before declaring the board gone - kept at 2,
 #: NOT lowered alongside STABLE_POLLS, because the failure modes differ: a

@@ -191,11 +191,54 @@ VERIFY_DELAYS = {"fastest": 0.5, "faster": 0.6, "fast": 0.8,
 #: page cannot follow.
 #: 三個快檔之間的差距現在刻意變小——重點從來不是再擠出幾秒鐘，
 #: 是不要再生出一個網頁跟不上的檔位。
+#:
+#: The five-game timings above predate the 2026-08-26 change right below and
+#: are now stale for fastest/faster (drag_step_delay changed) - not
+#: re-measured, since the point of that change was fixing a real failure,
+#: not chasing a number.
+#: 上面那組五題計時是 2026-08-26（下面這次改動）之前量的，對
+#: fastest／faster 現在已經過時（drag_step_delay 改了）——沒有重新量測，
+#: 因為那次改動的重點是修真的壞掉的東西，不是在追一個數字。
+#:
+#: PULLED BACK AGAIN 2026-08-26 再拉回一次: two more real "fastest" sessions
+#: (2026-08-25, 2026-08-26) surfaced the exact failure this whole history
+#: keeps warning about. (1) same_spot_gap here used to override
+#: input_driver.py's own SAME_SPOT_CLICK_GAP constant with 0.125/0.1375 -
+#: LOWER than even the 0.15 that constant's own comment already called too
+#: fast, and that override made a fix to the constant a no-op for anyone on
+#: fastest/faster. A real Queens round at that effective 0.125 read every
+#: one of 7 target cells one state short (X where a crown belongs) two
+#: rounds running. Removed here entirely - same_spot_gap is an OS
+#: double-click threshold (see the constant's own docstring), not something
+#: that should vary by how fast the user wants automation to run, so every
+#: tier now shares the one constant. (2) drag_step_delay's 0.007/0.0075 here
+#: is what a real Zip round used when a required cell's icon (2) never
+#: turned green across an entire drag while both its neighbours did -
+#: confirmed by scrubbing the screen recording frame by frame. Raised to
+#: match "normal"'s effective per-step rate (0.008 * 2.0 slowdown) as a
+#: same unvalidated-but-safer-than-the-failure compromise, not a
+#: measurement - if Zip (or Patches' rectangle drags) still comes up a cell
+#: short at this value, raise it further.
+#: 2026-08-26 再拉回一次：兩次真實的「超急快」執行（2026-08-25、
+#: 2026-08-26）剛好證實了這串歷史一直在提醒的那個失敗。(1) 這裡的
+#: same_spot_gap 原本會蓋掉 input_driver.py 自己的 SAME_SPOT_CLICK_GAP
+#: 常數，寫死成 0.125／0.1375——比那個常數自己的註解都已經說太快的 0.15
+#: 還快，也讓「修那個常數」對用超急快／極快的人完全沒有用。一次真實的
+#: 皇冠回合，在這個實際生效的 0.125 下，7 個目標格子連續兩輪全部少一個
+#: 狀態（該皇冠的變 X）。這裡直接拿掉這個覆寫——same_spot_gap 是作業系統
+#: 的雙擊判定門檻（見那個常數自己的文件字串），不該因為使用者想跑多快
+#: 而不同，所以現在每一檔都共用同一個常數。(2) 這裡的 drag_step_delay
+#: 0.007／0.0075，是一次真實的 Zip 回合實際用到的值，當時一個必經格子
+#: 的圖示（2）在整段拖曳過程中始終沒有變綠，儘管左右兩邊都變綠了——
+#: 已經逐格看螢幕錄影核對過。調高到跟「一般」檔位的實際每步間隔一樣
+#: （0.008 乘以 2.0 倍率）——這仍然是「比已知失敗的值安全一些」的折衷，
+#: 不是量測出來的結果——如果 Zip（或拼塊的矩形拖曳）在這個值下仍然漏掉
+#: 格子，要再調高。
 SPEED_PROFILES = {
     "fastest": dict(slowdown=1.0, settle_after_move=0.1025, click_interval=0.05,
-                    same_spot_gap=0.125, drag_step_delay=0.007),
+                    drag_step_delay=0.016),
     "faster": dict(slowdown=1.0, settle_after_move=0.1113, click_interval=0.055,
-                   same_spot_gap=0.1375, drag_step_delay=0.0075),
+                   drag_step_delay=0.016),
     "fast": dict(slowdown=1.0),
     "normal": dict(slowdown=2.0),
     "slow": dict(slowdown=3.5),
@@ -726,15 +769,43 @@ class SolverApp:
         快速手動切換速度檔，需要隨時碰得到視窗——所以維持「看得到」，
         但會被挪到擷取矩形旁邊，而不是強制最小化。
         """
+        # BUG FOUND 2026-08-26 發現的問題: the three `if not
+        # self._minimized_for_wait:` guards below (here and in the small-
+        # screen fallback further down) used to gate on "have we EVER
+        # iconified during this run", not "is the window CURRENTLY
+        # iconified" - so once True, every later call in the same
+        # continuous-mode run short-circuited to `return` without checking
+        # the window's actual state. If the user restores (deiconifies) the
+        # window between rounds - exactly the workflow this function's own
+        # docstring above says the taskbar entry is deliberately kept
+        # reachable FOR - the window is never re-iconified for the rest of
+        # the run, reproducing the identical 2026-08-08 bug (window sitting
+        # over the board) this function exists to prevent. Fixed by checking
+        # root.state() each time; _minimized_for_wait itself is still set
+        # (and still never reset mid-run) purely so _finish() knows whether
+        # WE minimised it and should deiconify it back when the run ends,
+        # regardless of who last touched its visibility.
+        # 2026-08-26 發現的問題：下面三處「if not self._minimized_for_wait:」
+        # 判斷（這裡跟後面小螢幕的備援分支）以前是在問「這次執行有沒有
+        # 『曾經』最小化過」，不是「視窗『現在』是不是最小化」——所以一旦
+        # 變成 True，同一次連續模式執行裡，之後每一次呼叫都會直接
+        # return，不會再檢查視窗實際的狀態。如果使用者在兩輪之間把視窗
+        # 還原——這正是這個函式自己上面的文件字串說工作列入口刻意留著
+        # 「讓它能」被碰到的那個操作流程——視窗接下來整個執行過程都不會
+        # 再被最小化，重現了這個函式原本要防止的、一模一樣的 2026-08-08
+        # 問題（視窗疊在棋盤上）。修法：每次都檢查 root.state()。
+        # _minimized_for_wait 本身還是會設定（而且執行中途一樣不會被
+        # 重設），純粹是讓 _finish() 知道「是不是我們自己」讓它最小化的、
+        # 執行結束時該不該把它還原，不管中途是誰動過它的可見度。
         if self.settings.get("fullscreen"):
-            if not self._minimized_for_wait:
+            if self.root.state() != "iconic":
                 self.root.iconify()
-                self._minimized_for_wait = True
+            self._minimized_for_wait = True
             return
         if self.hide_var.get():
-            if not self._minimized_for_wait:
+            if self.root.state() != "iconic":
                 self.root.iconify()
-                self._minimized_for_wait = True
+            self._minimized_for_wait = True
             return
         try:
             left, top, w, h = self._region()
@@ -787,12 +858,12 @@ class SolverApp:
             # 螢幕小到視窗放在範圍任何一邊都放不下——沒有誠實的可視位置
             # 剩下了。改成最小化，不要呈現一個「假裝躲開了」的位置，跟
             # 上面全螢幕分支已經在用的是同一個原則。
-            if not self._minimized_for_wait:
+            if self.root.state() != "iconic":
                 self.root.iconify()
-                self._minimized_for_wait = True
                 action_log.log("WARN", f"app window cannot fit beside the "
                                 f"capture region ({left},{top},{w},{h}) on "
                                 f"a {screen_w}x{screen_h} screen - iconified")
+            self._minimized_for_wait = True
             return
         self.root.geometry(f"+{new_x}+{new_y}")
         action_log.log("WARN", f"app window overlapped the capture region "
@@ -934,6 +1005,27 @@ class SolverApp:
             self._warn_if_resolution_changed()
         self.start_btn.config(state="disabled")
         self.solve_btn.config(state="disabled")
+        # FOUND 2026-08-26 發現: save_btn used to stay enabled through the
+        # whole run. _round() (worker thread) writes self.shot, then calls
+        # self._clear_stale_result() (sets self.result/mapper/plan to None)
+        # as a separate statement, then later re-populates them one field at
+        # a time - and _clear_stale_result's OWN docstring documents a real
+        # past bug (Save writing puzzle A's answer drawn on puzzle B's
+        # screenshot) whose fix depends on those writes being atomic, which
+        # only holds within a single thread. Save was reachable from the Tk
+        # thread at any point during that window. Disabling it here (like
+        # start/solve already are) removes the race instead of relying on
+        # timing.
+        # 發現：save_btn 以前整場執行都維持可以按。_round()（工作執行緒）
+        # 先寫 self.shot，接著呼叫 self._clear_stale_result()（把
+        # self.result／mapper／plan 設成 None）當成獨立的一個陳述式，之後
+        # 才一個一個欄位重新填回去——而 _clear_stale_result 自己的文件
+        # 字串就記載過一個真實發生過的舊問題（存檔存出「A 題的答案疊在
+        # B 題的截圖上」），修法依賴這些寫入是「原子性」的，而這只有在
+        # 單一執行緒內才成立。整場執行期間，Tk 執行緒隨時都按得到存檔鈕。
+        # 這裡把它停用（跟 start/solve 一樣），直接消除這個競態，而不是
+        # 依賴時機。
+        self.save_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.root.update_idletasks()
 
@@ -1359,10 +1451,20 @@ class SolverApp:
             timings["fill"] = time.perf_counter() - t0
             self._ui(self._show_timings, timings, started)
 
-            if not driver.dry_run and self.verify_var.get():
+            # Snapshot the Verify checkbox ON THE TK THREAD - this runs on the
+            # worker thread, and tk.BooleanVar.get() is not safe to call from
+            # here (see _verify_and_retry's own note on the same class of bug
+            # for self._region(), found in the same 2026-08-26 review).
+            # 在 Tk 執行緒上拍板「驗證」勾選框的值——這裡在工作執行緒上執行，
+            # tk.BooleanVar.get() 不能安全地從這裡呼叫（同一類問題見
+            # _verify_and_retry 自己對 self._region() 的說明，同一次
+            # 2026-08-26 的檢查裡發現的）。
+            verify_state = {}
+            self._ui_wait(lambda: verify_state.__setitem__("enabled", self.verify_var.get()))
+            if not driver.dry_run and verify_state.get("enabled"):
                 self._ui(self.status_label.config, {"text": translator("status_checking")})
                 t0 = time.perf_counter()
-                self._verify_and_retry(driver)
+                self._verify_and_retry(driver, capture_fn)
                 timings["verify"] = time.perf_counter() - t0
 
             timings["total"] = time.perf_counter() - started
@@ -1641,9 +1743,72 @@ class SolverApp:
                         f"for {puzzle_key} -> {path}")
         self._ui(self._log, f"  {translator('log_answer_overlay_saved')}")
 
-    def _verify_and_retry(self, driver, max_rounds: int = 3):
+    def _save_verify_failed_frame(self, image, puzzle_key: str):
+        """Save the last-seen capture when verify-and-retry gives up without
+        ever reaching report.ok.
+
+        Mirrors the solve_failed_* save in _run() (see its own comment for
+        the original motivation) but covers a different failure path: not
+        "recognition failed", but "recognition looked fine, filling the
+        board never converged". A real 2026-08-25 Queens session gave up
+        after two rounds of unchanged mismatches (SAME_SPOT_CLICK_GAP was
+        too low, losing the second click of a double-click - see
+        input_driver.py's own comment on that constant) with nothing saved
+        here; the only reason the cause could be found afterwards was a
+        screen recording that happened to be running at the time.
+        比照 _run() 裡的 solve_failed_* 存檔（原始動機見它自己的註解），
+        但這裡守的是不同的失敗路徑：不是「辨識失敗」，是「辨識看起來沒問題，
+        但填答一直對不起來」。真實案例 2026-08-25 有一次皇冠，兩輪驗證
+        mismatches 都沒改善就放棄（原因是 SAME_SPOT_CLICK_GAP 設太短，
+        雙擊的第二下被吃掉——見 input_driver.py 那個常數自己的註解），
+        當時這裡完全沒存圖；事後能查出原因，純粹是剛好那次在錄螢幕。
+        """
+        try:
+            fail_path = (settings_store.captures_dir()
+                         / f"verify_failed_{puzzle_key}_{int(time.time() * 1000)}.png")
+            if write_image(str(fail_path), image):
+                self._ui(self._log, f"  {translator('log_verify_failed_frame_saved')}: {fail_path}")
+        except Exception:
+            pass
+
+    def _verify_and_retry(self, driver, capture_fn, max_rounds: int = 3):
         """Re-capture, compare, and re-click only what is still wrong.
-        重新擷取、比對，只補還沒填對的格子。"""
+        重新擷取、比對，只補還沒填對的格子。
+
+        `capture_fn` MUST be the same Tk-thread-snapshotted closure `_round`
+        already builds for its first capture (see _run's own comment on why
+        the region has to be read on the Tk thread before this worker even
+        starts). This function runs entirely on the worker thread.
+        BUG FOUND 2026-08-26 發現的問題: this used to call
+        `capture_screen() if self.settings.get("fullscreen") else
+        capture_region(*self._region())` directly here - self._region()
+        reads tk.StringVar fields FROM THE WORKER THREAD, exactly the
+        anti-pattern _run's own comment on capture_fn already warns against
+        ("Tk objects must not be read from another thread"). Fixed by taking
+        the already-Tk-safe capture_fn as a parameter instead of re-deriving
+        it. capture_fn is None in image mode (no live screen exists to
+        re-capture from), which verify was never meaningful for anyway - now
+        made explicit instead of accidentally reading Tk state to build a
+        capture_region() call against a screen the loaded image has nothing
+        to do with.
+        `capture_fn` 必須是 `_round` 自己已經在 Tk 執行緒上拍板好的同一個
+        closure（見 _run 自己對「為什麼擷取範圍要在這個工作執行緒開始之前、
+        在 Tk 執行緒上讀」的說明）。這個函式整個都在工作執行緒上執行。
+        2026-08-26 發現的問題：這裡以前直接呼叫
+        `capture_screen() if self.settings.get("fullscreen") else
+        capture_region(*self._region())`——self._region() 是從「工作執行緒」
+        讀 tk.StringVar 欄位，正是 _run 自己對 capture_fn 的註解早就警告過的
+        反例（「Tk 的物件不能從別的執行緒讀取」）。修法：改成接收已經在
+        Tk 執行緒上處理過的 capture_fn 參數，不再自己重新推導。圖片模式下
+        capture_fn 是 None（沒有真實畫面可以重新擷取）——驗證在那種模式下
+        本來就沒有意義，現在直接明講，不會不小心讀了 Tk 狀態去對一個跟
+        載入圖片毫無關係的畫面呼叫 capture_region()。
+        """
+        if capture_fn is None:
+            action_log.log("VERIFY", "image mode: no live screen to re-capture, skipped")
+            self._ui(self._log, f"[{translator('log_check_round')} 1] "
+                                f"image mode / 圖片模式：無法重新擷取，直接略過")
+            return
         # Ask BEFORE the redraw sleep and the capture whether this puzzle can
         # be verified at all - see verify.supports for the measured waste
         # this skips (~0.95s per Zip/Patches round doing nothing).
@@ -1661,7 +1826,7 @@ class SolverApp:
             # let the page finish redrawing; tier-dependent, see VERIFY_DELAYS
             # 等網頁畫面更新完；依速度檔而定，見 VERIFY_DELAYS
             time.sleep(getattr(self, "_verify_delay", 0.9))
-            fresh = capture_screen() if self.settings.get("fullscreen") else capture_region(*self._region())
+            fresh = capture_fn()
             report = verify(fresh.image, self.result)
             self._ui(self._log, f"[{translator('log_check_round')} {attempt}] {report.summary()}")
             if attempt == 1:
@@ -1687,14 +1852,27 @@ class SolverApp:
             # 若某一輪沒有改善，代表辨識不可靠；再點下去會開始破壞已填對的格子。
             if previous_wrong is not None and wrong >= previous_wrong:
                 self._ui(self._log, translator("log_no_improve"))
+                self._save_verify_failed_frame(fresh.image, self.result.puzzle_key)
                 return
             previous_wrong = wrong
 
             retry_plan = build_retry_plan(self.result, self.mapper, report)
             if retry_plan is None:
+                self._save_verify_failed_frame(fresh.image, self.result.puzzle_key)
                 return
             self._ui(self._log, f"{translator('log_retry')} {wrong}")
             retry_plan.run(driver)
+
+        # Fell out of the loop after max_rounds with the last round still
+        # wrong (never hit report.ok, board_changed, or the no-improve/
+        # retry_plan-None returns above) - same "gave up, still broken"
+        # situation, just reached via running out of rounds instead of
+        # detecting a stall early.
+        # 跑完 max_rounds 迴圈、最後一輪仍然沒填對（沒有走到上面
+        # report.ok、board_changed，或 no-improve／retry_plan 為 None 的
+        # return）——一樣是「放棄、還是錯的」，只是這次是輪數用完，
+        # 不是提早偵測到卡住。
+        self._save_verify_failed_frame(fresh.image, self.result.puzzle_key)
 
     # ------------------------------------------------------------- helpers
     def _finish(self, status: str):
@@ -1711,6 +1889,7 @@ class SolverApp:
             self.root.deiconify()
         self.start_btn.config(state="normal")
         self.solve_btn.config(state="normal")
+        self.save_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.status_label.config(text=status)
 

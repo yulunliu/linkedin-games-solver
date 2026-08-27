@@ -294,6 +294,28 @@ def detect_edges(image: np.ndarray, grid: BoardGrid):
 # ---------------------------------------------------------------------------
 # Solver 求解
 # ---------------------------------------------------------------------------
+#: Wall-clock cap for the CP-SAT search. Found missing entirely in a
+#: 2026-08-26 review - every other solver in the project bounds its search
+#: (queens.py's own SOLVE_TIME_LIMIT, sudoku.py 10s, patches.py 30s,
+#: zip_path.py 60s), but this one did not, and solve_image's own docstring
+#: states should_continue is only polled BETWEEN ladder rungs, never inside
+#: one CP-SAT call - so a misread board driving an unbounded
+#: enumerate_all_solutions search here could hang the whole
+#: recognition/automation flow with no way for the user to cancel it. Value
+#: matches queens.py's - same order of search-space complexity (n x n
+#: boolean grid, uniqueness search via full enumeration up to a small
+#: limit), not independently measured for Tango specifically.
+#: CP-SAT 搜尋的時間上限。2026-08-26 的檢查發現這裡完全沒有——專案裡其他
+#: 每個求解器都有上限（queens.py 自己的 SOLVE_TIME_LIMIT、sudoku.py 10 秒、
+#: patches.py 30 秒、zip_path.py 60 秒），只有這裡沒有，而 solve_image 自己
+#: 的文件字串寫明 should_continue 只在階梯的「輪與輪之間」被輪詢，絕不會在
+#: 單一次 CP-SAT 呼叫「裡面」——所以一個誤讀的棋盤驅動這裡沒有上限的
+#: enumerate_all_solutions 搜尋，可能讓整條辨識／自動化流程卡死，使用者
+#: 完全無法取消。數值跟 queens.py 一樣——搜尋空間複雜度同一個量級（n x n
+#: 布林格子、靠全列舉做唯一性搜尋、上限很小），不是針對 Tango 另外量測的。
+SOLVE_TIME_LIMIT = 20.0
+
+
 def solve_puzzle(puzzle: TangoPuzzle, require_unique: bool = True) -> list[list[int]]:
     """Solve, raising NoSolution / MultipleSolutions.
     求解，無解或多解時丟出對應例外。"""
@@ -331,6 +353,7 @@ def solve_puzzle(puzzle: TangoPuzzle, require_unique: bool = True) -> list[list[
         model.Add(a == b) if mark == "=" else model.Add(a != b)
 
     solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = SOLVE_TIME_LIMIT
 
     if not require_unique:
         solver.parameters.randomize_search = True

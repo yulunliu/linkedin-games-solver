@@ -77,19 +77,23 @@ def test_the_blank_frame_really_has_no_board():
 def test_returns_the_capture_once_the_board_appears():
     """The core promise: blank screen, blank screen, ... board -> that capture
     comes back, and it is the BOARD frame, not one of the blanks. Detection
-    commits on the FIRST full-grid sighting (STABLE_POLLS=1) - see the
-    constant's HISTORY note for why one sighting is enough now.
+    commits on the SECOND CONSECUTIVE full-grid sighting (STABLE_POLLS=2) -
+    see the constant's HISTORY note for why a single sighting is not enough
+    (a real 2026-08-26 session caught a fully-formed-but-transitional frame
+    on its one accepted poll and misread it as the wrong puzzle entirely).
     核心承諾：空畫面、空畫面、……棋盤 -> 回傳那次擷取，而且是「棋盤」那一幀，
-    不是空白的那幾幀。偵測在「第一次」看到完整棋盤時就拍板
-    （STABLE_POLLS=1）——為什麼一次就夠，見常數的沿革註解。"""
+    不是空白的那幾幀。偵測要「連續第二次」看到完整棋盤才拍板
+    （STABLE_POLLS=2）——為什麼一次不夠，見常數的沿革註解（一次真實的
+    2026-08-26 執行，唯一被採信的那次輪詢剛好拍到格線完整但內容是過場的
+    畫面，把整題誤判成完全不同的題型）。"""
     board = _board_frame()
-    grab, state = _scripted_capture([_BLANK, _BLANK, _BLANK, board])
+    grab, state = _scripted_capture([_BLANK, _BLANK, _BLANK, board, board])
     shot = wait_for_board(grab, poll_interval=0.001)
     assert shot is not None
     assert _board_present(shot.image), "returned a frame with no board on it / 回傳了一張沒有棋盤的影格"
-    # 3 blanks + 1 full-grid sighting = 4 grabs.
-    # 3 張空白 + 1 次完整棋盤 = 4 次擷取。
-    assert state["i"] == 4, f"expected 4 grabs, got {state['i']} / 預期擷取 4 次"
+    # 3 blanks + 2 consecutive full-grid sightings (STABLE_POLLS=2) = 5 grabs.
+    # 3 張空白 + 連續 2 次完整棋盤（STABLE_POLLS=2）= 5 次擷取。
+    assert state["i"] == 5, f"expected 5 grabs, got {state['i']} / 預期擷取 5 次"
     print("  returns the capture once the board appears OK")
 
 
@@ -107,18 +111,23 @@ def test_the_stability_window_mechanism_still_works_when_asked_for():
     print("  the stability-window mechanism still works when asked for OK")
 
 
-def test_board_already_on_screen_fires_on_the_first_poll():
+def test_board_already_on_screen_fires_after_the_minimum_polls():
     """Pressing the button with the puzzle ALREADY open must still work - the
-    old workflow is a special case of the new one, committing on the very
-    first poll.
+    old workflow is a special case of the new one, committing after
+    STABLE_POLLS(2) consecutive sightings, same as any other detection
+    (see STABLE_POLLS's own HISTORY note for why a single sighting is not
+    trusted even here - the frame already on screen when the button is
+    pressed could itself be mid-transition).
     題目「已經開著」才按按鈕也必須能動——舊的操作流程是新流程的特例，
-    第一次輪詢就拍板。"""
+    一樣要連續看到 STABLE_POLLS(2) 次才拍板，跟其他偵測沒有兩樣（為什麼
+    連這裡也不信任「只看到一次」，見 STABLE_POLLS 自己的沿革註解——按下
+    按鈕當下畫面上已經有的那一幀，本身也可能剛好是過場中）。"""
     board = _board_frame()
     grab, state = _scripted_capture([board])
     shot = wait_for_board(grab, poll_interval=0.001)
     assert shot is not None
-    assert state["i"] == 1, f"expected 1 grab, got {state['i']}"
-    print("  board already on screen fires on the first poll OK")
+    assert state["i"] == 2, f"expected 2 grabs, got {state['i']}"
+    print("  board already on screen fires after the minimum polls OK")
 
 
 def test_a_border_without_grid_lines_is_not_a_board():
@@ -182,10 +191,10 @@ def test_a_faint_bordered_board_is_found_via_the_retry_scale():
     )
     # End to end through wait_for_board() too, not just the unit-level check.
     # 也透過 wait_for_board() 整個流程驗證一次，不只是單元層級的檢查。
-    grab, state = _scripted_capture([_BLANK, _BLANK, faint])
+    grab, state = _scripted_capture([_BLANK, _BLANK, faint, faint])
     shot = wait_for_board(grab, poll_interval=0.001)
     assert shot is not None, "wait_for_board never returned on the faint-bordered board / wait_for_board 對這個淡邊框棋盤從沒回傳過"
-    assert state["i"] == 3, f"expected 3 grabs, got {state['i']}"
+    assert state["i"] == 4, f"expected 4 grabs, got {state['i']}"
     print("  a faint-bordered board is found via the retry scale OK")
 
 
@@ -259,7 +268,7 @@ if __name__ == "__main__":
     test_the_blank_frame_really_has_no_board()
     test_returns_the_capture_once_the_board_appears()
     test_the_stability_window_mechanism_still_works_when_asked_for()
-    test_board_already_on_screen_fires_on_the_first_poll()
+    test_board_already_on_screen_fires_after_the_minimum_polls()
     test_a_border_without_grid_lines_is_not_a_board()
     test_a_faint_bordered_board_is_found_via_the_retry_scale()
     test_wait_for_gone_returns_once_the_board_leaves()

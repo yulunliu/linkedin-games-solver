@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from linkedin_games_solver.automation import BoardMapper, InputDriver, build_plan  # noqa: E402
 from linkedin_games_solver.automation.capture import ScreenShot  # noqa: E402
 from linkedin_games_solver.automation import input_driver as input_driver_module  # noqa: E402
-from linkedin_games_solver.automation.input_driver import DRAG_MAX_STEP_PX  # noqa: E402
+from linkedin_games_solver.automation.input_driver import DRAG_MAX_STEP_PX, SAME_SPOT_CLICK_GAP  # noqa: E402
 from linkedin_games_solver.puzzles import queens, tango  # noqa: E402
+from linkedin_games_solver.ui.app import SPEED_PROFILES  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -48,6 +49,44 @@ def _log_of(plan):
 
 
 # --------------------------------------------------------------- Queens
+def test_fastest_speed_tiers_do_not_shadow_same_spot_gap():
+    """
+    Bug this guards: SPEED_PROFILES["fastest"]/["faster"] used to hardcode
+    their own same_spot_gap (0.125/0.1375) as constructor kwargs, which
+    OVERRODE input_driver.py's SAME_SPOT_CLICK_GAP constant for anyone
+    running at those speeds - the two most commonly used tiers. A real
+    2026-08-25 Queens session at the effective 0.125 read every one of 7
+    target cells one state short (X where a crown belongs), and a fix to
+    the constant alone (0.15 -> 0.3) would have been silently a no-op for
+    that exact session, since the override still won. same_spot_gap is an
+    OS-level double-click threshold (see the constant's own docstring) -
+    it has no business varying by how fast the user wants automation to
+    run, so every tier must resolve to the SAME constant now.
+    這個測試守住的問題：SPEED_PROFILES["fastest"]／["faster"] 以前會把
+    自己寫死的 same_spot_gap（0.125／0.1375）當成建構參數傳進去，蓋掉
+    input_driver.py 的 SAME_SPOT_CLICK_GAP 常數——對用這兩個最常用檔位的
+    人來說完全生效。一次真實的 2026-08-25 皇冠執行，在實際生效的 0.125
+    下，7 個目標格子全部少一個狀態（該皇冠的變 X）；如果只改常數
+    （0.15 -> 0.3）而不管這裡的覆寫，對那次執行來說會是悄悄沒有作用的
+    空改動，因為覆寫還是贏。same_spot_gap 是作業系統層級的雙擊判定門檻
+    （見常數自己的文件字串）——不該因為使用者想跑多快而不同，所以現在
+    每一檔都必須解析成同一個常數。
+    """
+    for tier in ("fastest", "faster"):
+        assert "same_spot_gap" not in SPEED_PROFILES[tier], (
+            f"{tier!r} still overrides same_spot_gap, shadowing "
+            f"SAME_SPOT_CLICK_GAP / {tier!r} 仍然覆寫了 same_spot_gap，"
+            f"蓋掉了 SAME_SPOT_CLICK_GAP"
+        )
+        driver = InputDriver(dry_run=True, **SPEED_PROFILES[tier])
+        assert driver.same_spot_gap == SAME_SPOT_CLICK_GAP, (
+            f"{tier!r}'s resulting same_spot_gap ({driver.same_spot_gap}) does "
+            f"not match SAME_SPOT_CLICK_GAP ({SAME_SPOT_CLICK_GAP}) / "
+            f"{tier!r} 實際生效的 same_spot_gap 跟 SAME_SPOT_CLICK_GAP 不一致"
+        )
+    print("  fastest speed tiers do not shadow same_spot_gap OK")
+
+
 def test_queens_resumes_half_done_board():
     """8 crowns placed, the last one only half-clicked (an X) -> 1 more click.
     8 個皇冠已放好，最後一個只點到一半（變成 X）-> 只需再點 1 下。"""
@@ -335,6 +374,65 @@ def test_dry_run_checks_abort_as_often_as_a_live_run():
         )
         assert dry_log == live_log, f"{name}: log differs / 紀錄不同"
     print("  dry run checks abort as often as live OK")
+
+
+def test_press_key_delay_goes_through_pause_so_it_scales_with_slowdown():
+    """
+    Bug this guards: press_key()'s post-press delay used to call
+    time.sleep(self.click_interval) directly - the only action in
+    InputDriver that bypassed self._pause() (which multiplies by
+    self.slowdown). Every OTHER post-action delay in this class scales with
+    slowdown - the module's own stated contract ("every delay scales with
+    slowdown, so a page that cannot keep up can be accommodated without
+    touching the code"). press_key is only ever called by SudokuPlayer,
+    right after typing each digit; at "fastest"/"faster" (slowdown=1.0) the
+    bug was invisible (scaled or not gives the same number), but at
+    "normal" (2.0x), "slow" (3.5x) and "slowest" (5.0x) - the tiers a user
+    picks specifically because the page needs MORE time - the gap after
+    typing a Sudoku digit silently stayed at the unscaled base value while
+    every other delay in the same fill correctly slowed down.
+    這個測試守住的問題：press_key() 打完鍵之後的延遲，以前直接呼叫
+    time.sleep(self.click_interval)——是這個類別裡唯一繞過
+    self._pause()（會乘上 self.slowdown）的動作。這個類別裡其他每一個
+    動作後的延遲都會縮放——這正是這個模組自己講的承諾（「每個延遲都隨
+    slowdown 縮放，網頁跟不上時不用改程式碼就能調適」）。press_key 只有
+    SudokuPlayer 會呼叫，就在打完每個數字之後；在「超急快」／「極快」
+    （slowdown=1.0）這個問題看不出來（縮不縮放結果一樣），但在「一般」
+    （2.0 倍）、「慢」（3.5 倍）、「最慢」（5.0 倍）——使用者選這些檔位
+    正是因為網頁需要「更多」時間——打完數獨的每個數字後的間隔，卻悄悄
+    停在沒縮放過的基準值，而同一次填答裡其他每一個延遲都正確地變慢了。
+    """
+    class _StubGui:
+        def moveTo(self, *a, **k): pass
+        def click(self, *a, **k): pass
+        def mouseDown(self, *a, **k): pass
+        def mouseUp(self, *a, **k): pass
+        def press(self, *a, **k): pass
+
+    driver = InputDriver(dry_run=False, click_interval=0.2, slowdown=3.5)
+    paused = []
+    driver._pause = lambda seconds: paused.append(seconds)
+    saved = input_driver_module._pyautogui
+    input_driver_module._pyautogui = _StubGui()
+    try:
+        driver.press_key("7")
+    finally:
+        input_driver_module._pyautogui = saved
+
+    # Asserting the UNSCALED value was handed to _pause, not that the final
+    # slept duration is 0.7s - _pause itself (already trusted, used by every
+    # other action) is what applies the x3.5 multiplier. This isolates "did
+    # press_key delegate scaling to _pause" from "does _pause scale
+    # correctly", which is a different, already-covered concern.
+    # 斷言的是「傳給 _pause 的是沒縮放過的原始值」，不是「最後睡了 0.7
+    # 秒」——套用 3.5 倍的是 _pause 自己（已經是被信任、其他每個動作都在用
+    # 的東西）。這樣可以把「press_key 有沒有把縮放交給 _pause 做」跟
+    # 「_pause 自己縮放得對不對」（另一件、已經有涵蓋的事）分開驗證。
+    assert paused == [0.2], (
+        f"press_key's delay bypassed self._pause() / "
+        f"press_key 的延遲繞過了 self._pause()：{paused}"
+    )
+    print("  press_key delay goes through _pause so it scales with slowdown OK")
 
 
 def test_dry_run_touches_no_mouse_module():
@@ -646,6 +744,18 @@ def test_the_window_cannot_sit_inside_the_capture_region():
     三種設定各呼叫一次：全螢幕不管怎樣都強制最小化；勾了隱藏視窗就
     最小化；沒勾隱藏視窗會維持視窗「看得到」（2026-08-08 那次執行需要
     在兩輪之間切換速度檔，視窗要碰得到），但會被移到擷取矩形外面。
+
+    A fourth, 2026-08-26 case calls the function TWICE within the same run
+    without resetting _minimized_for_wait in between (deiconifying the
+    window by hand between the two calls, as a user reaching for Stop
+    would) - guarding a regression where the flag meant "have we ever
+    iconified" instead of "is it iconic right now", silently reintroducing
+    the exact 2026-08-08 bug this whole test exists for.
+    第四種是 2026-08-26 新增的案例，在同一次執行裡呼叫這個函式「兩次」，
+    中間不重設 _minimized_for_wait（兩次呼叫之間手動把視窗還原，模擬
+    使用者想去按停止）——守住一個回歸：這個旗標曾經代表「有沒有『曾經』
+    最小化過」而不是「現在是不是最小化」，悄悄重新引入了這整個測試
+    原本要防止的、一模一樣的 2026-08-08 問題。
     """
     import subprocess
 
@@ -768,6 +878,32 @@ def test_the_window_cannot_sit_inside_the_capture_region():
         "assert root.state() == 'iconic', 'fullscreen must iconify even with hide-window off / 全螢幕模式即使沒勾隱藏視窗也應該最小化'\n"
         "print('ICONIFY_ON_FULLSCREEN_OK')\n"
         ""
+        "# 4) THE 2026-08-26 REGRESSION: _minimized_for_wait used to gate on\n"
+        "# 'have we EVER iconified this run', not 'is the window CURRENTLY\n"
+        "# iconic' - so once True, a second call within the same run (e.g.\n"
+        "# continuous mode's next round) short-circuited without checking\n"
+        "# reality. Deliberately does NOT reset _minimized_for_wait between\n"
+        "# the two calls below - that omission is the whole point, since a\n"
+        "# real run never resets it mid-run either (only _finish() does).\n"
+        "root.deiconify(); app._minimized_for_wait = False\n"
+        "root.geometry('400x470+250+250')\n"
+        "root.winfo_screenwidth = lambda: 1920; root.winfo_screenheight = lambda: 1080\n"
+        "root.update_idletasks()\n"
+        "app.settings['fullscreen'] = False\n"
+        "app.hide_var.set(True)\n"
+        "app._keep_window_clear_of_capture()\n"
+        "root.update()\n"
+        "assert root.state() == 'iconic', 'first call did not iconify / 第一次呼叫沒有最小化'\n"
+        "root.deiconify()  # the user restores it mid-run, reaching for Stop\n"
+        "root.update_idletasks()\n"
+        "app._keep_window_clear_of_capture()  # next round's call - same run, flag never reset\n"
+        "root.update()\n"
+        "assert root.state() == 'iconic', ('restoring the window mid-run must still get '\n"
+        "    're-iconified on the next call, not skipped because _minimized_for_wait was '\n"
+        "    'already True / 執行中途還原視窗後，下一次呼叫仍然要被重新最小化，'\n"
+        "    '不能因為 _minimized_for_wait 已經是 True 就跳過')\n"
+        "print('RE_ICONIFIES_AFTER_USER_RESTORES_OK')\n"
+        ""
         "root.destroy()\n"
         "print('OK')\n"
     )
@@ -783,6 +919,7 @@ def test_the_window_cannot_sit_inside_the_capture_region():
         assert all(marker in out for marker in (
             "FITS_RIGHT_OK", "FITS_LEFT_OK", "ICONIFY_WHEN_NO_SIDE_FITS_OK",
             "ICONIFY_ON_HIDE_OK", "ICONIFY_ON_FULLSCREEN_OK",
+            "RE_ICONIFIES_AFTER_USER_RESTORES_OK",
         )), "one of the configurations failed / 其中一種設定沒通過:\n" + out
         print("  the window cannot sit inside the capture region OK")
 
@@ -1437,6 +1574,130 @@ def test_solve_failed_frame_is_saved_for_diagnosis():
         print("  solve failed frame is saved for diagnosis OK")
 
 
+def test_verify_and_retry_saves_a_frame_when_it_gives_up():
+    """
+    Bug this guards: a real 2026-08-25 Queens session had verify-and-retry
+    give up twice (mismatches stuck at 5/7 then 7/7, neither round an
+    improvement) with nothing saved anywhere - the only reason the cause
+    (SAME_SPOT_CLICK_GAP too low, losing the second click of a double-click,
+    see input_driver.py's own comment on that constant) could be found
+    afterwards was a screen recording that happened to be running. Unlike a
+    full recognition failure (see test_solve_failed_frame_is_saved_for_diagnosis),
+    this failure mode - recognised fine, filling never converged - saved
+    nothing at all before this fix.
+    這個測試守住的問題：一次真實的 2026-08-25 皇冠執行，驗證補點放棄了
+    兩次（mismatches 卡在 5/7、接著 7/7，兩輪都沒有改善），但完全沒有
+    存下任何東西——事後能查出原因（SAME_SPOT_CLICK_GAP 設太短，雙擊的
+    第二下被吃掉，見 input_driver.py 那個常數自己的註解），純粹是剛好
+    那次在錄螢幕。跟完整辨識失敗不同（見
+    test_solve_failed_frame_is_saved_for_diagnosis），這種「辨識沒問題、
+    填答一直對不起來」的失敗，在這次修正之前什麼都不會存。
+
+    Two give-up paths, both must save exactly one frame each:
+    1. two rounds with the same mismatch count ("no improvement" - the
+       real Queens incident's shape).
+    2. max_rounds exhausted while still wrong (mismatches shrink every
+       round so "no improvement" never fires, but report.ok is never
+       reached either).
+    兩條放棄路徑，各自都必須存下剛好一張畫面：
+    1. 連續兩輪 mismatches 數量相同（「沒有改善」——真實皇冠事故的樣子）。
+    2. 輪數用完時仍然沒填對（mismatches 每輪都在減少，所以「沒有改善」
+       不會被觸發，但也從來沒有達到 report.ok）。
+    """
+    import subprocess
+
+    code = (
+        "import sys, tempfile\n"
+        "from pathlib import Path as _Path\n"
+        "sys.path.insert(0, r'" + str(Path(__file__).resolve().parents[1]) + "')\n"
+        "import tkinter as tk\n"
+        "try:\n"
+        "    root = tk.Tk()\n"
+        "except Exception as exc:\n"
+        "    print('SKIPPED_NO_DISPLAY: ' + repr(exc))\n"
+        "    sys.exit(0)\n"
+        "from linkedin_games_solver.ui import settings as settings_store\n"
+        "settings_store.SETTINGS_PATH = _Path(tempfile.mkdtemp()) / 'settings.json'\n"
+        "captures_root = _Path(tempfile.mkdtemp())\n"
+        "settings_store.captures_dir = lambda: captures_root\n"
+        "from linkedin_games_solver.core import action_log\n"
+        "action_log.LOG_DIR = _Path(tempfile.mkdtemp())\n"
+        "import linkedin_games_solver.ui.app as app_module\n"
+        "from linkedin_games_solver.automation import VerifyReport, InputDriver, from_file_image\n"
+        "from linkedin_games_solver.i18n import translator\n"
+        "import numpy as np, types\n"
+        "app = app_module.SolverApp(root)\n"
+        "app._ui = lambda func, *a: func(*a)\n"
+        "app._verify_delay = 0.01\n"
+        "app.settings['fullscreen'] = False\n"
+        "app.driver = InputDriver(dry_run=True)\n"
+        "app.driver.reset()\n"
+        "app_module.verify_supports = lambda key: True\n"
+        "app_module.build_retry_plan = lambda result, mapper, report: types.SimpleNamespace(run=lambda driver: None)\n"
+        "fake_shot = from_file_image(np.zeros((10, 10, 3), dtype='uint8'))\n"
+        "fake_capture_fn = lambda: fake_shot\n"
+        ""
+        "# Case 1: mismatches stuck at the same count for 2 rounds running -\n"
+        "# the real Queens incident's exact shape.\n"
+        "app.result = types.SimpleNamespace(puzzle_key='queens', data={})\n"
+        "app_module.verify = lambda image, result: VerifyReport(\n"
+        "    supported=True, ok=False, board_changed=False,\n"
+        "    mismatches=[(0, 0, 'x', 'crown')] * 5, filled=2, total=7)\n"
+        "app._verify_and_retry(app.driver, fake_capture_fn, max_rounds=3)\n"
+        "saved1 = list(captures_root.glob('verify_failed_queens_*.png'))\n"
+        "assert len(saved1) == 1, 'no-improvement give-up did not save exactly one frame / 沒有改善時放棄沒有存下剛好一張畫面: %r' % saved1\n"
+        "print('NO_IMPROVEMENT_SAVED_OK')\n"
+        ""
+        "# Case 2: mismatches shrink every round (so 'no improvement' never\n"
+        "# fires) but never reach report.ok - the rounds just run out.\n"
+        "app.result = types.SimpleNamespace(puzzle_key='tango', data={})\n"
+        "counts = iter([5, 4, 3])\n"
+        "def shrinking_verify(image, result):\n"
+        "    n = next(counts)\n"
+        "    return VerifyReport(supported=True, ok=False, board_changed=False,\n"
+        "                        mismatches=[(0, 0, 'x', 'crown')] * n, filled=0, total=6)\n"
+        "app_module.verify = shrinking_verify\n"
+        "app._verify_and_retry(app.driver, fake_capture_fn, max_rounds=3)\n"
+        "saved2 = list(captures_root.glob('verify_failed_tango_*.png'))\n"
+        "assert len(saved2) == 1, 'max-rounds-exhausted give-up did not save exactly one frame / 輪數用完時放棄沒有存下剛好一張畫面: %r' % saved2\n"
+        "print('MAX_ROUNDS_SAVED_OK')\n"
+        ""
+        "# Case 3: capture_fn=None (image mode - no live screen exists to\n"
+        "# re-capture from) must skip cleanly, not crash calling None().\n"
+        "verify_call_count = [0]\n"
+        "def counting_verify(image, result):\n"
+        "    verify_call_count[0] += 1\n"
+        "    return VerifyReport(supported=True, ok=False, mismatches=[(0, 0, 'x', 'crown')])\n"
+        "app_module.verify = counting_verify\n"
+        "app._verify_and_retry(app.driver, None, max_rounds=3)\n"
+        "assert verify_call_count[0] == 0, 'verify() was called despite capture_fn=None / capture_fn 是 None 卻還是呼叫了 verify()'\n"
+        "saved3 = list(captures_root.glob('verify_failed_*.png'))\n"
+        "assert len(saved3) == 2, 'image-mode skip incorrectly saved a new frame / 圖片模式略過卻多存了一張畫面: %r' % saved3\n"
+        "print('IMAGE_MODE_SKIPPED_OK')\n"
+        ""
+        "log = app.log_text.get('1.0', 'end')\n"
+        "assert log.count(translator('log_verify_failed_frame_saved')) == 2, log\n"
+        "print('LOG_MESSAGE_OK')\n"
+        ""
+        "root.destroy()\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+    out = result.stdout or ""
+    assert "OK" in out, \
+        "verify-failed diagnostic save is broken / 驗證放棄診斷存檔有問題:\n" + \
+        (result.stderr or "")[-1500:]
+    if "SKIPPED_NO_DISPLAY" in out:
+        print("  verify-and-retry saves a frame when it gives up OK (skipped - no display)")
+    else:
+        assert all(marker in out for marker in (
+            "NO_IMPROVEMENT_SAVED_OK", "MAX_ROUNDS_SAVED_OK", "IMAGE_MODE_SKIPPED_OK",
+            "LOG_MESSAGE_OK",
+        )), out
+        print("  verify-and-retry saves a frame when it gives up OK")
+
+
 def test_harvest_calibration_candidates_only_saves_safe_ground_truth():
     """
     Guards _harvest_calibration_candidates' whole reason for existing: it
@@ -1692,6 +1953,7 @@ def test_harvest_overlay_capture_only_for_digit_puzzles():
 
 if __name__ == "__main__":
     print("Automation tests / 自動化測試")
+    test_fastest_speed_tiers_do_not_shadow_same_spot_gap()
     test_queens_resumes_half_done_board()
     test_queens_complete_board_does_nothing()
     test_queens_clears_misplaced_crowns()
@@ -1702,6 +1964,7 @@ if __name__ == "__main__":
     test_stop_aborts()
     test_stop_mid_drag_from_another_thread_still_releases_the_mouse()
     test_dry_run_checks_abort_as_often_as_a_live_run()
+    test_press_key_delay_goes_through_pause_so_it_scales_with_slowdown()
     test_dry_run_touches_no_mouse_module()
     test_image_mode_needs_no_screen_packages()
     test_stop_interrupts_an_in_progress_solve()
@@ -1713,6 +1976,7 @@ if __name__ == "__main__":
     test_continuous_mode_alerts_and_stops_after_a_failed_round()
     test_guard_abort_does_not_kill_continuous_mode()
     test_solve_failed_frame_is_saved_for_diagnosis()
+    test_verify_and_retry_saves_a_frame_when_it_gives_up()
     test_harvest_calibration_candidates_only_saves_safe_ground_truth()
     test_harvest_raw_board_capture_only_for_digit_puzzles()
     test_harvest_overlay_capture_only_for_digit_puzzles()

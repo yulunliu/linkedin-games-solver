@@ -215,7 +215,7 @@ def _attempt(image: np.ndarray, puzzle_key: str | None, n_hint: int | None) -> S
     return _solve_as(image, detect_type(image), n_hint)
 
 
-def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
+def _renormalise(sub, result: SolveResult, factor: float, n_hint):
     """Redo recognition at the calibrated scale and prefer that result.
     用校準尺度重做辨識，並以重算結果為準。
 
@@ -225,6 +225,38 @@ def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
     failing, so we always re-run normalised.
     在錯誤尺度下成功可能悄悄給出錯誤答案：Tango 在棋盤約 390px 時 4 個條件符號
     只抓到 1 個，求解器就照它看到的條件給出答案。這比失敗更糟，所以一律重算。
+
+    BUG FOUND 2026-08-26 發現的問題: the re-attempt below used to be called
+    with the caller's ORIGINAL `puzzle_key` parameter, not `result.puzzle_key`
+    (the type that just succeeded). In the default auto-detect path
+    (puzzle_key=None, e.g. the GUI's "auto" dropdown), _attempt() with a
+    falsy puzzle_key runs detect_type() FRESH on the rescaled image instead
+    of reusing the type that already succeeded - and detect_type is
+    independently documented elsewhere (test_recognition.py) as fragile to
+    exactly the kind of perturbation a rescale is. A board that first solved
+    as, say, tango could rescale into something detect_type now reads as
+    queens; if queens' OWN guards (region count/connectivity, uniqueness)
+    happen to pass on the same pixels, `better.ok` is True with
+    better.puzzle_key="queens" and THIS function would hand back a
+    completely different puzzle's answer with no cross-check that it is even
+    the same game - exactly the "succeeding at the wrong [something] can
+    silently produce a wrong answer" failure this function's own docstring
+    above says it exists to prevent, just one layer up (wrong TYPE instead
+    of wrong SCALE). Fixed by forcing the retry to the type that already
+    won, never re-detecting.
+    2026-08-26 發現的問題：下面的重試呼叫，以前傳的是呼叫端「原始」的
+    puzzle_key 參數，不是 result.puzzle_key（剛剛成功的那個類型）。在預設的
+    自動判斷路徑下（puzzle_key=None，例如 GUI 的「自動」下拉選單），
+    _attempt() 收到假值的 puzzle_key 時，會對縮放後的影像重新跑一次
+    detect_type()，而不是沿用已經成功的類型——而 detect_type 已經在別處
+    （test_recognition.py）被記錄過，對「縮放」這種擾動本來就脆弱。一個
+    原本判定成 tango 並解出來的棋盤，縮放後可能被 detect_type 讀成
+    queens；如果 queens「自己的」守門（色塊數量／連通性、唯一性）剛好在
+    同一批像素上通過，`better.ok` 就會是 True、`better.puzzle_key` 是
+    "queens"，這個函式就會回傳一個完全不同題目的答案，而且完全沒有核對過
+    是不是同一款遊戲——正是這個函式自己上面文件字串說要防止的「在錯的
+    [什麼] 下成功會悄悄給出錯誤答案」，只是換了一層（錯的「類型」而不是
+    錯的「尺度」）。修法：強制重試沿用已經成功的類型，絕不重新判斷。
     """
     detected_width = result.grid.board_bbox[2] if result.grid else 0
     if detected_width <= 0:
@@ -234,7 +266,7 @@ def _renormalise(sub, result: SolveResult, factor: float, puzzle_key, n_hint):
     if abs(ideal - factor) / max(ideal, factor) <= 0.15:
         return factor, result
     ideal = _effective_factor(sub, ideal)
-    better = _attempt(_scaled(sub, ideal), puzzle_key, n_hint)
+    better = _attempt(_scaled(sub, ideal), result.puzzle_key, n_hint)
     return (ideal, better) if better.ok else (factor, result)
 
 
@@ -378,7 +410,7 @@ def _ladder(image, puzzle_key, n_hint, fractions=None, should_continue=None) -> 
                             f"type={puzzle_key or result.puzzle_key} -> "
                             f"{'OK' if result.ok else 'FAIL: ' + str(result.error).splitlines()[0]}")
             if result.ok:
-                factor, result = _renormalise(sub, result, factor, puzzle_key, n_hint)
+                factor, result = _renormalise(sub, result, factor, n_hint)
                 result.grid = _rescale_grid(result.grid, factor, offset)
                 # The overlay was drawn on a scaled/cropped copy, so it no longer
                 # matches the caller's image; render_overlay redraws it.

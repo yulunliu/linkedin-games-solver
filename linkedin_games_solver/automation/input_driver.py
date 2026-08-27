@@ -208,14 +208,52 @@ def focus_window_at(x: int, y: int) -> str | None:
 #:      「每個月亮感覺停頓一秒」。改 0.15 後同一格約 0.59 秒；一盤有
 #:      12 個月亮的 Tango 可省約 4.8 秒。
 #:
-#: TO BE VALIDATED IN REAL PLAY 待真實遊玩驗證: if cells start coming out
-#: one state short (sun where a moon belongs, X where a crown belongs) and
-#: the verify rounds in the session log show repeated single-click repairs,
-#: THIS value is the cause - raise it back toward 0.55 and re-measure.
-#: 待真實遊玩驗證：如果開始出現格子少一個狀態（該是月亮的變太陽、該是
-#: 皇冠的變 X），而且執行記錄檔裡的驗證輪次顯示反覆用單擊補救，原因就是
-#: 這個值——把它調回 0.55 方向並重新量測。
-SAME_SPOT_CLICK_GAP = 0.15
+#: VALIDATED IN REAL PLAY 已在真實遊玩中驗證過一次: 2026-08-25, a real
+#: Queens round came out exactly as predicted above - all 7 target cells
+#: read as X (one state short of crown), the verify pass found
+#: mismatches=5/7 then mismatches=7/7 on a retry, neither round improved, and
+#: the run gave up on that puzzle without solving it (confirmed against both
+#: the session log, run_20260825_212443_546.log, and the screen recording,
+#: LinkedIn_20260825_加速版.mp4 - the puzzle was only fixed by a manual
+#: page reset and hand-clicking afterward, not by this program).
+#: 已在真實遊玩中驗證過一次：2026-08-25 有一次真實的皇冠回合，結果跟上面
+#: 預測的一模一樣——7 個目標格子全部讀到 X（比皇冠少一個狀態），驗證輪次
+#: 抓到 mismatches=5/7，補點一次後仍是 mismatches=7/7，兩輪都沒有改善，
+#: 這一題最後是放棄、沒有解出來（同時對照了執行記錄檔
+#: run_20260825_212443_546.log 與螢幕錄影 LinkedIn_20260825_加速版.mp4
+#: 確認過——最後是手動重設頁面、自己補點才修好，不是這支程式做的）。
+#:
+#: CORRECTION 2026-08-26 更正: that 2026-08-25 run used speed=fastest, and
+#: ui/app.py's SPEED_PROFILES used to override same_spot_gap for the
+#: fastest/faster tiers with its OWN hardcoded 0.125/0.1375 - LOWER than
+#: even this constant's 0.15 at the time. The value that actually caused
+#: that failure was 0.125, not 0.15; changing THIS constant alone did
+#: nothing for anyone on fastest/faster, which is most real use. Fixed by
+#: removing that override in SPEED_PROFILES (see its own comment) - every
+#: tier now genuinely uses this one constant, since it is an OS-level
+#: threshold and has no business varying by how fast the user wants
+#: automation to run.
+#: 更正：2026-08-25 那次執行用的是 speed=fastest，而 ui/app.py 的
+#: SPEED_PROFILES 當時會用自己寫死的 0.125／0.1375 蓋掉 fastest／faster
+#: 檔位的 same_spot_gap——比這個常數當時的 0.15 還快。真正造成那次失敗的
+#: 是 0.125，不是 0.15；單改這個常數，對用 fastest／faster（也就是大多數
+#: 真實使用情境）完全沒有用。已修正：拿掉 SPEED_PROFILES 那個覆寫（見它
+#: 自己的註解）——現在每一檔都真的共用這一個常數，因為它是作業系統層級的
+#: 門檻，不該因為使用者想跑多快而不同。
+#:
+#: STILL NOT FULLY VALIDATED 這個新值還沒完整驗證過: raised to 0.3 as a
+#: middle point between the confirmed-too-fast 0.125/0.15 and the
+#: confirmed-safe-but-slower 0.55, keeping part of the speed win while this
+#: gets retested - now that the override above no longer hides it from real
+#: play. This is still a guess, not a measurement - if Queens (or any other
+#: same-spot double-click puzzle) comes out one state short again with this
+#: value, raise it further toward 0.55.
+#: 這個新值還沒完整驗證過：抓在「確定太快的 0.125／0.15」與「確定安全但
+#: 比較慢的 0.55」中間的 0.3，留住一部分加速效果，同時等下一次真實遊玩
+#: 重新驗證——現在上面那個覆寫已經拿掉，真實遊玩才會真的用到這個值。
+#: 這仍然是用猜的，不是量出來的——如果皇冠（或任何其他靠同格連點的題型）
+#: 在這個值下又出現少一個狀態的狀況，就再往 0.55 的方向調高。
+SAME_SPOT_CLICK_GAP = 0.3
 
 
 #: Maximum pixels the pointer may jump in one step while dragging.
@@ -450,7 +488,29 @@ class InputDriver:
         if self.dry_run:
             return
         _gui().press(key)
-        time.sleep(self.click_interval)
+        # BUG FOUND 2026-08-26 發現的問題: this used to call time.sleep()
+        # directly on the unscaled click_interval, the only action in this
+        # class that bypasses self._pause() (which multiplies by
+        # self.slowdown). Every other post-action delay scales - that is the
+        # module's own stated contract ("every delay scales with slowdown,
+        # so a page that cannot keep up can be accommodated without
+        # touching the code"). This is only ever called by SudokuPlayer,
+        # right after typing each digit; at "fastest"/"faster" (slowdown=1.0)
+        # the bug is invisible, but at "normal" (2.0x), "slow" (3.5x), and
+        # "slowest" (5.0x) - the tiers a user picks specifically because the
+        # page needs MORE time - the gap after typing a digit silently
+        # stayed at the unscaled base value instead of scaling with
+        # everything else.
+        # 2026-08-26 發現的問題：這裡以前直接對沒有縮放過的 click_interval
+        # 呼叫 time.sleep()，是這個類別裡唯一繞過 self._pause()（會乘上
+        # self.slowdown）的動作。其他每一個動作後的延遲都會縮放——這正是
+        # 這個模組自己講的承諾（「每個延遲都隨 slowdown 縮放，網頁跟不上時
+        # 不用改程式碼就能調適」）。這裡只有 SudokuPlayer 會呼叫，就在打完
+        # 每個數字之後；在「超急快」／「極快」（slowdown=1.0）這個問題看不
+        # 出來，但在「一般」（2.0 倍）、「慢」（3.5 倍）、「最慢」（5.0
+        # 倍）——使用者選這些檔位正是因為網頁需要「更多」時間——打完數字後
+        # 的間隔卻悄悄停在沒縮放過的基準值，沒有跟著其他每一個延遲一起縮放。
+        self._pause(self.click_interval)
 
     @staticmethod
     def _interpolate(points: list[tuple[int, int]], max_step: int) -> list[tuple[int, int]]:

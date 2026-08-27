@@ -114,6 +114,10 @@ _TEXTS: dict[str, dict[str, str]] = {
         "en": "  Saved the capture recognition failed on, for later diagnosis",
         "zh": "  已存下辨識失敗當時的擷取畫面，供事後排查",
     },
+    "log_verify_failed_frame_saved": {
+        "en": "  Saved the last capture verify gave up on, for later diagnosis",
+        "zh": "  已存下驗證放棄當時的最後一張擷取畫面，供事後排查",
+    },
     "log_failsafe": {
         "en": "  Stopped: the mouse hit a screen corner (pyautogui's fail-safe).",
         "zh": "  已停止：滑鼠碰到了螢幕角落（pyautogui 的安全逃生機制）。",

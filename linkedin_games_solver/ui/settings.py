@@ -180,5 +180,26 @@ def save(data: dict) -> None:
             json.dumps({k: data.get(k, v) for k, v in DEFAULTS.items()}, ensure_ascii=False),
             encoding="utf-8",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # FOUND 2026-08-26 發現: this used to swallow every write failure
+        # with no log line at all - inconsistent with load()'s own
+        # philosophy just above (it explicitly WARNs when it discards a
+        # malformed region, specifically so a silent failure is never the
+        # only trace). A permission error, a locked file, a full disk, or
+        # the settings path having become a directory would all silently
+        # no-op here: the user's calibrated region, language, speed, and
+        # region_monitor_size stamp would fail to persist with nothing in
+        # the log to explain why settings keep resetting. Logged instead,
+        # matching load()'s own standard - saving must never crash the
+        # caller (still best-effort), but it must never be invisible either.
+        # 發現：這裡以前會吞掉每一次寫入失敗、完全不留下任何記錄——跟上面
+        # load() 自己的做法不一致（它在丟棄格式錯誤的 region 時，會明確
+        # 寫一行 WARN，就是為了不讓「悄悄失敗」變成唯一的痕跡）。權限錯誤、
+        # 檔案被鎖、硬碟滿了，或設定檔路徑變成了一個資料夾，都會在這裡
+        # 悄悄什麼都不做：使用者校準好的擷取範圍、語言、速度、
+        # region_monitor_size 標記都會存不進去，而 log 裡完全沒有任何線索
+        # 說明為什麼設定一直被重設。改成記錄下來，比照 load() 自己的標準
+        # ——存檔仍然絕不能讓呼叫端當掉（還是盡力而為），但也絕不能悄悄
+        # 發生。
+        action_log.log("WARN", f"settings.save(): write failed, settings not persisted "
+                        f"({type(exc).__name__}: {exc})")

@@ -457,7 +457,38 @@ def reference_content_matches(reference: np.ndarray, current: np.ndarray) -> boo
 #:     其他狀態都讀到真實格數
 #: 要求完全相符會對那個填滿的 Tango 中止 —— 等於在一個完全正確的盤面填到一半時
 #: 把 Tango 弄壞。
-_MAX_REFINEMENT = 3
+#:
+#: TIGHTENED 2026-08-26 收緊: was 3, kept next to a docstring that only ever
+#: cites a 2x case. A 2026-08-26 review noted this check has no puzzle-type
+#: awareness at all - `found % ours == 0 and found // ours <= _MAX_REFINEMENT`
+#: accepts ANY board (not just Tango) whose detected size is an exact
+#: multiple of the plan's size, up to this many times over - reopening
+#: exactly the swap this whole function exists to catch (its own n_hint
+#: docstring above demonstrates rejecting a 9x9 Queens standing in for a 7x7
+#: Patches specifically because 9 is not a multiple of 7; a 4x4 board
+#: swapped for an 8x8 one would slip through unnoticed at the OLD limit of
+#: 3, e.g. a 4x4 Mini Sudoku transitioning into an 8x8 Patches on the same
+#: screen rectangle - 8 % 4 == 0, 8 // 4 = 2, which even survives THIS
+#: tightened limit; nothing here fully closes that gap without threading
+#: the puzzle type through locate_board, which is a larger change than a
+#: constant tweak. Lowered to 2 to match the ONE real number in the table
+#: above exactly, rather than carrying unexplained extra slack - if a real
+#: capture ever needs 3x, that needs its own measured entry in the table,
+#: not a silent margin.
+#: 收緊：原本是 3，卻只搭配一個只引用過「2 倍」案例的文件字串。2026-08-26
+#: 的檢查發現這個判斷完全不知道題目類型——`found % ours == 0 and
+#: found // ours <= _MAX_REFINEMENT` 會接受「任何」棋盤（不只 Tango），
+#: 只要偵測到的格數是計畫格數的整數倍、倍數不超過這個上限，就重新打開了
+#: 這整個函式原本要抓住的「被換掉」漏洞（它自己上面 n_hint 的文件字串，
+#: 就是在示範「9x9 的 Queens 冒充 7x7 的 Patches」會被正確拒絕，理由正是
+#: 9 不是 7 的倍數；但一個 4x4 換成 8x8，在舊的上限 3 下會完全沒被發現，
+#: 例如 4x4 的 Mini Sudoku 在同一個螢幕矩形換成 8x8 的 Patches——8 % 4 ==
+#: 0，8 // 4 = 2，這個收緊後的上限一樣擋不住；要完全補上這個漏洞，需要把
+#: 題目類型傳進 locate_board，這是比改一個常數更大的改動）。降到 2，
+#: 精確對應上面表格裡「唯一」真的量到的數字，而不是帶著一段沒有解釋的
+#: 額外空間——如果之後真的有一次擷取需要 3 倍，那應該是表格裡多一筆
+#: 量測紀錄，不是默默留一個安全邊界。
+_MAX_REFINEMENT = 2
 
 
 def _size_is_ours(found: int, ours: int) -> bool:
@@ -466,13 +497,18 @@ def _size_is_ours(found: int, ours: int) -> bool:
     return found == ours or (found % ours == 0 and found // ours <= _MAX_REFINEMENT)
 
 
-#: The failure_tolerance value ui/app.py applies specifically to Patches.
+#: The failure_tolerance value attach() applies specifically to Patches.
 #: Measurement and reasoning live on BoardWatch.failure_tolerance itself -
-#: this is just the number, kept next to the class it configures rather than
-#: hidden inside the UI layer.
-#: ui/app.py 專門套用在拼塊上的 failure_tolerance 值。量測依據跟理由都寫在
+#: this is just the number, kept next to the class it configures.
+#: (CORRECTED 2026-08-26 更正: this used to say "ui/app.py applies" - a
+#: review found ui/app.py never touches failure_tolerance at all; attach()
+#: below computes and applies it by itself from the puzzle key.)
+#: attach() 專門套用在拼塊上的 failure_tolerance 值。量測依據跟理由都寫在
 #: BoardWatch.failure_tolerance 自己身上——這裡只是那個數字，跟它設定的
-#: class 放在一起，不要藏在 UI 層裡面。
+#: class 放在一起。
+#: （2026-08-26 更正：這裡原本寫「由 ui/app.py 套用」——經檢查 ui/app.py
+#: 完全沒有碰過 failure_tolerance，是下面的 attach() 自己根據題目類型
+#: 算出來並套用的。）
 #:
 #: RAISED 2 -> 6 on 2026-08-06, from a real aborted run 從一次真實中止的執行
 #: 提高：

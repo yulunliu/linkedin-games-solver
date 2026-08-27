@@ -199,9 +199,14 @@ def clicks_needed(state: str | None) -> int:
 # ---------------------------------------------------------------------------
 # Solver 求解
 # ---------------------------------------------------------------------------
-#: Wall-clock cap for the crown search. Every other solver in the project has
-#: one; this was the only solver with no bound at all.
-#: 皇冠搜尋的時間上限。專案裡其他求解器都有；這裡原本是唯一完全沒有上限的。
+#: Wall-clock cap for the crown search. Every solver in the project has one;
+#: this was the only one with no bound at all, until a 2026-08-26 review
+#: found tango.py had the same gap independently (see its own
+#: SOLVE_TIME_LIMIT) - so "the only one" in this comment's original wording
+#: was already false by the time it was written.
+#: 皇冠搜尋的時間上限。專案裡每個求解器都有；這裡原本是唯一完全沒有上限的，
+#: 直到 2026-08-26 的檢查發現 tango.py 也獨立存在同樣的缺口（見它自己的
+#: SOLVE_TIME_LIMIT）——所以這段註解原本寫的「唯一」，寫下的當下就已經不是真的了。
 SOLVE_TIME_LIMIT = 20.0
 
 

@@ -93,6 +93,48 @@ def test_load_drops_a_malformed_region_instead_of_passing_it_on():
     print("  load() drops a malformed region instead of passing it on OK")
 
 
+def test_save_logs_a_warning_instead_of_failing_silently():
+    """
+    Bug this guards: save() used to swallow every write failure with a bare
+    `except Exception: pass` and no log line at all - inconsistent with
+    load()'s own philosophy a few lines above (it explicitly WARNs when it
+    discards a malformed region, specifically so a silent failure is never
+    the only trace). A permission error, a locked file, a full disk, or the
+    settings path becoming a directory would all silently no-op: the
+    user's calibrated region, language, speed, and region_monitor_size
+    stamp would fail to persist with nothing in the log explaining why
+    settings keep resetting between sessions.
+    這個測試守住的問題：save() 以前用一個空的 `except Exception: pass`
+    吞掉每一次寫入失敗，完全不留下任何記錄——跟前面幾行 load() 自己的
+    做法不一致（它在丟棄格式錯誤的 region 時，會明確寫一行 WARN，就是
+    為了不讓「悄悄失敗」變成唯一的痕跡）。權限錯誤、檔案被鎖、硬碟滿了，
+    或設定檔路徑變成了一個資料夾，都會在這裡悄悄什麼都不做：使用者
+    校準好的擷取範圍、語言、速度、region_monitor_size 標記都會存不進去，
+    而 log 裡完全沒有任何線索說明為什麼設定在不同執行之間一直被重設。
+    """
+    original_path = settings_store.SETTINGS_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        # A directory, not a file - write_text() on this must raise, giving
+        # a real (not simulated) write failure to guard against.
+        # 是一個資料夾，不是檔案——對它呼叫 write_text() 一定會拋錯，
+        # 提供一個真的（不是模擬的）寫入失敗來守住這個測試。
+        settings_store.SETTINGS_PATH = Path(tmp)  # tmp itself is a directory
+        warnings = []
+        original_log = action_log.log
+        action_log.log = lambda category, message: warnings.append((category, message))
+        try:
+            settings_store.save({"language": "en"})
+        finally:
+            action_log.log = original_log
+            settings_store.SETTINGS_PATH = original_path
+
+        assert warnings, "save() failed silently - nothing was logged / save() 悄悄失敗了，log 裡什麼都沒有"
+        assert any(cat == "WARN" and "settings.save()" in msg for cat, msg in warnings), (
+            f"expected a WARN mentioning settings.save(), got / 預期要有一行提到 settings.save() 的 WARN，得到: {warnings}"
+        )
+    print("  save() logs a warning instead of failing silently OK")
+
+
 def test_region_monitor_size_round_trips_and_defaults_to_none():
     """
     region_monitor_size (added for the resolution-change warning in
@@ -190,6 +232,7 @@ if __name__ == "__main__":
     print("Settings tests / 設定檔測試")
     test_valid_region()
     test_load_drops_a_malformed_region_instead_of_passing_it_on()
+    test_save_logs_a_warning_instead_of_failing_silently()
     test_region_monitor_size_round_trips_and_defaults_to_none()
     test_captures_dir_respects_the_shared_data_dir_env_var()
     test_log_dir_respects_the_shared_data_dir_env_var()
