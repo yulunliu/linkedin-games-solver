@@ -9,6 +9,52 @@ Not yet tagged as a numbered release - real-play testing is still ongoing
 and more adjustments may follow before this is confirmed stable.
 還沒標上版本號——真實遊玩測試仍在進行中，確認穩定之前可能還會再調整。
 
+### Changed — clawed back some of the speed lost to three recent reliability fixes, on request and NOT yet validated 拿回一部分先前三個可靠性修正犧牲掉的速度，使用者要求，尚未驗證
+
+Real play the day after the fixes below first shipped in a packaged exe
+reported the whole session felt noticeably slower. Each of the three
+fixes traded speed for correctness on a confirmed real failure, and each
+new value had never itself been tested in real play before this change -
+so instead of guessing again from scratch, each was pulled back to the
+average of "confirmed too fast" and "the untested fix":
+修正打包進 exe 的隔天，真實遊玩回報整場感覺明顯變慢。下面三個修正原本都
+是「用速度換正確性」，用來解決一個確認過的真實失敗，而且每個新值在這次
+改動之前都還沒被真實遊玩驗證過——所以不是重新用猜的，而是把每一個都拉回
+「確定太快」與「還沒驗證的修正值」兩者的平均：
+
+- `SAME_SPOT_CLICK_GAP` (the gap between two clicks on the same cell,
+  e.g. placing a Queens crown or a Tango moon): 0.3 -> 0.225, the average
+  of the confirmed-too-fast 0.15 and the untested 0.3.
+  `SAME_SPOT_CLICK_GAP`（同一格連點兩下的間隔，例如放置皇冠或太陽月亮的
+  月亮）：0.3 -> 0.225，確定太快的 0.15 與還沒驗證的 0.3 的平均。
+- `drag_step_delay` on the fastest/faster speed tiers (drag interpolation
+  step interval, e.g. Zip's path or Patches' rectangles): fastest
+  0.016 -> 0.0115, faster 0.016 -> 0.01175 - each tier averaged against
+  its OWN original too-fast value (0.007 / 0.0075), so the two tiers
+  diverge again slightly as a side effect, not on purpose.
+  最快／極快速度檔位的 `drag_step_delay`（拖曳插值每一步的間隔，例如
+  Zip 的路徑或拼塊的矩形）：最快 0.016 -> 0.0115，極快 0.016 ->
+  0.01175——各自跟自己原本太快的值（0.007／0.0075）取平均，兩檔因此又
+  變得不太一樣，是取平均的副作用，不是刻意的。
+- `STABLE_POLLS` (consecutive confirmations needed before a new puzzle is
+  accepted) is **unchanged at 2**: its only two known values are 1
+  (confirmed to cause a ~12s stuck-doing-nothing failure) and 2 (safe) -
+  a poll count has no meaningful average between them, so there was
+  nothing to pull back here.
+  `STABLE_POLLS`（判定新題目出現需要的連續確認次數）**維持 2 不變**：
+  它已知的值只有 1（確定會造成約 12 秒卡住不動的失敗）跟 2（安全），
+  輪詢次數兩者之間沒有有意義的平均值，這一項沒有東西可以拉回。
+
+Each pulled-back value is now a third unmeasured guess stacked on a
+second one that was itself never confirmed safe in real play - the risk
+of reproducing the original failure (a missed crown/moon state, a Zip or
+Patches cell skipped mid-drag) is real and knowingly accepted, not ruled
+out by testing.
+每個拉回的值現在都是疊在「本身也還沒被真實遊玩驗證過安全」的第二個猜測
+上面的第三個猜測——重現原本那個失敗（漏放的皇冠／月亮狀態、拖曳中被
+跳過的 Zip 或拼塊格子）的風險是真實存在、而且是被明知故犯地接受的，
+不是測試排除掉的。
+
 ### Fixed — digit recognition: Zip gets its own calibration source for the first time, and a real live misread is fixed 數字辨識：Zip 第一次有了自己的校準來源，並修好一個真實存在的誤判
 
 - **Zip never had its own digit-template source** - every Zip number was

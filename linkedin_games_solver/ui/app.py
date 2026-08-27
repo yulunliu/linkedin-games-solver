@@ -234,11 +234,38 @@ VERIFY_DELAYS = {"fastest": 0.5, "faster": 0.6, "fast": 0.8,
 #: （0.008 乘以 2.0 倍率）——這仍然是「比已知失敗的值安全一些」的折衷，
 #: 不是量測出來的結果——如果 Zip（或拼塊的矩形拖曳）在這個值下仍然漏掉
 #: 格子，要再調高。
+#:
+#: PULLED BACK FURTHER 2026-08-27, ON REQUEST, STILL UNVALIDATED
+#: 2026-08-27 使用者要求再拉回一次，一樣還沒驗證: 0.016 was never
+#: real-play-tested before this change either - real play on 2026-08-27 (the
+#: day after this fix first shipped in a packaged exe) reported the whole
+#: session felt noticeably slower, and asked to average each tier's own
+#: confirmed-too-fast value with the untested-but-safer 0.016 to claw back
+#: some of that speed: fastest = (0.007 + 0.016) / 2 = 0.0115, faster =
+#: (0.0075 + 0.016) / 2 = 0.01175 - the two tiers diverge again slightly as
+#: a side effect of averaging against their own distinct starting points,
+#: not a deliberate re-differentiation. This is now a THIRD unmeasured guess
+#: stacked on a second one that was itself never confirmed safe - the risk
+#: of reproducing the original missed-cell Zip/Patches failure is real and
+#: explicitly accepted by the user, not discovered by testing. If it
+#: recurs, the fix is to go the other way: back to 0.016 (or further,
+#: toward "normal"'s full 0.008 * 2.0 rate), not lower.
+#: 2026-08-27 使用者要求再拉回一次，一樣還沒驗證：0.016 這個值本身在這次
+#: 改動之前，從來沒有真的被真實遊玩測過——2026-08-27 的真實遊玩（也就是
+#: 這個修正第一次真的被打包進 exe 的隔天）回報整場感覺明顯變慢，要求把
+#: 每一檔自己「確定太快」的值跟「還沒驗證但比較安全」的 0.016 取平均，
+#: 拿回一部分速度：fastest = (0.007 + 0.016) / 2 = 0.0115，faster =
+#: (0.0075 + 0.016) / 2 = 0.01175——兩檔因為各自的起點不同，取平均後又
+#: 變得不一樣，這是取平均的副作用，不是刻意重新拉開差距。這是疊在一個
+#: 「本身都還沒驗證過安全」的猜測上面的第三次猜測——重現原本 Zip／拼塊
+#: 漏格那個失敗的風險是真實存在的，而且是使用者明確接受的取捨，不是測出
+#: 來才決定的。如果真的又發生，修法是往回調（回到 0.016，或更往「一般」
+#: 檔位完整的 0.008 乘以 2.0 倍率方向），不是繼續調低。
 SPEED_PROFILES = {
     "fastest": dict(slowdown=1.0, settle_after_move=0.1025, click_interval=0.05,
-                    drag_step_delay=0.016),
+                    drag_step_delay=0.0115),
     "faster": dict(slowdown=1.0, settle_after_move=0.1113, click_interval=0.055,
-                   drag_step_delay=0.016),
+                   drag_step_delay=0.01175),
     "fast": dict(slowdown=1.0),
     "normal": dict(slowdown=2.0),
     "slow": dict(slowdown=3.5),

@@ -253,7 +253,28 @@ def focus_window_at(x: int, y: int) -> str | None:
 #: 重新驗證——現在上面那個覆寫已經拿掉，真實遊玩才會真的用到這個值。
 #: 這仍然是用猜的，不是量出來的——如果皇冠（或任何其他靠同格連點的題型）
 #: 在這個值下又出現少一個狀態的狀況，就再往 0.55 的方向調高。
-SAME_SPOT_CLICK_GAP = 0.3
+#:
+#: PULLED BACK FURTHER 2026-08-27, ON REQUEST, STILL UNVALIDATED
+#: 2026-08-27 使用者要求再拉回一次，一樣還沒驗證: 0.3 itself was never
+#: real-play-tested before this change - real play on 2026-08-27 (the day
+#: after this constant's fix first shipped in a packaged exe) reported the
+#: whole session felt noticeably slower, and asked to average the
+#: confirmed-too-fast value (0.15) with the untested-but-safer 0.3 to claw
+#: back some of that speed: (0.15 + 0.3) / 2 = 0.225. This is now a THIRD
+#: unmeasured guess stacked on top of a second one that itself was never
+#: confirmed safe - the risk of reproducing the original missed-crown
+#: failure is real and explicitly accepted by the user, not discovered by
+#: testing. If it recurs, the fix is to go the other way: back to 0.3 (or
+#: further, toward 0.55), not lower.
+#: 2026-08-27 使用者要求再拉回一次，一樣還沒驗證：0.3 這個值本身在這次
+#: 改動之前，從來沒有真的被真實遊玩測過——2026-08-27 的真實遊玩（也就是
+#: 這個常數的修正第一次真的被打包進 exe 的隔天）回報整場感覺明顯變慢，
+#: 要求把「確定太快的 0.15」跟「還沒驗證但比較安全的 0.3」取平均，拿回
+#: 一部分速度：(0.15 + 0.3) / 2 = 0.225。這是疊在一個「本身都還沒驗證過
+#: 安全」的猜測上面的第三次猜測——重現原本皇冠漏放那個失敗的風險是真實
+#: 存在的，而且是使用者明確接受的取捨，不是測出來才決定的。如果真的又
+#: 發生，修法是往回調（回到 0.3，或更往 0.55 的方向），不是繼續調低。
+SAME_SPOT_CLICK_GAP = 0.225
 
 
 #: Maximum pixels the pointer may jump in one step while dragging.
